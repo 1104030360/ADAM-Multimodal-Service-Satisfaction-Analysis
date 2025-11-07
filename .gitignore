@@ -46,3 +46,19 @@ myapp/src/myapp/init/adam-*.json
 
 # 環境變數檔案
 .env
+
+# 本地媒體快取目錄
+myapp/src/myapp/init/media/
+myapp/src/myapp/init/charts/
+myapp/video/
+myapp/audio/
+myapp/pdf/
+
+# 資料庫備份檔案
+*.sql
+*.dump
+backup/
+
+# 臨時檔案
+*.tmp
+*.temp
