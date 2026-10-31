@@ -1,0 +1,129 @@
+"""整合測試的 fixture：拋棄式 MySQL 8.4 容器、每個測試前清空資料、假的分析服務、QML engine。"""
+import json
+import secrets
+import shutil
+import subprocess
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from types import SimpleNamespace
+
+import mysql.connector
+import pytest
+from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtQml import QQmlApplicationEngine
+
+from tests.integration.helpers import Database
+
+SCHEMA = Path(__file__).resolve().parents[3] / "docs" / "rebuild" / "db_schema.sql"
+MYSQL_IMAGE = "mysql:8.4"
+TABLES = ["tbl_text_storage", "tbl_charts_storage", "tbl_audio_storage", "tbl_video_storage",
+          "tbl_service_score", "tbl_service", "tbl_account"]
+
+
+def docker(*args, **kwargs):
+    return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=120, **kwargs)
+
+
+def wait_for_mysql(server, timeout=120):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            mysql.connector.connect(**server, connection_timeout=2).close()
+            return
+        except mysql.connector.Error:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.5)
+
+
+@pytest.fixture(scope="session")
+def mysql_server():
+    """整個測試期間共用一個 MySQL 8.4 容器：資料放在記憶體（tmpfs），port 由 Docker 隨機挑，結束就刪除。"""
+    if shutil.which("docker") is None or docker("info").returncode != 0:
+        pytest.skip("Docker 無法使用，略過整合測試")
+    if not SCHEMA.exists():
+        pytest.skip(f"找不到 {SCHEMA}")
+    if docker("image", "inspect", MYSQL_IMAGE).returncode != 0:
+        pytest.skip(f"本機沒有 {MYSQL_IMAGE}，先執行 docker pull {MYSQL_IMAGE}")
+
+    name = f"adam-pytest-mysql-{secrets.token_hex(4)}"  # 名稱固定開頭，萬一留下來，用 docker ps -a 找得到
+    password = secrets.token_urlsafe(16)
+    try:
+        started = docker("run", "-d", "--name", name, "-p", "127.0.0.1::3306", "--tmpfs", "/var/lib/mysql",
+                         "-e", f"MYSQL_ROOT_PASSWORD={password}", MYSQL_IMAGE)
+        assert started.returncode == 0, started.stderr
+        port = int(docker("port", name, "3306/tcp").stdout.strip().rsplit(":", 1)[1])
+        server = {"host": "127.0.0.1", "port": port, "user": "root", "password": password}
+        wait_for_mysql(server)
+        with SCHEMA.open("rb") as schema:  # 用容器裡的 mysql 指令載入：它看得懂 DELIMITER
+            loaded = subprocess.run(["docker", "exec", "-i", "-e", f"MYSQL_PWD={password}", name, "mysql", "-uroot"],
+                                    stdin=schema, capture_output=True, timeout=120)
+        assert loaded.returncode == 0, loaded.stderr.decode()
+        yield server
+    finally:
+        docker("rm", "--force", "--volumes", name)
+
+
+@pytest.fixture(scope="session")
+def seed_accounts(mysql_server):
+    """db_schema.sql 放進去的佔位帳號；每個測試開始時放回去。"""
+    connection = mysql.connector.connect(**mysql_server, database="adam")
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT * FROM tbl_account")
+        rows = cursor.fetchall()
+    connection.close()
+    return rows
+
+
+@pytest.fixture
+def db(mysql_server, seed_accounts, monkeypatch):
+    """每個測試前清空所有資料表、放回佔位帳號，並把 app 的 DB_* 環境變數指到測試資料庫。"""
+    monkeypatch.setenv("DB_HOST", mysql_server["host"])
+    monkeypatch.setenv("DB_PORT", str(mysql_server["port"]))
+    monkeypatch.setenv("DB_NAME", "adam")
+    monkeypatch.setenv("DB_USER", mysql_server["user"])
+    monkeypatch.setenv("DB_PASSWORD", mysql_server["password"])
+    connection = mysql.connector.connect(**mysql_server, database="adam", autocommit=True)
+    database = Database(connection)
+    database.execute("SET FOREIGN_KEY_CHECKS = 0")
+    for table in TABLES:
+        database.execute(f"TRUNCATE TABLE {table}")
+    database.execute("SET FOREIGN_KEY_CHECKS = 1")
+    with connection.cursor() as cursor:
+        cursor.executemany("INSERT INTO tbl_account VALUES (%s, %s, %s, %s, %s, %s)", seed_accounts)
+    yield database
+    connection.close()
+
+
+@pytest.fixture
+def analysis_service(monkeypatch):
+    """假的分析服務：記下收到的 JSON，回傳 status（預設 200）。ANALYZE_API_URL 會指到它。"""
+    service = SimpleNamespace(status=200, requests=[])
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            service.requests.append((self.path, json.loads(body)))
+            self.send_response(service.status)
+            self.end_headers()
+
+        def log_message(self, *args):  # 不要把每個請求印到終端機
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
+    monkeypatch.setenv("ANALYZE_API_URL", f"http://127.0.0.1:{server.server_port}/analyze")
+    yield service
+    server.shutdown()
+    server.server_close()
+
+
+@pytest.fixture
+def engine():
+    """這個測試自己的 QML engine；結束時刪掉，它開的視窗也會一起關掉。"""
+    engine = QQmlApplicationEngine()
+    yield engine
+    engine.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)

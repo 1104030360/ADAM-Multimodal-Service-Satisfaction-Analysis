@@ -44,9 +44,33 @@ environments = ["sys_platform == 'darwin'"]
 add-bounds = "exact"
 
 [tool.pytest.ini_options]
-# 測試要 import myapp，而套件放在 src/ 底下
-pythonpath = ["src"]
-testpaths = ["tests"]
+minversion = "9.0"
+testpaths = ["tests/unit", "tests/integration"]  # 先跑快的單元測試
+pythonpath = ["src"]          # 測試要 import myapp，而套件放在 src/ 底下
+addopts = ["-ra"]             # 結尾列出 skip、xfail 的原因
+strict = true                 # 未註冊的 marker、xfail 意外通過、設定打錯都算失敗
+empty_parameter_set_mark = "fail_at_collect"  # parametrize 拿到空清單（例如路徑寫錯）就報錯，不是默默略過
+filterwarnings = [
+    # PyMuPDF（SWIG 產生的擴充模組）在 Python 3.13 的已知警告，和這個專案的程式無關
+    "ignore:builtin type .* has no __module__ attribute:DeprecationWarning",
+]
+markers = [
+    "integration: 需要 Docker（拋棄式 MySQL 8.4 容器）。只跑單元測試：uv run pytest -m \"not integration\"",
+]
+
+[tool.coverage.run]
+source = ["myapp"]
+branch = true
+omit = [
+    # Briefcase 範本留下的 QMainWindow；沒有任何地方 import 它（__main__.py 走的是 main.py）
+    "*/myapp/app.py",
+    # 早期用 cv2.imshow 的錄影原型；沒有任何地方 import，而且它 import 的 google-cloud-storage 已經不在依賴裡
+    "*/myapp/init/test.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 75
 
 [tool.briefcase]
 bundle = "com.example"

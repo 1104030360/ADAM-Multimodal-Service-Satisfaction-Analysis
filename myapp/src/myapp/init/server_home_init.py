@@ -387,28 +387,33 @@ class DeviceFinder(QObject):
 
     def get_available_cameras(self):
         available_cameras = []
+        self._camera_ids = []  # 清單第 n 項對應的鏡頭編號
         for camera_id in range(10):  # 假設最多測試10個攝影機
             cap = cv2.VideoCapture(camera_id)
             if cap.isOpened():
                 available_cameras.append(f"Camera {camera_id}")  # 使用編號代替名稱
+                self._camera_ids.append(camera_id)
                 cap.release()  # 釋放攝影機
         return available_cameras
 
     def get_available_microphones(self):
         available_microphones = []
+        self._microphone_ids = []  # 清單第 n 項對應的 PyAudio 裝置編號
         p = pyaudio.PyAudio()
         number_of_devices = p.get_host_api_info_by_index(0).get('deviceCount')
         for device_index in range(0, number_of_devices):
             device_info = p.get_device_info_by_host_api_device_index(0, device_index)
             if device_info.get('maxInputChannels') > 0:
                 available_microphones.append(device_info.get('name'))
+                self._microphone_ids.append(device_info.get('index', device_index))
         return available_microphones
 
     @Slot(int, int, int)
     def startRecording(self, cam0_index, cam1_index, mic_index):
         account_id = self.server_home.getID()  # Retrieve the account_id dynamically
-        # Directly create and show the RecordWidget
-        widget = RecordWidget(cam0_index, cam1_index, mic_index, account_id)
+        # QML 傳的是下拉選單的位置，換成真正的裝置編號
+        widget = RecordWidget(self._camera_ids[cam0_index], self._camera_ids[cam1_index],
+                              self._microphone_ids[mic_index], account_id)
         widget.show()
 
 
@@ -713,9 +718,9 @@ class ServerHome(QObject):
         # 獲取當前檔案所在的路徑
         current_dir = os.path.dirname(__file__)
         
-        # 定義 media 和 charts 資料夾的路徑
-        media_dir = os.path.join(current_dir, 'media')
-        charts_dir = os.path.join(current_dir, 'charts')
+        # 和 MediaService 用同一組資料夾：有設定 LOCAL_MEDIA_DIR／LOCAL_CHARTS_DIR 時清那裡
+        media_dir = os.getenv('LOCAL_MEDIA_DIR', os.path.join(current_dir, 'media'))
+        charts_dir = os.getenv('LOCAL_CHARTS_DIR', os.path.join(current_dir, 'charts'))
         
         # 清除 media 資料夾的內容
         if os.path.exists(media_dir):

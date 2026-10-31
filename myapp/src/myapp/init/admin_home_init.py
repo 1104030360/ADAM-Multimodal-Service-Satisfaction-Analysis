@@ -719,9 +719,9 @@ class AdminHome(QObject):
         # 獲取當前檔案所在的路徑
         current_dir = os.path.dirname(__file__)
         
-        # 定義 media 和 charts 資料夾的路徑
-        media_dir = os.path.join(current_dir, 'media')
-        charts_dir = os.path.join(current_dir, 'charts')
+        # 和 MediaService 用同一組資料夾：有設定 LOCAL_MEDIA_DIR／LOCAL_CHARTS_DIR 時清那裡
+        media_dir = os.getenv('LOCAL_MEDIA_DIR', os.path.join(current_dir, 'media'))
+        charts_dir = os.getenv('LOCAL_CHARTS_DIR', os.path.join(current_dir, 'charts'))
         
         # 清除 media 資料夾的內容
         if os.path.exists(media_dir):
