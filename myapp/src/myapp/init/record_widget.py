@@ -17,6 +17,8 @@ load_dotenv()
 
 
 class RecordWidget(QtWidgets.QWidget):
+    # 錄音、錄影在背景執行緒執行；狀態文字透過 signal 交給主執行緒更新
+    statusChanged = QtCore.Signal(str)
 
     def __init__(self, cam0_index, cam1_index, mic_index, account_id, parent=None):
         super().__init__(parent)
@@ -98,6 +100,7 @@ class RecordWidget(QtWidgets.QWidget):
                 padding: 5px;
             }
         ''')
+        self.statusChanged.connect(self.status_bar.setText)
 
         # Labels for the camera feeds
         self.label_customer = QtWidgets.QLabel("Customer Camera")
@@ -211,8 +214,6 @@ class RecordWidget(QtWidgets.QWidget):
         else:
             print(f"Failed to read from camera {cam_num}")
     def record_audio(self):
-        # Generate unique service_id
-        self.service_id = 'S' + datetime.now().strftime('%Y%m%d%H%M%S')
 
         FORMAT = pyaudio.paInt16
         CHANNELS = 1
@@ -230,7 +231,7 @@ class RecordWidget(QtWidgets.QWidget):
         frames = []
 
         while self.recording:
-            data = stream.read(CHUNK)
+            data = stream.read(CHUNK, exception_on_overflow=False)
             frames.append(data)
 
         print("Finished Recording Audio")
@@ -283,9 +284,9 @@ class RecordWidget(QtWidgets.QWidget):
             ret1, frame1 = cap1.read()
 
             if ret0 and ret1:
-                # 顯示畫面並寫入影片文件
-                out0.write(frame0)
-                out1.write(frame1)
+                # 鏡頭實際輸出的尺寸可能不是 640x480；尺寸和 VideoWriter 不一致的影格會被直接丟掉
+                out0.write(cv2.resize(frame0, (640, 480)))
+                out1.write(cv2.resize(frame1, (640, 480)))
 
 
         # 釋放資源
@@ -310,6 +311,9 @@ class RecordWidget(QtWidgets.QWidget):
             print(f"Recording started at {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
             self.service_id = 'S' + datetime.now().strftime('%Y%m%d%H%M%S')
+            # 每段錄影重新開始：清掉上一段的檔名
+            self.video_filenames = []
+            self.audio_filename = ""
 
             # 啟動音訊錄製執行緒
             self.audio_thread = threading.Thread(target=self.record_audio)
@@ -328,6 +332,8 @@ class RecordWidget(QtWidgets.QWidget):
             # 等待音訊和影片錄製執行緒結束
             self.audio_thread.join()
             self.video_thread.join()
+            # 執行緒最後送出的狀態還在事件佇列裡；先處理掉，免得之後蓋掉 "Saved ..."
+            QtCore.QCoreApplication.sendPostedEvents(self.status_bar, QtCore.QEvent.Type.MetaCall)
 
             # 記錄結束時間
             self.end_time = datetime.now()
@@ -350,9 +356,16 @@ class RecordWidget(QtWidgets.QWidget):
         print(f"Uploaded video URLs: {video_urls}")
         print(f"Uploaded audio URL: {audio_url}")
 
-        # Update database
-        self.update_database(video_urls, audio_url)
-        print("Database update complete")
+        # 有任何一個檔案沒上傳成功就不寫資料庫，免得留下一筆找不到檔案的服務
+        if len(video_urls) != 2 or not all(video_urls) or not audio_url:
+            self.update_status(f"Upload failed, {self.service_id} was not saved")
+            return
+
+        if self.update_database(video_urls, audio_url):
+            self.update_status(f"Saved {self.service_id}")
+            print("Database update complete")
+        else:
+            self.update_status(f"Database error, {self.service_id} was not saved")
 
     def upload_to_s3(self, filename):
         if not filename or not os.path.exists(filename):
@@ -390,13 +403,15 @@ class RecordWidget(QtWidgets.QWidget):
             print(f"Inserted audio {audio_url} into tbl_audio_storage")
 
             connection.commit()
+            return True
         except mysql.connector.Error as err:
             print(f"Error updating database: {err}")
             connection.rollback()
+            return False
         finally:
             cursor.close()
             connection.close()
 
     def update_status(self, message):
-        self.status_bar.setText(message)
+        self.statusChanged.emit(message)
         print(f"Status updated: {message}")

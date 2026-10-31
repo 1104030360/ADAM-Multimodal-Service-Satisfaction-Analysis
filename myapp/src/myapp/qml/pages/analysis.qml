@@ -416,11 +416,36 @@ Page {
                         width: 100
                         Material.background: Material.accent
                         Material.foreground: "#FFFFFF"
-                        onClicked: serviceModel.analyzeService(modelData.service_id)
+                        onClicked: {
+                            if (!serviceModel.analyzeService(modelData.service_id))
+                                analyzeFailedDialog.open()
+                        }
                     }
                 }
             }
         }
+    }
+
+    Dialog {
+        id: analyzeFailedDialog
+        anchors.centerIn: parent
+        modal: true
+        title: "送出分析失敗"
+        standardButtons: Dialog.Ok
+
+        Label {
+            width: 360
+            wrapMode: Text.WordWrap
+            text: "連不到分析服務。請確認網路，以及 .env 的 ANALYZE_API_URL，再按一次「分析」。"
+        }
+    }
+
+    // 分析服務做完會把狀態改成 3；每 15 秒重新查一次，不必重開程式就看得到
+    Timer {
+        interval: 15000
+        running: true
+        repeat: true
+        onTriggered: serverHome.onLoadAnalysis()
     }
 
     // Connections to update models when data changes

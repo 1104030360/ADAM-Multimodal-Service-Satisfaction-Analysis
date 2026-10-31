@@ -182,14 +182,18 @@ class MediaService:
         try:
             conn = self.db_connector.connection
             cursor = conn.cursor()
-            query = "SELECT video_url FROM tbl_video_storage WHERE service_id = %s AND video_name LIKE %s"
-            
+            # 每個鏡頭取最新的一列；LIMIT 1 也確保結果都讀完了，才能執行下一個查詢
+            query = ("SELECT video_url FROM tbl_video_storage WHERE service_id = %s AND video_name LIKE %s "
+                     "ORDER BY video_id DESC LIMIT 1")
+
             cursor.execute(query, (self.service_id, '%cam0%'))
-            cam0_url = cursor.fetchone()[0]
-            
+            row = cursor.fetchone()
+            cam0_url = row[0] if row else None
+
             cursor.execute(query, (self.service_id, '%cam1%'))
-            cam1_url = cursor.fetchone()[0]
-            
+            row = cursor.fetchone()
+            cam1_url = row[0] if row else None
+
             return cam0_url, cam1_url
         except Error as e:
             print(f"Error querying MySQL: {e}")
@@ -202,10 +206,10 @@ class MediaService:
         try:
             conn = self.db_connector.connection
             cursor = conn.cursor()
-            query = "SELECT audio_url FROM tbl_audio_storage WHERE service_id = %s"
+            query = "SELECT audio_url FROM tbl_audio_storage WHERE service_id = %s ORDER BY audio_id DESC LIMIT 1"
             cursor.execute(query, (self.service_id,))
-            audio_url = cursor.fetchone()[0]
-            return audio_url
+            row = cursor.fetchone()
+            return row[0] if row else None
         except Error as e:
             print(f"Error querying MySQL: {e}")
             return None
@@ -217,7 +221,7 @@ class MediaService:
         try:
             conn = self.db_connector.connection
             cursor = conn.cursor()
-            query = "SELECT charts_url FROM tbl_charts_storage WHERE service_id = %s"
+            query = "SELECT charts_url FROM tbl_charts_storage WHERE service_id = %s ORDER BY charts_id"
             cursor.execute(query, (self.service_id,))
             result = cursor.fetchall()
             return [row[0] for row in result] if result else []
@@ -254,8 +258,14 @@ class MediaService:
             return None
 
     def run(self, media_model, charts_model):
+        # 先清空：查不到資料時，畫面不能沿用上一筆服務的影片和圖表
+        media_model.cam0Source = ""
+        media_model.cam1Source = ""
+        media_model.audioSource = ""
+        charts_model.chartsSources = []
+
         cam0_url, cam1_url = self.get_video_urls_from_db()
-        
+
         if cam0_url:
             cam0_path = self.download_media(cam0_url, 'video')
             media_model.cam0Source = QUrl.fromLocalFile(cam0_path).toString() if cam0_path else ""
@@ -269,14 +279,12 @@ class MediaService:
             audio_path = self.download_media(audio_url, 'audio')
             media_model.audioSource = QUrl.fromLocalFile(audio_path).toString() if audio_path else ""
 
-        charts_urls = self.get_charts_urls_from_db()
-        if charts_urls:
-            downloaded_paths = []
-            for chart_url in charts_urls:
-                chart_path = self.download_chart(chart_url)
-                if chart_path:
-                    downloaded_paths.append(QUrl.fromLocalFile(chart_path).toString())
-            charts_model.chartsSources = downloaded_paths
+        downloaded_paths = []
+        for chart_url in self.get_charts_urls_from_db():
+            chart_path = self.download_chart(chart_url)
+            if chart_path:
+                downloaded_paths.append(QUrl.fromLocalFile(chart_path).toString())
+        charts_model.chartsSources = downloaded_paths
 
 
 class AccountManager(QObject):

@@ -323,7 +323,7 @@ Window {
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
                         console.log("Analysis clicked")
-                        serverHome.onLoadHome()  // Call the function to reload data
+                        serverHome.onLoadAnalysis()  // Call the function to reload data
                         mainContentLoader.source = "../../qml/pages/analysis.qml"
                         
                     }
