@@ -8,6 +8,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from mysql.connector import Error
 from datetime import datetime, timedelta
 from myapp.database import DatabaseConnector
+from myapp.passwords import hash_password
 from myapp import storage
 import shutil
 import fitz
@@ -298,7 +299,7 @@ class AccountManager(QObject):
 
         try:
             with self.db_connector.connection.cursor() as cursor:
-                cursor.execute(query, (username, password, name, level, occupation))
+                cursor.execute(query, (username, hash_password(password), name, level, occupation))
                 self.db_connector.connection.commit()
             self.accountAdded.emit(True, "Account successfully added")
         except Error as e:
@@ -315,15 +316,12 @@ class AccountManager(QObject):
 
         try:
             with self.db_connector.connection.cursor() as cursor:
-                cursor.execute(query, (username, password, name, level, occupation, account_id))
+                cursor.execute(query, (username, hash_password(password), name, level, occupation, account_id))
                 self.db_connector.connection.commit()
             self.accountUpdated.emit(True, "Account successfully updated")
         except Error as e:
             self.accountUpdated.emit(False, f"Failed to update account: {e}")
 
-    def __del__(self):
-        if self.db_connector.connection:
-            self.db_connector.close_connection()
 
 
 class TrendDataManager(QObject):

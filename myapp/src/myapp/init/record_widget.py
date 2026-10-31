@@ -8,19 +8,13 @@ import os
 from datetime import datetime
 import mysql.connector
 from myapp import storage
+from myapp.database import connection_config
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
 
-# Database Configuration
-DB_CONFIG = {
-    'user': os.getenv('DB_USER'),
-    'password': os.getenv('DB_PASSWORD'),
-    'host': os.getenv('DB_HOST'),
-    'database': os.getenv('DB_NAME'),
-}
 
 class RecordWidget(QtWidgets.QWidget):
 
@@ -62,7 +56,7 @@ class RecordWidget(QtWidgets.QWidget):
 
     def fetch_account_name(self):
         print("Fetching account name from database")
-        connection = mysql.connector.connect(**DB_CONFIG)
+        connection = mysql.connector.connect(**connection_config())
         cursor = connection.cursor()
 
         try:
@@ -374,7 +368,7 @@ class RecordWidget(QtWidgets.QWidget):
             return ""
 
     def update_database(self, video_urls, audio_url):
-        connection = mysql.connector.connect(**DB_CONFIG)
+        connection = mysql.connector.connect(**connection_config())
         cursor = connection.cursor()
 
         try:
