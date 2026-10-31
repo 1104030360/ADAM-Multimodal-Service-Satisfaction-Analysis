@@ -305,8 +305,9 @@ class ServiceManager(QObject):
         
         if end_date:
             try:
-                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
-                query += " AND s.service_start <= %s"
+                # 結束日當天整天都要算：條件用「小於隔天 00:00」
+                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+                query += " AND s.service_start < %s"
                 params.append(end_date_obj)
             except ValueError:
                 print("Invalid end date format. Please use YYYY-MM-DD.")

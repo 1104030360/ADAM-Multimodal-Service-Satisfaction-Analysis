@@ -349,16 +349,18 @@ class TrendDataManager(QObject):
             cursor = connection.cursor()
 
             start_date = datetime(year, month, 1)
-            end_date = (start_date + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+            # 下個月 1 號；用「小於」它，月底最後一天整天都會算進去
+            end_date = (start_date + timedelta(days=32)).replace(day=1)
 
             query = """
-            SELECT 
+            SELECT
                 DAY(service.service_start) AS day,
-                AVG(score.server_total) AS server_score,
-                AVG(score.customer_total) AS customer_score
+                AVG(NULLIF(score.server_total, -1)) AS server_score,
+                AVG(NULLIF(score.customer_total, -1)) AS customer_score
             FROM tbl_service_score AS score
             JOIN tbl_service AS service ON score.service_id = service.service_id
-            WHERE service.service_start BETWEEN %s AND %s
+            WHERE service.service_status = '3'
+              AND service.service_start >= %s AND service.service_start < %s
             GROUP BY DAY(service.service_start)
             ORDER BY DAY(service.service_start)
             """
@@ -369,8 +371,9 @@ class TrendDataManager(QObject):
             customer_scores = {day: 0 for day in range(1, 32)}
 
             for day, server_score, customer_score in results:
-                server_scores[day] = float(server_score)
-                customer_scores[day] = float(customer_score)
+                # 某天的分數全是 -1 時，NULLIF 之後只剩 NULL，AVG 也會是 NULL
+                server_scores[day] = float(server_score) if server_score is not None else 0
+                customer_scores[day] = float(customer_score) if customer_score is not None else 0
 
             print(f"Server Scores for {month}/{year}: {server_scores}")
             print(f"Customer Scores for {month}/{year}: {customer_scores}")
@@ -381,7 +384,7 @@ class TrendDataManager(QObject):
 
             cursor.close()
 
-        except Error as e:
+        except (Error, ValueError) as e:
             print(f"Error fetching data: {e}")
 
 
@@ -487,11 +490,11 @@ class RankingModel(QObject):
         
         customers, servers = {}, {}
         for name, customer_score, server_score in rankings:
-            if name not in customers:
-                customers[name] = []
-                servers[name] = []
-            customers[name].append(customer_score)
-            servers[name].append(server_score)
+            # -1 代表「這一項沒有資料」，不能算進平均
+            if customer_score is not None and customer_score != -1:
+                customers.setdefault(name, []).append(customer_score)
+            if server_score is not None and server_score != -1:
+                servers.setdefault(name, []).append(server_score)
         
         avg_customers = [(name, round(sum(scores) / len(scores), 2)) for name, scores in customers.items()]
         avg_servers = [(name, round(sum(scores) / len(scores), 2)) for name, scores in servers.items()]
@@ -596,8 +599,9 @@ class ServiceManager(QObject):
                 print("Invalid start date format. Please use YYYY-MM-DD.")
         if end_date:
             try:
-                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
-                query += " AND s.service_start <= %s"
+                # 結束日當天整天都要算：條件用「小於隔天 00:00」
+                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+                query += " AND s.service_start < %s"
                 params.append(end_date_obj)
             except ValueError:
                 print("Invalid end date format. Please use YYYY-MM-DD.")
@@ -687,7 +691,8 @@ class AdminHome(QObject):
     def load_home_data(self):
         self.serviceScoreManager.load_scores()
         self.rankingModel.load_ranking()
-        self.trendDataManager.load_trends()
+        today = datetime.now()
+        self.trendDataManager.load_trends_for_month(today.month, today.year)
 
     def initialize_account_manager(self):
         try:

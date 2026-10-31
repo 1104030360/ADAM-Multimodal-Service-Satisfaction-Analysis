@@ -673,31 +673,26 @@ Page {
 
                 ComboBox {
                     id: monthSelector
-                    model: ["January", "February", "March", "April", "May", "June", 
+                    model: ["January", "February", "March", "April", "May", "June",
                             "July", "August", "September", "October", "November", "December"]
-                    currentIndex: 0
+                    currentIndex: new Date().getMonth()  // 預設本月；getMonth() 從 0 開始
                     Layout.alignment: Qt.AlignCenter
-                    onCurrentIndexChanged: {
-                        // Clear previous data
-                        serverLineSeries.clear();
-                        customerLineSeries.clear();
-                        // Load data for the selected month and year when selection changes
-                        trendDataManager.load_trends_for_month(monthSelector.currentIndex + 1, yearSelector.currentText)
-                    }
+                    onActivated: root.reloadTrends()  // 只在使用者改選時觸發
                 }
 
                 ComboBox {
                     id: yearSelector
-                    model: [2022, 2023, 2024, 2025]  // Adjust based on your data
-                    currentIndex: 1
-                    Layout.alignment: Qt.AlignCenter
-                    onCurrentIndexChanged: {
-                        // Clear previous data
-                        serverLineSeries.clear();
-                        customerLineSeries.clear();
-                        // Load data for the selected month and year when selection changes
-                        trendDataManager.load_trends_for_month(monthSelector.currentIndex + 1, yearSelector.currentText)
+                    // 今年和前 4 年；跨年之後新的年份會自動出現
+                    model: {
+                        var thisYear = new Date().getFullYear();
+                        var years = [];
+                        for (var y = thisYear - 4; y <= thisYear; y++)
+                            years.push(y);
+                        return years;
                     }
+                    currentIndex: 4  // 今年
+                    Layout.alignment: Qt.AlignCenter
+                    onActivated: root.reloadTrends()
                 }
             }
 
@@ -766,8 +761,16 @@ Page {
             }
         }
     }
+    // 依照目前選的月份、年份重畫趨勢圖
+    function reloadTrends() {
+        serverLineSeries.clear();
+        customerLineSeries.clear();
+        trendDataManager.load_trends_for_month(monthSelector.currentIndex + 1, Number(yearSelector.currentText));
+    }
+
     Component.onCompleted: {
         serviceScoreManager.load_scores();
         rankingModel.load_ranking();
+        reloadTrends();
     }
 }
