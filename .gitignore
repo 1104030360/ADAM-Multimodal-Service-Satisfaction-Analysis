@@ -12,6 +12,13 @@ build/
 venv/
 myenv/
 .env/
+# uv 建立的虛擬環境（myapp/.venv/；分析服務的資料夾在 Mac 上誤執行 uv sync 也會產生）
+.venv/
+# briefcase dev 的開發環境與標記檔（myapp/.briefcase/）
+.briefcase/
+# pytest --cov 的輸出
+.coverage
+htmlcov/
 
 # IDE, Editor
 .vscode/

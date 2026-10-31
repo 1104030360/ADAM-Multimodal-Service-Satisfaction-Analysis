@@ -38,7 +38,7 @@
 2.  根據帳號等級，啟動對應的主頁（`server_home_init.launch()` 或 `admin_home_init.launch()`）。
 3.  設定 QML 上下文屬性，將 Python 物件公開給 QML。
 4.  QML UI 透過 Qt Slots/Signals 與 Python 後端互動。
-5.  媒體檔案上傳至 GCS，並將 URL 儲存於 MySQL。
+5.  媒體檔案上傳至 S3，並將 URL 儲存於 MySQL。
 6.  分析 API 端點非同步處理服務資料。
 
 # 如何使用
@@ -46,44 +46,34 @@
 ### 環境設定
 
 ```bash
-# 啟動虛擬環境
-source myenv/bin/activate  # macOS/Linux
-# 或
-myenv\Scripts\activate  # Windows
-
-# 安裝相依套件
-pip install -r requirements.txt
+brew install portaudio uv     # PyAudio 編譯時需要 PortAudio
+uv python install 3.13
+cd myapp
+uv sync                       # 照 uv.lock 建立 myapp/.venv 並安裝套件
 ```
 
 ### 執行應用程式
 
 ```bash
-# 直接使用 Python 執行
-python -m myapp
-
-# 或使用 Briefcase 指令
-briefcase dev  # 開發模式
-briefcase run  # 執行已打包的應用程式
+cd myapp
+uv run briefcase dev   # 開發模式
+uv run briefcase run   # 執行已打包的應用程式
 ```
 
 ### 建置應用程式
 
 ```bash
-# 建立可發布的套件
-briefcase build
-
-# 建立安裝程式
-briefcase package
+cd myapp
+uv run briefcase build     # 建立可發布的套件
+uv run briefcase package   # 建立安裝程式
 ```
 
 ### 測試
 
 ```bash
-# 執行測試
-pytest tests/
-
-# 執行特定測試
-pytest tests/test_app.py
+cd myapp
+uv run pytest              # 執行測試
+uv run pytest -k storage   # 只跑名稱含 storage 的測試
 ```
 
 # 設定
@@ -96,8 +86,9 @@ pytest tests/test_app.py
 *   `DB_NAME` - 資料庫名稱
 *   `DB_USER` - 資料庫使用者名稱
 *   `DB_PASSWORD` - 資料庫密碼
-*   `GCS_BUCKET` - Google Cloud Storage 儲存桶名稱
-*   `GOOGLE_APPLICATION_CREDENTIALS` - GCS 服務帳號 JSON 檔案路徑
+*   `S3_BUCKET` - S3 bucket 名稱
+*   `AWS_REGION` - bucket 所在的 region，例如 `us-east-1`
+*   `AWS_PROFILE` - `~/.aws/credentials` 裡的 profile 名稱（可選；本機用 moto 測試時不要設）
 *   `LOCAL_MEDIA_DIR` - 本地媒體檔案目錄（可選）
 *   `LOCAL_CHARTS_DIR` - 本地圖表圖片目錄（可選）
 *   `ANALYZE_API_URL` - 服務分析 API 端點 URL
@@ -139,9 +130,9 @@ pytest tests/test_app.py
 
 ### 媒體處理
 
-*   影片/音訊上傳至 GCS，並將 URL 儲存於 MySQL。
+*   影片/音訊上傳至 S3，並將 URL 儲存於 MySQL。
 *   本地下載會快取於 `init/media/` 和 `init/charts/`。
-*   使用 `MediaService` 類別進行 GCS 操作。
+*   使用 `MediaService` 類別從 S3 下載。
 *   在載入新服務資料前，呼叫 `clearDir()` 清理本地媒體檔案。
 
 ### 服務錄製
@@ -160,8 +151,8 @@ pytest tests/test_app.py
 
 # 開發提示
 
-*   修改 QML 時，使用 `briefcase dev` 可立即反映變更。
-*   新增 Python 相依套件時，請同時更新 `requirements.txt` 和 `pyproject.toml`。
+*   修改 QML 時，使用 `uv run briefcase dev` 可立即反映變更。
+*   新增 Python 相依套件時，在 `myapp/` 執行 `uv add 套件==版本`（會同時更新 `pyproject.toml` 和 `uv.lock`）。
 *   資料庫連線為單例，修改會影響整個應用程式。
 *   QML 除錯輸出會顯示在主控台，請尋找以 `qml:` 為前綴的訊息。
-*   GCS 操作需要正確設定憑證 JSON 檔案路徑。
+*   S3 需要 AWS 憑證：`AWS_PROFILE` 或環境變數；本機用 moto 測試時不需要真的憑證。

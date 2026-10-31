@@ -7,12 +7,11 @@ from PySide6.QtCore import QUrl, QObject, Signal, Slot, Property, QStringListMod
 from PySide6.QtGui import QGuiApplication, QStandardItemModel, QStandardItem
 from PySide6.QtQml import QQmlApplicationEngine
 from datetime import datetime, timedelta
-from AVFoundation import AVCaptureDevice
 import pyaudio
 from pathlib import Path
 from myapp.database import DatabaseConnector  
 from .record_widget import RecordWidget
-from google.cloud import storage
+from myapp import storage
 import shutil
 import cv2
 import fitz
@@ -134,18 +133,14 @@ class MediaModel(QObject):
 class MediaService:
     def __init__(self, service_id, db_connector):
         self.service_id = service_id
-        self.bucket_name = os.getenv('GCS_BUCKET')
         self.local_media_dir = os.getenv('LOCAL_MEDIA_DIR', os.path.join(os.path.dirname(__file__), "media"))
         self.local_charts_dir = os.getenv('LOCAL_CHARTS_DIR', os.path.join(os.path.dirname(__file__), "charts"))
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
         self.db_connector = db_connector
 
         if not os.path.exists(self.local_media_dir):
             os.makedirs(self.local_media_dir)
         if not os.path.exists(self.local_charts_dir):
             os.makedirs(self.local_charts_dir)
-
-        self.storage_client = storage.Client()
 
     def get_video_urls_from_db(self):
         try:
@@ -197,56 +192,52 @@ class MediaService:
             if conn.is_connected():
                 cursor.close()
 
-    def download_media_from_gcs(self, media_url, media_type):
+    def download_media(self, media_url, media_type):
         media_name = os.path.basename(media_url)
         folder = 'audio/' if media_type == 'audio' else 'video/'
+        local_file_path = os.path.join(self.local_media_dir, media_name)
 
         try:
-            bucket = self.storage_client.bucket(self.bucket_name)
-            blob = bucket.blob(f'{folder}{media_name}')
-            local_file_path = os.path.join(self.local_media_dir, media_name)
-            blob.download_to_filename(local_file_path)
+            storage.download(f'{folder}{media_name}', local_file_path)
             print(f"Downloaded {media_name} to {local_file_path}")
             return local_file_path
         except Exception as e:
-            print(f"Error downloading media from GCS: {e}")
+            print(f"Error downloading media from S3: {e}")
             return None
 
-    def download_chart_from_gcs(self, chart_url):
+    def download_chart(self, chart_url):
         chart_name = os.path.basename(chart_url)
+        local_file_path = os.path.join(self.local_charts_dir, chart_name)
 
         try:
-            bucket = self.storage_client.bucket(self.bucket_name)
-            blob = bucket.blob(f'charts/{chart_name}')
-            local_file_path = os.path.join(self.local_charts_dir, chart_name)
-            blob.download_to_filename(local_file_path)
+            storage.download(f'charts/{chart_name}', local_file_path)
             print(f"Downloaded {chart_name} to {local_file_path}")
             return local_file_path
         except Exception as e:
-            print(f"Error downloading chart from GCS: {e}")
+            print(f"Error downloading chart from S3: {e}")
             return None
 
     def run(self, media_model, charts_model):
         cam0_url, cam1_url = self.get_video_urls_from_db()
         
         if cam0_url:
-            cam0_path = self.download_media_from_gcs(cam0_url, 'video')
+            cam0_path = self.download_media(cam0_url, 'video')
             media_model.cam0Source = QUrl.fromLocalFile(cam0_path).toString() if cam0_path else ""
 
         if cam1_url:
-            cam1_path = self.download_media_from_gcs(cam1_url, 'video')
+            cam1_path = self.download_media(cam1_url, 'video')
             media_model.cam1Source = QUrl.fromLocalFile(cam1_path).toString() if cam1_path else ""
 
         audio_url = self.get_audio_url_from_db()
         if audio_url:
-            audio_path = self.download_media_from_gcs(audio_url, 'audio')
+            audio_path = self.download_media(audio_url, 'audio')
             media_model.audioSource = QUrl.fromLocalFile(audio_path).toString() if audio_path else ""
 
         charts_urls = self.get_charts_urls_from_db()
         if charts_urls:
             downloaded_paths = []
             for chart_url in charts_urls:
-                chart_path = self.download_chart_from_gcs(chart_url)
+                chart_path = self.download_chart(chart_url)
                 if chart_path:
                     downloaded_paths.append(QUrl.fromLocalFile(chart_path).toString())
             charts_model.chartsSources = downloaded_paths

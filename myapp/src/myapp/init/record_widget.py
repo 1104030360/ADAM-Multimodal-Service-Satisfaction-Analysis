@@ -7,16 +7,12 @@ import threading
 import os
 from datetime import datetime
 import mysql.connector
-from google.cloud import storage
+from myapp import storage
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Google Cloud Storage Configuration
-GCS_BUCKET = os.getenv('GCS_BUCKET')
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
-storage_client = storage.Client()
 
 # Database Configuration
 DB_CONFIG = {
@@ -354,10 +350,9 @@ class RecordWidget(QtWidgets.QWidget):
 
 
     def upload_files_and_update_db(self):
-        print("Uploading files to GCS and updating database")
-        # Upload files to Google Cloud Storage
-        video_urls = [self.upload_to_gcs(filename) for filename in self.video_filenames]
-        audio_url = self.upload_to_gcs(self.audio_filename)
+        print("Uploading files to S3 and updating database")
+        video_urls = [self.upload_to_s3(filename) for filename in self.video_filenames]
+        audio_url = self.upload_to_s3(self.audio_filename)
         print(f"Uploaded video URLs: {video_urls}")
         print(f"Uploaded audio URL: {audio_url}")
 
@@ -365,16 +360,17 @@ class RecordWidget(QtWidgets.QWidget):
         self.update_database(video_urls, audio_url)
         print("Database update complete")
 
-    def upload_to_gcs(self, filename):
+    def upload_to_s3(self, filename):
+        if not filename or not os.path.exists(filename):
+            print(f"Skip upload, file missing: {filename!r}")
+            return ""
+        key = filename.replace(os.sep, "/")  # 'video/S..._cam0.avi'：和 GCS 時代一樣，用本地相對路徑當 key
         try:
-            bucket = storage_client.bucket(GCS_BUCKET)
-            blob = bucket.blob(filename)
-            blob.upload_from_filename(filename)
-            gcs_url = f"gs://{GCS_BUCKET}/{filename}"
-            print(f"Uploaded {filename} to {gcs_url}")
-            return gcs_url
+            url = storage.upload(filename, key)
+            print(f"Uploaded {filename} to {url}")
+            return url
         except Exception as e:
-            print(f"Error uploading {filename} to GCS: {e}")
+            print(f"Error uploading {filename} to S3: {e}")
             return ""
 
     def update_database(self, video_urls, audio_url):
