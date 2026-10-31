@@ -62,3 +62,9 @@ backup/
 # 臨時檔案
 *.tmp
 *.temp
+
+docs
+
+# 原本的分析服務：程式裡寫死了密鑰，只當參考，不進 git（見 docs/rebuild/steps/06_analyzer.md 的 6-0）
+service_analyzer/
+**/adam-*.json
