@@ -63,9 +63,9 @@ Item {
 
         background: Rectangle {
             radius: Theme.radiusS
-            color: item.highlighted ? Theme.surfaceMuted : item.hovered ? Theme.surfaceAlt : Theme.contentBg
+            color: item.highlighted ? Theme.tile : item.hovered ? Theme.card : Theme.contentBg
             border.width: 1
-            border.color: item.highlighted ? Theme.textSecondary : Theme.divider
+            border.color: item.highlighted ? Theme.textSecondary : Theme.cardBorder
 
             Rectangle {     // 鍵盤焦點框（DS-30）
                 visible: item.visualFocus
@@ -73,7 +73,7 @@ Item {
                 anchors.margins: -3
                 radius: parent.radius + 3
                 color: "transparent"
-                border.color: Theme.focusOnLight
+                border.color: Theme.focusOnDark
                 border.width: 2
             }
         }
@@ -138,9 +138,9 @@ Item {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         radius: Theme.radiusS
-                        color: reports.hasPage || reports.viewState === "error" ? Theme.contentBg : Theme.surfaceMuted
+                        color: reports.hasPage || reports.viewState === "error" ? Theme.contentBg : Theme.tile
                         border.width: 1
-                        border.color: Theme.divider
+                        border.color: Theme.cardBorder
                         clip: true
 
                         Image {

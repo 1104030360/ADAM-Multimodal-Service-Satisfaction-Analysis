@@ -5,31 +5,36 @@ tests/unit/test_ui_copy.py 解析 Theme.qml，逐一比對 TOKENS；改了 Theme
 不在執行時解析 Theme.qml：打包後的路徑、別名（toastBg: sidebarBg）都要另外處理，為了十幾個值不值得。
 """
 
-# Theme.qml 的 token（名稱和 Theme.qml 一樣，DS-11～DS-13）
+# Theme.qml 的 token（名稱和 Theme.qml 一樣，DS-11～DS-13）。新版介面改成深色（new-UIUX PLAN 第 3 節）
 TOKENS = {
-    "contentBg": "#FFFFFF",
-    "surfaceAlt": "#F2F6FA",
-    "surfaceMuted": "#EFEFEF",
-    "track": "#E0E0E0",
-    "textPrimary": "#333333",
-    "textSecondary": "#596069",
+    "contentBg": "#0B0C0E",
+    "card": "#15171B",
+    "tileBorder": "#2C3036",
+    "track": "#2C3036",
+    "textPrimary": "#ECEEF1",
+    "textSecondary": "#B4BAC2",
+    "textMuted": "#9AA1AB",
     "textOnDark": "#FFFFFF",
-    "progressFill": "#333333",
-    "actionPrimary": "#333333",           # 主要按鈕是石墨灰，白字 12.63:1（D2、DS-12）
-    "actionPrimaryHover": "#444444",
-    "actionPrimaryPressed": "#555555",
-    "actionSecondaryBorder": "#596069",
-    "actionDisabledBg": "#E0E0E0",
-    "actionDisabledText": "#8E959F",
-    "successOnLight": "#2E7D32",
-    "errorOnLight": "#C62828",
+    "progressFill": "#E6E8EB",
+    "actionPrimary": "#E6E8EB",           # 主要按鈕是淺色膠囊，深色字 15.5:1（UD3）
+    "actionPrimaryHover": "#FFFFFF",
+    "actionPrimaryPressed": "#C3C8CF",
+    "actionPrimaryText": "#0E1013",
+    "actionSecondaryBg": "#1C1F24",
+    "actionSecondaryHover": "#24282E",
+    "actionSecondaryPressed": "#2C3036",
+    "actionSecondaryBorder": "#3A3F46",
+    "actionDisabledBg": "#1A1D21",
+    "actionDisabledText": "#6E747D",
+    "successOnDark": "#81C784",
+    "errorOnDark": "#FF9A90",
     "recording": "#E53935",               # 只用在實心的錄影圓點，不用在按鈕和文字（DS-13）
-    "focusOnLight": "#1565C0",
+    "focusOnDark": "#E6E8EB",
 }
 
-# 只有錄影視窗用、Theme.qml 沒有的值：視窗底色和鏡頭預覽框（DS-34；設計稿「錄影與上傳」沿用以前的值）
+# 只有錄影視窗用、Theme.qml 沒有的值：視窗底色和鏡頭預覽框（設計稿 StaffRecorder）
 RECORD_WINDOW = {
-    "windowBg": "#F0F0F0",
-    "previewBg": "#D3D3D3",
-    "previewBorder": "#B0B0B0",
+    "windowBg": "#0B0C0E",
+    "previewBg": "#111316",
+    "previewBorder": "#2C3036",
 }

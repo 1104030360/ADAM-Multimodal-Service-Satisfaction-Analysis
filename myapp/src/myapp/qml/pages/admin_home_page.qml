@@ -21,7 +21,7 @@ Page {
     property int currentTab: 0
 
     readonly property color staffColor: Theme.textPrimary       // 趨勢圖的兩條線；勾選框旁邊的色塊就是圖例
-    readonly property color customerColor: Theme.infoOnLight
+    readonly property color customerColor: Theme.infoOnDark
     property var trendLines: []                                  // 目前畫在圖上的線段（ChartView.createSeries）
 
     // active 持續超過 interval 才成立（DS-25：300 ms 內什麼都不顯示，免得閃一下；超過 2 s 才加上文字）
@@ -86,8 +86,8 @@ Page {
                                        : modelData === "text" ? qsTr("Text")
                                        : modelData === "audio" ? qsTr("Audio") : qsTr("Facial")
         readonly property string grade: score >= 85 ? qsTr("good") : score >= 70 ? qsTr("fair") : qsTr("needs improvement")
-        readonly property color arcColor: score >= 85 ? Theme.successOnLight
-                                        : score >= 70 ? Theme.warningOnLight : Theme.errorOnLight
+        readonly property color arcColor: score >= 85 ? Theme.successOnDark
+                                        : score >= 70 ? Theme.warningOnDark : Theme.errorOnDark
 
         implicitWidth: canvas.width
         implicitHeight: canvas.height + 10 + caption.implicitHeight
@@ -287,8 +287,8 @@ Page {
         Layout.fillWidth: true
         Layout.fillHeight: true
         radius: Theme.radiusM
-        color: Theme.surfaceAlt
-        border.color: Theme.divider
+        color: Theme.card
+        border.color: Theme.cardBorder
         border.width: 1
         Accessible.role: Accessible.List
         Accessible.name: title
@@ -618,6 +618,9 @@ Page {
                     anchors.fill: parent
                     antialiasing: true
                     legend.visible: false
+                    // 深色介面（U0）：圖表透明，刻度、格線改成淺色；不換 ChartView 的 theme（會蓋掉線的顏色）
+                    backgroundColor: "transparent"
+                    plotAreaColor: "transparent"
                     // 圖表讀不出來給輔助技術：名稱寫哪一個月，說明寫每條線有幾天的資料
                     Accessible.role: Accessible.Chart
                     Accessible.name: qsTr("Daily average scores, %1 %2")
@@ -639,6 +642,10 @@ Page {
                         tickCount: trendDataManager.daysInMonth
                         labelFormat: "%.0f"
                         titleText: qsTr("Day")
+                        titleBrush: Theme.textSecondary
+                        labelsColor: Theme.textSecondary
+                        gridLineColor: Theme.cardBorder
+                        color: Theme.tileBorder
                     }
 
                     ValueAxis {
@@ -648,6 +655,10 @@ Page {
                         tickCount: 11
                         labelFormat: "%.0f"
                         titleText: qsTr("Score")
+                        titleBrush: Theme.textSecondary
+                        labelsColor: Theme.textSecondary
+                        gridLineColor: Theme.cardBorder
+                        color: Theme.tileBorder
                     }
 
                     // 每一天的點；連續的日子之間的線由 redrawTrends() 另外建立

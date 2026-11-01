@@ -155,7 +155,7 @@ Item {
 
         background: Rectangle {
             radius: Theme.radiusS
-            color: back.down ? Theme.surfaceMuted : back.hovered ? Theme.surfaceAlt : Theme.actionSecondaryBg
+            color: back.down ? Theme.tile : back.hovered ? Theme.card : Theme.actionSecondaryBg
             border.color: Theme.actionSecondaryBorder
             border.width: 1
 
@@ -165,7 +165,7 @@ Item {
                 anchors.margins: -4
                 radius: parent.radius + 4
                 color: "transparent"
-                border.color: Theme.focusOnLight
+                border.color: Theme.focusOnDark
                 border.width: 2
             }
         }
@@ -200,7 +200,7 @@ Item {
                 anchors.margins: 2
                 radius: Theme.radiusS
                 color: "transparent"
-                border.color: Theme.focusOnLight
+                border.color: Theme.focusOnDark
                 border.width: 2
             }
         }
@@ -243,7 +243,7 @@ Item {
                 anchors.margins: -4
                 radius: width / 2
                 color: "transparent"
-                border.color: Theme.focusOnLight
+                border.color: Theme.focusOnDark
                 border.width: 2
             }
         }
@@ -278,9 +278,9 @@ Item {
             height: Math.max(300, videoError.visible ? videoError.implicitHeight + 2 * Theme.spaceM : 0)
             radius: Theme.radiusS
             color: box.slotState === "ready" ? Theme.chromeField
-                 : box.slotState === "error" ? Theme.contentBg : Theme.surfaceMuted
+                 : box.slotState === "error" ? Theme.contentBg : Theme.tile
             border.width: box.slotState === "error" ? 1 : 0
-            border.color: Theme.divider
+            border.color: Theme.cardBorder
             clip: true
 
             VideoOutput {
@@ -413,7 +413,7 @@ Item {
                     anchors.bottom: parent.bottom
                     width: parent.width
                     height: 1
-                    color: Theme.divider
+                    color: Theme.cardBorder
                 }
             }
 
@@ -476,9 +476,9 @@ Item {
                             width: 2 * 500 + Theme.spaceL
                             height: audioError.visible ? audioError.implicitHeight + 2 * Theme.spaceM : 56
                             radius: Theme.radiusS
-                            color: slotState === "error" ? Theme.contentBg : Theme.surfaceMuted
+                            color: slotState === "error" ? Theme.contentBg : Theme.tile
                             border.width: slotState === "error" ? 1 : 0
-                            border.color: Theme.divider
+                            border.color: Theme.cardBorder
                             Accessible.role: Accessible.Grouping
                             Accessible.name: qsTr("Audio")
 
@@ -496,7 +496,7 @@ Item {
                                     width: Theme.iconM
                                     height: Theme.iconM
                                     sourceSize: Qt.size(Theme.iconM, Theme.iconM)
-                                    source: "../components/icons/circle-check_successOnLight.svg"
+                                    source: "../components/icons/circle-check_successOnDark.svg"
                                     Accessible.ignored: true
                                 }
                                 PathIcon {
@@ -721,7 +721,7 @@ Item {
                                 spacing: 12
 
                                 PathIcon {
-                                    color: Theme.warningOnLight
+                                    color: Theme.warningOnDark
                                     path: detail.iconTriangleAlert
                                 }
                                 ColumnLayout {
@@ -778,9 +778,9 @@ Item {
                             Layout.fillHeight: true
                             radius: Theme.radiusS
                             color: chartsPage.readyCount > 0 ? Theme.contentBg
-                                 : chartsPage.chartsState === "error" ? Theme.contentBg : Theme.surfaceMuted
+                                 : chartsPage.chartsState === "error" ? Theme.contentBg : Theme.tile
                             border.width: chartsPage.chartsState === "error" ? 1 : 0
-                            border.color: Theme.divider
+                            border.color: Theme.cardBorder
                             clip: true
 
                             Image {

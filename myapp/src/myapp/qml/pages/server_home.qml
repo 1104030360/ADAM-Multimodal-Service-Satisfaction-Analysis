@@ -51,6 +51,13 @@ Window {
         return mainContentLoader.item
     }
 
+    // 打開一筆服務的明細：Services 的 Details、分析頁的 View、首頁的長條、搜尋都走這裡。
+    // 先換頁（同步，回傳明細頁），檔案在背景查詢、下載（UX-22、ENG-04）
+    function openServiceDetail(serviceId, startTime) {
+        serverHome.load_service_media(serviceId, startTime || "")
+        return showPageNow("server_service_detail_page.qml")
+    }
+
     // ⌘1～⌘6：和按側邊欄的按鈕一樣，焦點也移到那個按鈕上（DS-29：換頁後焦點在側邊欄）
     function activateNav(button) {
         button.forceActiveFocus(Qt.ShortcutFocusReason)
@@ -71,50 +78,43 @@ Window {
         return ""
     }
 
+    // 頁首在標題下面的一句說明：這一頁做什麼（PLAN 6-1）。首頁是字標，沒有說明
+    function pageSubtitle(file) {
+        switch (file) {
+        case "record_widget.qml": return qsTr("Choose the two cameras and the microphone, then open the recorder.")
+        case "analysis.qml": return qsTr("Send recorded services for analysis and see the results.")
+        case "server_service_page.qml": return qsTr("Find a past service and open its videos and charts.")
+        case "server_reports_page.qml": return qsTr("Choose a report to read it here.")
+        case "server_setting_button.qml": return qsTr("Changes apply right away and are kept for next time.")
+        }
+        return ""
+    }
+
+    // ── 側邊欄（PLAN 第 4 節）：寬 96，圖示在上、字在下；名字和頭像移到頁首，Quit 在最下面
     Rectangle {
         id: sidebar
-        width: 288
+        width: Theme.railWidth
         height: parent.height
-        color: Theme.sidebarBg
+        color: Theme.railBg
 
-        // 側邊欄的按鈕是真的 Button（SidebarButton）：Tab 照這個順序停，Space、Return 按下（UX-41、DS-32）。
-        // 左右各留 spaceS，鍵盤焦點框（往外 4 px）才不會被視窗邊緣或內容區切掉
+        Rectangle {     // 右邊的線
+            anchors.right: parent.right
+            width: 1
+            height: parent.height
+            color: Theme.railBorder
+        }
+
+        // 側邊欄的按鈕是真的 Button（SidebarButton）：Tab 照這個順序停，Space、Return 按下（UX-41、DS-32）
         Column {
             id: sidebarContent
-            anchors.fill: parent
-            anchors.topMargin: Theme.space4XL
-            anchors.leftMargin: Theme.spaceS
-            anchors.rightMargin: Theme.spaceS
-            spacing: Theme.spaceL
-
-            Image {
-                id: avatar
-                source: "../../images/icons/user.png"
-                width: 100
-                height: 100
-                anchors.horizontalCenter: parent.horizontalCenter
-                fillMode: Image.PreserveAspectFit
-                Accessible.ignored: true
-            }
-
-            Text {
-                id: username
-                text: serverHome ? serverHome.accountName : ""  // 在 db lane 載入，到了就更新
-                // 名字還沒載入時也先留一行，下面的按鈕不會跳（Column 會跳過寬或高是 0 的項目，所以寬度也要固定）
-                width: parent.width
-                height: 30
-                elide: Text.ElideRight
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-                color: Theme.textOnDark
-                font.pixelSize: Theme.fontHeadline
-                font.bold: true
-            }
+            anchors.top: parent.top
+            anchors.topMargin: Theme.spaceL
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: 6
 
             SidebarButton {
                 id: homeButton
                 objectName: "homeButton"
-                width: parent.width
                 text: qsTr("Home")
                 iconName: "house"
                 current: window.currentPage === "server_home_button.qml"
@@ -127,7 +127,6 @@ Window {
             SidebarButton {
                 id: recordButton
                 objectName: "recordButton"
-                width: parent.width
                 text: qsTr("Record")
                 iconName: "video"
                 current: window.currentPage === "record_widget.qml"
@@ -137,7 +136,6 @@ Window {
             SidebarButton {
                 id: analysisButton
                 objectName: "analysisButton"
-                width: parent.width
                 text: qsTr("Analysis")
                 iconName: "brain-circuit"
                 current: window.currentPage === "analysis.qml"
@@ -150,7 +148,6 @@ Window {
             SidebarButton {
                 id: servicesButton
                 objectName: "servicesButton"
-                width: parent.width
                 text: qsTr("Services")
                 iconName: "history"
                 current: window.currentPage === "server_service_page.qml"
@@ -161,7 +158,6 @@ Window {
             SidebarButton {
                 id: reportsButton
                 objectName: "reportsButton"
-                width: parent.width
                 text: qsTr("Reports")
                 iconName: "file-chart-column"
                 current: window.currentPage === "server_reports_page.qml"
@@ -171,83 +167,84 @@ Window {
             SidebarButton {
                 id: settingsButton
                 objectName: "settingsButton"
-                width: parent.width
                 text: qsTr("Settings")
                 iconName: "settings"
                 current: window.currentPage === "server_setting_button.qml"
                 onClicked: window.showPage("server_setting_button.qml")
             }
+        }
 
-            // Quit：結束前先問（UX-29、DS-28）。錄影中先停止並存檔（UX-09）；還有錄影在收尾、上傳或寫資料庫時
-            // 跳確認，預設是 Keep Uploading；沒有就直接結束（和以前一樣）。視窗的 onClosing、⌘Q（quitRequested）也走這裡
-            SidebarButton {
-                id: exitButton
-                objectName: "exitButton"
-                width: parent.width
-                text: qsTr("Quit")
-                iconName: "log-out"
+        // Quit：結束前先問（UX-29、DS-28）。錄影中先停止並存檔（UX-09）；還有錄影在收尾、上傳或寫資料庫時
+        // 跳確認，預設是 Keep Uploading；沒有就直接結束（和以前一樣）。視窗的 onClosing、⌘Q（quitRequested）也走這裡
+        SidebarButton {
+            id: exitButton
+            objectName: "exitButton"
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: Theme.spaceL
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: qsTr("Quit")
+            iconName: "log-out"
 
-                readonly property var finder: typeof deviceFinder !== "undefined" ? deviceFinder : null
-                property bool quitting: false
+            readonly property var finder: typeof deviceFinder !== "undefined" ? deviceFinder : null
+            property bool quitting: false
 
-                onClicked: exitButton.requestQuit()
+            onClicked: exitButton.requestQuit()
 
-                // 回傳 true 表示可以結束（onClosing 用）
-                function requestQuit() {
-                    if (quitting)
-                        return true
-                    if (finder)
-                        finder.stopRecording()
-                    if (finder && finder.uploadCount > 0) {
-                        window.raise()      // 在錄影視窗按 ⌘Q 時，對話框在主視窗上
-                        window.requestActivate()
-                        if (!quitDialog.opened)
-                            quitDialog.open()
-                        return false
-                    }
-                    quitNow()
+            // 回傳 true 表示可以結束（onClosing 用）
+            function requestQuit() {
+                if (quitting)
                     return true
+                if (finder)
+                    finder.stopRecording()
+                if (finder && finder.uploadCount > 0) {
+                    window.raise()      // 在錄影視窗按 ⌘Q 時，對話框在主視窗上
+                    window.requestActivate()
+                    if (!quitDialog.opened)
+                        quitDialog.open()
+                    return false
                 }
+                quitNow()
+                return true
+            }
 
-                function quitNow() {
-                    quitting = true
-                    if (finder)
-                        finder.allowQuit()  // 接下來的 QEvent.Quit 不再攔
-                    serverHome.clearDir()
-                    Qt.quit() // 退出應用程式
-                }
+            function quitNow() {
+                quitting = true
+                if (finder)
+                    finder.allowQuit()  // 接下來的 QEvent.Quit 不再攔
+                serverHome.clearDir()
+                Qt.quit() // 退出應用程式
+            }
 
-                Connections {
-                    target: exitButton.finder
-                    function onQuitRequested() { exitButton.requestQuit() }
-                    function onUploadsChanged() {
-                        // 問的時候都存好（或失敗）了：沒有東西會丟，不必再問；要結束再按一次
-                        if (quitDialog.opened && exitButton.finder.uploadCount === 0)
-                            quitDialog.close()
-                    }
+            Connections {
+                target: exitButton.finder
+                function onQuitRequested() { exitButton.requestQuit() }
+                function onUploadsChanged() {
+                    // 問的時候都存好（或失敗）了：沒有東西會丟，不必再問；要結束再按一次
+                    if (quitDialog.opened && exitButton.finder.uploadCount === 0)
+                        quitDialog.close()
                 }
+            }
 
-                ConfirmDialog {
-                    id: quitDialog
-                    objectName: "quitDialog"
-                    readonly property var finder: exitButton.finder
-                    readonly property int count: finder ? finder.uploadCount : 0
-                    readonly property real total: finder ? finder.uploadTotal : 0
-                    // 「 (58.6 / 124.0 MB)」；還不知道大小（檔案還在寫）時不寫
-                    readonly property string amount: total > 0
-                        ? qsTr(" (%1 / %2 MB)").arg((Math.min(finder.uploadDone, total) / 1e6).toFixed(1))
-                                               .arg((total / 1e6).toFixed(1))
-                        : ""
-                    title: qsTr("Quit while uploading?")
-                    body: count > 1
-                        ? qsTr("%1 services are still uploading%2. If you quit now, they won't be saved.")
-                              .arg(count).arg(amount)
-                        : qsTr("%1 is still uploading%2. If you quit now, this service won't be saved.")
-                              .arg(finder ? finder.uploadServiceId : "").arg(amount)
-                    confirmText: qsTr("Quit Anyway")
-                    cancelText: qsTr("Keep Uploading")
-                    onConfirmed: exitButton.quitNow()
-                }
+            ConfirmDialog {
+                id: quitDialog
+                objectName: "quitDialog"
+                readonly property var finder: exitButton.finder
+                readonly property int count: finder ? finder.uploadCount : 0
+                readonly property real total: finder ? finder.uploadTotal : 0
+                // 「 (58.6 / 124.0 MB)」；還不知道大小（檔案還在寫）時不寫
+                readonly property string amount: total > 0
+                    ? qsTr(" (%1 / %2 MB)").arg((Math.min(finder.uploadDone, total) / 1e6).toFixed(1))
+                                           .arg((total / 1e6).toFixed(1))
+                    : ""
+                title: qsTr("Quit while uploading?")
+                body: count > 1
+                    ? qsTr("%1 services are still uploading%2. If you quit now, they won't be saved.")
+                          .arg(count).arg(amount)
+                    : qsTr("%1 is still uploading%2. If you quit now, this service won't be saved.")
+                          .arg(finder ? finder.uploadServiceId : "").arg(amount)
+                confirmText: qsTr("Quit Anyway")
+                cancelText: qsTr("Keep Uploading")
+                onConfirmed: exitButton.quitNow()
             }
         }
 
@@ -264,13 +261,50 @@ Window {
     // 第一頁和外殼一起同步建好：launch() 回傳時首頁已經在，視窗一出現就有內容（T18、T19 的測試靠這點）。
     // 之後側邊欄的換頁才在背景載入（showPage 把 asynchronous 打開，載完就關掉）。Loader 是 focus scope，
     // 新頁面裡設了 focus 的項目不會把焦點從側邊欄搶走（DS-29）
-    Loader {
-        id: mainContentLoader
-        objectName: "mainContentLoader"
+    // ── 內容區（PLAN 第 4 節、6-1）：頁首和頁面在同一欄，最寬 1360，螢幕更寬時置中。頁面自己處理捲動
+    Item {
+        id: contentArea
         anchors.left: sidebar.right
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.bottom: parent.bottom
+        anchors.leftMargin: Theme.pagePaddingH
+        anchors.rightMargin: Theme.pagePaddingH
+        anchors.topMargin: Theme.pagePaddingTop
+        anchors.bottomMargin: Theme.pagePaddingBottom
+    }
+
+    // 頁面可以自己給頁首的內容（明細頁的服務 ID、‹ Services）：頁面有 headerTitle 之類的屬性就用頁面的
+    function pageValue(name, fallback) {
+        const page = mainContentLoader.item
+        return page && page[name] !== undefined ? page[name] : fallback
+    }
+
+    PageHeader {
+        id: header
+        objectName: "pageHeader"
+        x: contentArea.x + (contentArea.width - width) / 2
+        y: contentArea.y
+        width: Math.min(Theme.contentMaxWidth, contentArea.width)
+        wordmark: window.currentPage === "server_home_button.qml"
+        title: window.pageValue("headerTitle", window.pageName(window.currentPage))
+        subtitle: window.pageValue("headerSubtitle", window.pageSubtitle(window.currentPage))
+        backText: window.pageValue("headerBackText", "")
+        onBack: mainContentLoader.item.goBack()
+        actionText: wordmark ? qsTr("New Recording") : ""    // 首頁唯一的主要動作（PLAN 5-1、UD12）
+        actionIcon: "../components/icons/video_actionPrimaryText.svg"
+        onActionClicked: window.activateNav(recordButton)
+        userName: serverHome ? serverHome.accountName : ""  // 在 db lane 載入，到了就更新
+        userRole: qsTr("Staff")
+    }
+
+    Loader {
+        id: mainContentLoader
+        objectName: "mainContentLoader"
+        x: header.x
+        y: header.y + header.height + Theme.sectionGap
+        width: header.width
+        height: contentArea.y + contentArea.height - y
         source: "server_home_button.qml" // 初始顯示的內容
 
         onSourceChanged: window.currentPage = window.fileName(source)

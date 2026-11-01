@@ -202,16 +202,16 @@ def test_shortcuts_wait_while_a_modal_dialog_is_open(engine, services, qml_warni
 def test_current_page_is_light_and_moves_the_moment_a_page_is_requested(engine, services, qml_warnings):
     ui = launch(STAFF, engine, services)
     home, record, reports = (child(ui.window, name) for name in ("homeButton", "recordButton", "reportsButton"))
-    # 目前頁面：#E6E8EB 底、#0E1013 字和圖示（DS-32）
+    # 目前頁面：圖示方塊是 #E6E8EB 底、#0E1013 的圖示，下面的字是亮的（DS-32、new-UIUX PLAN 第 4 節）
     assert child(home, "currentBackground").isVisible()
     assert qml(child(home, "currentBackground"), "color") == theme(ui.window, "navItemCurrent")
-    assert child(home, "navLabel").property("color") == theme(ui.window, "navItemCurrentText")
+    assert child(home, "navLabel").property("color") == theme(ui.window, "textPrimary")
     assert child(home, "navIcon").property("source").toString().endswith("icons/nav/house_navItemCurrentText.svg")
-    # 其他按鈕：#444444 底、白字、亮色圖示
+    # 其他按鈕：深色的方塊、中性灰的圖示、比較淡的字
     assert not child(record, "currentBackground").isVisible()
     assert child(record, "navBackground").property("color") == theme(ui.window, "navItem")
-    assert child(record, "navLabel").property("color") == theme(ui.window, "textOnDark")
-    assert child(record, "navIcon").property("source").toString().endswith("icons/nav/video_chromeIcon.svg")
+    assert child(record, "navLabel").property("color") == theme(ui.window, "textFaint")
+    assert child(record, "navIcon").property("source").toString().endswith("icons/nav/video_iconNeutral.svg")
 
     old_page = qml(ui.window, "mainContentLoader.item")
     qml(reports, "click()")
@@ -314,8 +314,8 @@ def test_view_results_reaches_the_row_even_while_a_sidebar_page_is_loading(engin
 def test_nav_icons_are_precoloured_lucide_svgs_and_every_button_draws_one(engine, services, qml_warnings):
     ui = launch(STAFF, engine, services)
     page_icons = {icon for side in (STAFF, ADMIN) for *_, icon in side.pages}
-    expected = {f"{icon}_{token}.svg" for icon in page_icons for token in ("chromeIcon", "navItemCurrentText")}
-    assert {path.name for path in NAV_ICONS.iterdir()} == expected | {"log-out_chromeIcon.svg"}  # Quit 不會是目前頁面
+    expected = {f"{icon}_{token}.svg" for icon in page_icons for token in ("iconNeutral", "navItemCurrentText")}
+    assert {path.name for path in NAV_ICONS.iterdir()} == expected | {"log-out_iconNeutral.svg"}  # Quit 不會是目前頁面
     for path in NAV_ICONS.iterdir():
         svg = path.read_text(encoding="utf-8")
         assert svg.startswith("<!-- @license lucide-static v1.58.0 - ISC -->"), path.name

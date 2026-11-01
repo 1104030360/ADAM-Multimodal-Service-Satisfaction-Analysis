@@ -53,7 +53,7 @@ Button {
             anchors.margins: -4
             radius: parent.radius + 4
             color: "transparent"
-            border.color: Theme.focusOnLight
+            border.color: Theme.focusOnDark
             border.width: 2
         }
     }

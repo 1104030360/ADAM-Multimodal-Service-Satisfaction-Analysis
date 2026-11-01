@@ -32,9 +32,9 @@ Dialog {
     onRejected: cancelled()     // Esc 也會走到這裡
 
     background: Rectangle {
-        color: Theme.contentBg
-        radius: Theme.radiusM
-        border.color: Theme.divider
+        color: Theme.card
+        radius: Theme.radiusCard
+        border.color: Theme.cardBorder
         border.width: 1
     }
 

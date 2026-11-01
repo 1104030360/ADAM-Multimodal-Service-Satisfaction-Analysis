@@ -56,7 +56,7 @@ def test_login_opens_home_for_account_level(engine, login_form, username, passwo
     login_window, home = engine.rootObjects()
     assert not login_window.isVisible()
     assert home.title() == title
-    wait_until(lambda: qml(home, "username.text") == name)  # 側邊欄顯示登入者的名字
+    wait_until(lambda: qml(home, "header.userName") == name)  # 頁首顯示登入者的名字（new-UIUX PLAN 第 4 節）
 
 
 def test_a_replaced_login_form_ignores_login_results(engine, login_form):

@@ -188,8 +188,8 @@ Item {
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: Theme.controlHeight
-            color: Theme.surfaceMuted
-            border.color: Theme.divider
+            color: Theme.tile
+            border.color: Theme.cardBorder
             border.width: 1
             radius: Theme.radiusS
 
@@ -243,8 +243,8 @@ Item {
                     width: ListView.view ? ListView.view.width : 0 // 收尾時 delegate 先離開 ListView，view 會是 null
                     height: 60
                     radius: Theme.radiusS
-                    color: index % 2 === 0 ? Theme.contentBg : Theme.surfaceAlt
-                    border.color: Theme.divider
+                    color: index % 2 === 0 ? Theme.contentBg : Theme.card
+                    border.color: Theme.cardBorder
                     border.width: 1
                     Accessible.role: Accessible.Row
                     Accessible.name: [service_id, name, start_datetime].join(", ")

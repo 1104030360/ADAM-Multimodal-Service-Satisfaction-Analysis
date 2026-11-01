@@ -92,8 +92,8 @@ Page {
                     if (!ring.hasScore || ring.score <= 0)
                         return
                     // 弧線用語意色：良好 ≥85、普通 ≥70、待加強（DS-13、DS-33）
-                    const color = ring.score >= 85 ? Theme.successOnLight
-                                : ring.score >= 70 ? Theme.warningOnLight : Theme.errorOnLight
+                    const color = ring.score >= 85 ? Theme.successOnDark
+                                : ring.score >= 70 ? Theme.warningOnDark : Theme.errorOnDark
                     const start = -Math.PI / 2
                     ctx.strokeStyle = color.toString()
                     ctx.beginPath()

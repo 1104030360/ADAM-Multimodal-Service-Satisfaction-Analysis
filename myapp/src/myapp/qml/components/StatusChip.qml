@@ -17,9 +17,9 @@ Rectangle {
                                   : status === 3 ? qsTr("Completed")
                                   : status === 2 ? qsTr("Analyzing")
                                   : qsTr("Not Analyzed")
-    readonly property color textColor: showsFailure ? Theme.errorOnLight
-                                     : status === 3 ? Theme.successOnLight
-                                     : status === 2 ? Theme.infoOnLight
+    readonly property color textColor: showsFailure ? Theme.errorOnDark
+                                     : status === 3 ? Theme.successOnDark
+                                     : status === 2 ? Theme.infoOnDark
                                      : Theme.textPrimary
 
     implicitWidth: content.implicitWidth + 2 * Theme.spaceS
@@ -28,7 +28,7 @@ Rectangle {
     color: showsFailure ? Theme.errorTint
          : status === 3 ? Theme.successTint
          : status === 2 ? Theme.infoTint
-         : Theme.surfaceMuted
+         : Theme.tile
 
     Accessible.ignored: true
 
@@ -43,9 +43,9 @@ Rectangle {
             width: 14
             height: 14
             sourceSize: Qt.size(14, 14)
-            source: root.showsFailure ? "icons/circle-x_errorOnLight.svg"
-                  : root.status === 3 ? "icons/circle-check_successOnLight.svg"
-                  : root.status === 2 ? "icons/clock_infoOnLight.svg"
+            source: root.showsFailure ? "icons/circle-x_errorOnDark.svg"
+                  : root.status === 3 ? "icons/circle-check_successOnDark.svg"
+                  : root.status === 2 ? "icons/clock_infoOnDark.svg"
                   : "icons/circle-dashed_textPrimary.svg"
         }
 

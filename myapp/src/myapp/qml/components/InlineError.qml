@@ -42,7 +42,7 @@ Item {
             width: Theme.iconM
             height: Theme.iconM
             sourceSize: Qt.size(Theme.iconM, Theme.iconM)
-            source: "icons/circle-alert_errorOnLight.svg"
+            source: "icons/circle-alert_errorOnDark.svg"
             Accessible.ignored: true
         }
 
@@ -128,7 +128,7 @@ Item {
                             anchors.margins: -2
                             radius: Theme.radiusS + 2
                             color: "transparent"
-                            border.color: Theme.focusOnLight
+                            border.color: Theme.focusOnDark
                             border.width: 2
                         }
                     }

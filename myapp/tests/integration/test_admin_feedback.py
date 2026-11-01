@@ -72,7 +72,24 @@ def child(item, name):
     return found
 
 
+def scroll_into_view(item):
+    """item 在可以捲動的區域（Flickable）裡、沒有整個露出來時，先捲到它在中間（新版介面的內容區比較矮）。"""
+    flickable = item.parentItem()
+    while flickable is not None and not flickable.inherits("QQuickFlickable"):
+        flickable = flickable.parentItem()
+    if flickable is None:
+        return
+    top = item.mapToItem(flickable, QPointF(0, 0)).y()  # 相對於看得到的範圍
+    if 0 <= top and top + item.height() <= flickable.height():
+        return
+    lowest = flickable.property("originY")
+    highest = lowest + max(0.0, flickable.property("contentHeight") - flickable.height())
+    wanted = flickable.property("contentY") + top - (flickable.height() - item.height()) / 2
+    flickable.setProperty("contentY", min(highest, max(lowest, wanted)))
+
+
 def click(window, item):
+    scroll_into_view(item)
     center = item.mapToScene(QPointF(item.width() / 2, item.height() / 2)).toPoint()
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, center)
 
@@ -185,12 +202,12 @@ def test_launch_shows_the_shell_first_and_loads_in_the_background(db, db_proxy, 
         window = engine.rootObjects()[-1]
         page = qml(window, "mainContentLoader.item")
         assert page is not None  # 外殼和首頁已經建好了
-        assert qml(window, "username.text") == ""  # 名字還在載入
+        assert qml(window, "header.userName") == ""  # 名字還在載入
         assert {child(ring, "scoreText").property("text") for ring in rings(page)} == {"—"}  # 還沒載入：「—」，不是 0
         assert db_proxy.snapshot()["rt"] == 0  # db lane 被擋著，這段期間的往返只可能來自 GUI 執行緒
     wait_until(lambda: settled(home))
     assert db_proxy.snapshot()["rt"] == 4  # 名字和等級、分數、排名、趨勢各 1 個往返（預算 ≤ 5）
-    assert qml(window, "username.text") == "系統管理員（佔位）"
+    assert qml(window, "header.userName") == "系統管理員（佔位）"
 
 
 # ---------------------------------------------------------------- 新增帳號（UX-33、UX-34、DS-52）
@@ -408,7 +425,7 @@ def test_ranking_boxes_are_neutral_and_trend_controls_have_names(admin, db):
     for name, title in (("topCustomers", "Top 5 Customers"), ("bottomCustomers", "Bottom 5 Customers"),
                         ("topStaff", "Top 5 Staff"), ("bottomStaff", "Bottom 5 Staff")):
         box = child(page, name)
-        assert qml(box, "Qt.colorEqual(color, Theme.surfaceAlt) && Qt.colorEqual(border.color, Theme.divider)"), name
+        assert qml(box, "Qt.colorEqual(color, Theme.card) && Qt.colorEqual(border.color, Theme.cardBorder)"), name
         assert qml(box, "Accessible.role === Accessible.List") and qml(box, "Accessible.name") == title
 
     qml(page, "root.currentTab = 3")
@@ -509,7 +526,7 @@ def test_search_shows_date_errors_empty_results_and_rows(admin, db):
     assert manager.state == "idle"  # 日期不對：沒有送出
     # 和服務人員端同一個日期欄（DateField.qml）：框線變紅，錯誤寫進給輔助技術的說明（DS-27）
     start, end = child(page, "startDateField"), child(page, "endDateField")
-    assert qml(start, "invalid && Qt.colorEqual(background.border.color, Theme.errorOnLight)")
+    assert qml(start, "invalid && Qt.colorEqual(background.border.color, Theme.errorOnDark)")
     assert qml(start, "Accessible.name") == "Start date"
     assert qml(start, "Accessible.description") == "Enter the date as YYYY-MM-DD, for example 2026-10-31."
     assert not qml(end, "invalid") and qml(end, "Accessible.description") == ""

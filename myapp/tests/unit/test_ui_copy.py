@@ -211,7 +211,7 @@ def test_record_widget_colours_come_from_theme_py():
     allowed = set(theme.TOKENS.values()) | set(theme.RECORD_WINDOW.values())
     assert {name: value for name, value in record_widget.COLORS.items() if value not in allowed} == {}
     # 主要按鈕是石墨灰（白字 12.63:1），不是 Material Green（2.78:1）
-    assert record_widget.COLORS["primary"] == theme.TOKENS["actionPrimary"] == "#333333"
+    assert record_widget.COLORS["primary"] == theme.TOKENS["actionPrimary"] == "#E6E8EB"  # 淺色膠囊（UD3）
     style = record_widget._button_style(primary=True)
     assert "#4CAF50" not in style.upper() and theme.TOKENS["actionPrimary"] in style
 

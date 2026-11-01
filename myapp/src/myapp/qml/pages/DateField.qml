@@ -30,6 +30,6 @@ TextField {
         radius: height / 2
         color: Theme.contentBg
         border.width: field.activeFocus || field.invalid ? 2 : 1
-        border.color: field.invalid ? Theme.errorOnLight : field.activeFocus ? Theme.focusOnLight : Theme.textSecondary
+        border.color: field.invalid ? Theme.errorOnDark : field.activeFocus ? Theme.focusOnDark : Theme.textSecondary
     }
 }

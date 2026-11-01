@@ -25,7 +25,7 @@ Item {
         width: 14
         height: 14
         sourceSize: Qt.size(14, 14)
-        source: "icons/circle-alert_errorOnLight.svg"
+        source: "icons/circle-alert_errorOnDark.svg"
         Accessible.ignored: true
     }
 
@@ -35,7 +35,7 @@ Item {
         x: 14 + 6
         width: Math.max(0, root.width - x)
         text: root.text
-        color: Theme.errorOnLight
+        color: Theme.errorOnDark
         font.pixelSize: Theme.fontCaption
         lineHeight: root.lineHeight
         lineHeightMode: Text.FixedHeight

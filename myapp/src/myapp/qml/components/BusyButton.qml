@@ -13,14 +13,16 @@ Button {
 
     property bool busy: false
     property string busyText: ""            // 進行式，以「…」結尾，例如 "Sending…"
-    property string variant: "secondary"    // primary、secondary、danger、chrome（深色背景上的亮色按鈕，例如登入）
-    property bool large: false              // 頁面主要按鈕：高 50、圓角 10、字 18
+    property string variant: "secondary"    // primary（淺色膠囊）、secondary、danger、chrome（登入頁的亮色按鈕）
+    property bool large: false              // 頁面主要按鈕：高 50、字 18
+    property url iconSource: ""             // 字前面的圖示（預先上色的 SVG，例如首頁的 New Recording）；忙碌時換成旋轉圖示
     property int busyDelay: Theme.busyDelay         // 測試可以改短
     property int busyMinShow: Theme.busyMinShow
 
     readonly property bool busyShown: internal.shown   // 外觀已經換成忙碌
 
-    // 各種狀態的顏色（DS-12、DS-24）：按下、等待中（busy 但還沒顯示）用同一個底色
+    // 各種狀態的顏色（DS-12、DS-24）：按下、等待中（busy 但還沒顯示）用同一個底色。
+    // 深色介面（new-UIUX PLAN 第 3 節）：主要按鈕是淺色膠囊配深色字，次要按鈕是深色底加框線
     readonly property var colors: {
         if (!enabled)
             return { bg: Theme.actionDisabledBg, border: Theme.actionDisabledBg, text: Theme.actionDisabledText,
@@ -29,21 +31,21 @@ Button {
         switch (variant) {
         case "primary":
             return { bg: pressed ? Theme.actionPrimaryPressed : hovered ? Theme.actionPrimaryHover : Theme.actionPrimary,
-                     border: "transparent", text: Theme.textOnDark, spinner: "icons/loader-circle_textOnDark.svg" }
+                     border: "transparent", text: Theme.actionPrimaryText, spinner: "icons/loader-circle_actionPrimaryText.svg" }
         case "chrome":
             return { bg: pressed ? Theme.chromeButtonPressed : hovered ? Theme.chromeButtonHover : Theme.chromeIcon,
                      border: "transparent", text: Theme.chromeOnLight, spinner: "icons/loader-circle_chromeOnLight.svg" }
         case "danger":
             if (internal.shown)
-                return { bg: Theme.surfaceMuted, border: Theme.divider, text: Theme.textSecondary,
+                return { bg: Theme.tile, border: Theme.cardBorder, text: Theme.textSecondary,
                          spinner: "icons/loader-circle_textSecondary.svg" }
             return { bg: pressed || hovered ? Theme.errorTint : Theme.actionSecondaryBg,
-                     border: Theme.actionDanger, text: Theme.actionDanger, spinner: "icons/loader-circle_textSecondary.svg" }
+                     border: Theme.errorOnDark, text: Theme.errorOnDark, spinner: "icons/loader-circle_textSecondary.svg" }
         default:    // secondary
             if (internal.shown)
-                return { bg: Theme.surfaceMuted, border: Theme.divider, text: Theme.textSecondary,
+                return { bg: Theme.tile, border: Theme.cardBorder, text: Theme.textSecondary,
                          spinner: "icons/loader-circle_textSecondary.svg" }
-            return { bg: pressed ? Theme.surfaceMuted : hovered ? Theme.surfaceAlt : Theme.actionSecondaryBg,
+            return { bg: pressed ? Theme.actionSecondaryPressed : hovered ? Theme.actionSecondaryHover : Theme.actionSecondaryBg,
                      border: Theme.actionSecondaryBorder, text: Theme.actionSecondaryText,
                      spinner: "icons/loader-circle_textSecondary.svg" }
         }
@@ -123,7 +125,9 @@ Button {
     TextMetrics { id: busyMetrics; font: control.font; text: control.busyText !== "" ? control.busyText : control.text }
 
     contentItem: Item {
-        implicitWidth: Math.ceil(Math.max(textMetrics.advanceWidth, Theme.iconS + 8 + busyMetrics.advanceWidth))
+        // 圖示和旋轉圖示一樣大、在同一個位置：換成忙碌時按鈕不變寬
+        readonly property real leading: control.iconSource.toString() !== "" ? Theme.iconS + 8 : 0
+        implicitWidth: Math.ceil(Math.max(leading + textMetrics.advanceWidth, Theme.iconS + 8 + busyMetrics.advanceWidth))
         implicitHeight: label.implicitHeight
 
         Row {
@@ -151,6 +155,17 @@ Button {
                 }
             }
 
+            Image {
+                objectName: "buttonIcon"
+                anchors.verticalCenter: parent.verticalCenter
+                visible: !internal.shown && control.iconSource.toString() !== ""
+                width: Theme.iconS
+                height: Theme.iconS
+                sourceSize: Qt.size(Theme.iconS, Theme.iconS)
+                source: control.iconSource
+                Accessible.ignored: true
+            }
+
             Text {
                 id: label
                 objectName: "busyLabel"
@@ -165,7 +180,7 @@ Button {
     background: Rectangle {
         implicitWidth: 64
         implicitHeight: control.large ? Theme.controlHeightL : Theme.controlHeight
-        radius: control.large ? Theme.radiusM : Theme.radiusS
+        radius: height / 2      // 膠囊（設計稿的按鈕都是高 44、圓角 22）
         color: control.colors.bg
         border.color: control.colors.border
         border.width: control.variant === "secondary" || control.variant === "danger" ? 1 : 0
@@ -182,7 +197,7 @@ Button {
             anchors.margins: -4
             radius: parent.radius + 4
             color: "transparent"
-            border.color: control.variant === "chrome" ? Theme.focusOnDark : Theme.focusOnLight
+            border.color: Theme.focusOnDark
             border.width: 2
         }
     }

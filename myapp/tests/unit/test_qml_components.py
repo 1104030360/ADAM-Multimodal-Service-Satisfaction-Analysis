@@ -520,12 +520,12 @@ def test_toasts_stay_above_and_clickable_over_a_modal_dialog(harness):
 # ── StatusChip ───────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("status, failed, label, background, text, icon", [
-    (1, False, "Not Analyzed", "surfaceMuted", "textPrimary", "circle-dashed_textPrimary.svg"),
-    (2, False, "Analyzing", "infoTint", "infoOnLight", "clock_infoOnLight.svg"),
-    (3, False, "Completed", "successTint", "successOnLight", "circle-check_successOnLight.svg"),
-    (1, True, "Failed", "errorTint", "errorOnLight", "circle-x_errorOnLight.svg"),
-    (2, True, "Analyzing", "infoTint", "infoOnLight", "clock_infoOnLight.svg"),  # 重新送出後跟著資料庫
-    (3, True, "Completed", "successTint", "successOnLight", "circle-check_successOnLight.svg"),
+    (1, False, "Not Analyzed", "tile", "textPrimary", "circle-dashed_textPrimary.svg"),
+    (2, False, "Analyzing", "infoTint", "infoOnDark", "clock_infoOnDark.svg"),
+    (3, False, "Completed", "successTint", "successOnDark", "circle-check_successOnDark.svg"),
+    (1, True, "Failed", "errorTint", "errorOnDark", "circle-x_errorOnDark.svg"),
+    (2, True, "Analyzing", "infoTint", "infoOnDark", "clock_infoOnDark.svg"),  # 重新送出後跟著資料庫
+    (3, True, "Completed", "successTint", "successOnDark", "circle-check_successOnDark.svg"),
 ], ids=["1", "2", "3", "failed", "failed-then-resent", "failed-then-completed"])
 def test_status_chip_label_colors_and_icon(harness, status, failed, label, background, text, icon):
     window = harness.load(f"""
@@ -623,7 +623,7 @@ def test_busy_button_blocks_repeat_clicks_at_once_and_keeps_focus(harness):
     wait_until(lambda: button.property("clicks") == 1)
     assert button.property("busy") and not button.property("busyShown")
     assert find(button, "busyLabel").property("text") == "Analyze"  # 還沒過 busyDelay：字不變
-    assert qml(button, "background.color") == theme(window, "surfaceMuted")  # 只換成按下的底色
+    assert qml(button, "background.color") == theme(window, "actionSecondaryPressed")  # 只換成按下的底色
 
     click(window, button)  # 第二次點擊、Space、Enter 都沒有作用
     button.forceActiveFocus()
@@ -655,8 +655,8 @@ def test_busy_button_shows_busy_text_and_spinner_only_after_the_delay(harness):
     assert button.width() == width  # 寬度取兩種文字中較寬的，換字時不變
     assert qml(button, "Accessible.name") == "Sending…"
     assert qml(button, "Accessible.description") == "Busy"  # DS-24、DS-51 的用詞
-    assert qml(button, "background.color") == theme(window, "surfaceMuted")
-    assert qml(button, "background.border.color") == theme(window, "divider")
+    assert qml(button, "background.color") == theme(window, "tile")
+    assert qml(button, "background.border.color") == theme(window, "cardBorder")
     assert qml(find(button, "busyLabel"), "color") == theme(window, "textSecondary")
 
 
@@ -696,11 +696,11 @@ def test_busy_button_does_not_flash_when_the_work_ends_before_the_delay(harness)
 
 
 @pytest.mark.parametrize("variant, normal, waiting, busy, busy_text, spinner", [
-    ("primary", "actionPrimary", "actionPrimaryPressed", "actionPrimaryPressed", "textOnDark",
-     "loader-circle_textOnDark.svg"),
-    ("secondary", "actionSecondaryBg", "surfaceMuted", "surfaceMuted", "textSecondary",
+    ("primary", "actionPrimary", "actionPrimaryPressed", "actionPrimaryPressed", "actionPrimaryText",
+     "loader-circle_actionPrimaryText.svg"),
+    ("secondary", "actionSecondaryBg", "actionSecondaryPressed", "tile", "textSecondary",
      "loader-circle_textSecondary.svg"),
-    ("danger", "actionSecondaryBg", "errorTint", "surfaceMuted", "textSecondary", "loader-circle_textSecondary.svg"),
+    ("danger", "actionSecondaryBg", "errorTint", "tile", "textSecondary", "loader-circle_textSecondary.svg"),
     ("chrome", "chromeIcon", "chromeButtonPressed", "chromeButtonPressed", "chromeOnLight",
      "loader-circle_chromeOnLight.svg"),
 ])
@@ -723,8 +723,9 @@ def test_busy_button_disabled_and_large_look(harness):
     BusyButton { id: off; objectName: "off"; x: 300; y: 300; variant: "primary"; enabled: false; text: "Add Account" }
 """)
     regular, large, off = find(window, "regular"), find(window, "large"), find(window, "off")
-    assert regular.height() == 40 and qml(regular, "background.radius") == 5 and qml(regular, "font.pixelSize") == 16
-    assert large.height() == 50 and qml(large, "background.radius") == 10 and qml(large, "font.pixelSize") == 18
+    # 新版介面：按鈕都是膠囊（圓角是高的一半），至少 44 高（new-UIUX PLAN 第 2 節）
+    assert regular.height() == 44 and qml(regular, "background.radius") == 22 and qml(regular, "font.pixelSize") == 16
+    assert large.height() == 50 and qml(large, "background.radius") == 25 and qml(large, "font.pixelSize") == 18
     assert qml(off, "background.color") == theme(window, "actionDisabledBg")
     assert qml(find(off, "busyLabel"), "color") == theme(window, "actionDisabledText")
 
@@ -820,7 +821,7 @@ def test_field_error_reserves_one_line_and_wraps_long_text(harness):
     assert long.height() > one_line.height()
     assert not find(empty, "fieldErrorIcon").isVisible() and find(one_line, "fieldErrorIcon").isVisible()
     assert qml(empty, "Accessible.ignored") and not qml(one_line, "Accessible.ignored")
-    assert qml(find(one_line, "fieldErrorText"), "color") == theme(window, "errorOnLight")
+    assert qml(find(one_line, "fieldErrorText"), "color") == theme(window, "errorOnDark")
     assert value(one_line, "announced") == ["Enter a password."]
 
     empty.setProperty("text", "Enter a username.")
@@ -931,14 +932,19 @@ def test_theme_transfer_text(harness):
 
 
 @pytest.mark.parametrize("token, expected", [
-    ("chromeWindow", "#0B0C0E"), ("sidebarBg", "#333333"), ("chromeBorder", "#596069"), ("chromeIcon", "#E6E8EB"),
-    ("contentBg", "#FFFFFF"), ("track", "#E0E0E0"), ("divider", "#D1D1D1"), ("textPrimary", "#333333"),
-    ("textSecondary", "#596069"), ("actionPrimary", "#333333"), ("actionDanger", "#C62828"),
-    ("successOnLight", "#2E7D32"), ("successTint", "#E8F5E9"), ("successOnDark", "#81C784"),
-    ("infoOnLight", "#1565C0"), ("infoTint", "#E3F2FD"), ("infoOnDark", "#90CAF9"),
-    ("warningOnLight", "#9C5100"), ("warningTint", "#FFF3E0"), ("warningOnDark", "#FFB74D"),
-    ("errorOnLight", "#C62828"), ("errorTint", "#FFEBEE"), ("errorOnDark", "#FF9A90"),
-    ("recording", "#E53935"), ("focusOnLight", "#1565C0"), ("focusOnDark", "#E6E8EB"),
+    # new-UIUX PLAN 第 3 節的深色 token
+    ("chromeWindow", "#0B0C0E"), ("chromeBorder", "#596069"), ("chromeIcon", "#E6E8EB"),
+    ("railBg", "#111316"), ("railBorder", "#1F2226"), ("contentBg", "#0B0C0E"), ("card", "#15171B"),
+    ("cardBorder", "#24272C"), ("tile", "#1A1D21"), ("tileBorder", "#2C3036"), ("field", "#17191D"),
+    ("track", "#2C3036"), ("textTitle", "#F3F4F6"), ("textPrimary", "#ECEEF1"), ("textSecondary", "#B4BAC2"),
+    ("textMuted", "#9AA1AB"), ("textFaint", "#8E959F"), ("iconNeutral", "#C3C8CF"),
+    ("actionPrimary", "#E6E8EB"), ("actionPrimaryText", "#0E1013"), ("actionDanger", "#C62828"),
+    ("successOnLight", "#2E7D32"), ("successTint", "#1A291F"), ("successOnDark", "#81C784"),
+    ("infoOnLight", "#1565C0"), ("infoTint", "#152539"), ("infoOnDark", "#90CAF9"),
+    ("warningOnLight", "#9C5100"), ("warningTint", "#2D2116"), ("warningOnDark", "#FFB74D"),
+    ("errorOnLight", "#C62828"), ("errorTint", "#351A1D"), ("errorOnDark", "#FF9A90"),
+    ("recording", "#E53935"), ("focusOnDark", "#E6E8EB"), ("compareBar", "#60666F"), ("guide", "#3A3F46"),
+    ("trendPanel", "#17305C"), ("trendPanelText", "#A9C1E8"), ("trendStaffLine", "#8FB8F5"),
 ])
 def test_theme_colors_match_the_design_system(harness, token, expected):
     window = harness.load("")
@@ -948,18 +954,19 @@ def test_theme_colors_match_the_design_system(harness, token, expected):
 def test_theme_sizes_and_layers_match_the_design_system(harness):
     window = harness.load("")
     expected = {"fontBody": 16, "fontCaption": 14, "fontTitleSmall": 20, "spaceXS": 5, "spaceS": 10, "spaceM": 16,
-                "spaceXL": 24, "radiusS": 5, "radiusM": 10, "controlHeight": 40, "controlHeightL": 50,
+                "spaceXL": 24, "radiusS": 5, "radiusM": 10, "controlHeight": 44, "controlHeightL": 50,
+                "railWidth": 96, "navTile": 44, "radiusCard": 16, "contentMaxWidth": 1360,
                 "chipHeight": 24, "iconS": 16, "iconM": 20, "toastWidth": 360, "hitMin": 32,
                 "zContent": 0, "zPageOverlay": 10, "zDialog": 100, "zToast": 200}
     assert {name: theme(window, name) for name in expected} == expected
 
 
-def test_qmldir_declares_theme_as_singleton_and_the_eleven_components():
+def test_qmldir_declares_theme_as_singleton_and_the_thirteen_components():
     lines = (COMPONENTS / "qmldir").read_text(encoding="utf-8").splitlines()
     assert lines == ["singleton Theme 1.0 Theme.qml"] + [
         f"{name} 1.0 {name}.qml" for name in ("Toast", "ToastHost", "StatusChip", "TransferProgress", "BusyButton",
                                                "EmptyState", "InlineError", "FieldError", "ConfirmDialog",
-                                               "SidebarButton", "SettingsView")]
+                                               "SidebarButton", "SettingsView", "Card", "PageHeader")]
 
 
 def test_component_qml_files_use_crlf():
@@ -974,8 +981,8 @@ ICON_NAME = re.compile(r"^(?P<lucide>[a-z-]+)_(?P<token>[A-Za-z]+)\.svg$")
 def test_icons_are_lucide_svgs_precoloured_with_theme_tokens(harness):
     """圖示檔名是「Lucide 名稱_Theme token」，線條顏色要和那個 token 一樣（DS-13）。"""
     window = harness.load("")
-    paths = sorted(ICONS.rglob("*.svg"))  # 共用元件的 15 個，加上 nav/ 裡側邊欄的 15 個（T23）
-    assert len(paths) == 30
+    paths = sorted(ICONS.rglob("*.svg"))  # 共用元件、頁面用的，加上 nav/ 裡側邊欄的（T23）
+    assert len(paths) >= 30
     for path in paths:
         match = ICON_NAME.match(path.name)
         assert match, path.name
@@ -988,19 +995,20 @@ def test_icons_are_lucide_svgs_precoloured_with_theme_tokens(harness):
 
 
 def test_every_icon_is_used_and_every_used_icon_exists():
+    """icons/ 的圖示由共用元件和頁面（../components/icons/…）使用；沒有人用的不留，用到的都要在。"""
     used = set()
-    for path in COMPONENTS.glob("*.qml"):
+    for path in [*COMPONENTS.glob("*.qml"), *PAGES.glob("*.qml")]:
         used |= set(re.findall(r"icons/([\w-]+\.svg)", path.read_text(encoding="utf-8")))
     assert used == {path.name for path in ICONS.glob("*.svg")}
 
 
 def test_every_nav_icon_is_used_and_every_used_nav_icon_exists():
-    """側邊欄（SidebarButton）的每個按鈕有亮色（chromeIcon）的一份；會變成目前頁面的按鈕另有深色
-    （navItemCurrentText）的一份。Quit 不會是目前頁面，只有亮色（T23 第 4 節）。"""
+    """側邊欄（SidebarButton）的每個按鈕有中性灰（iconNeutral）的一份；會變成目前頁面的按鈕另有深色
+    （navItemCurrentText）的一份。Quit 不會是目前頁面，只有中性灰（T23 第 4 節）。"""
     names = set()
     for shell in ("server_home.qml", "admin_home.qml"):
         names |= set(re.findall(r'iconName:\s*"([\w-]+)"', (PAGES / shell).read_text(encoding="utf-8")))
-    expected = ({f"{name}_chromeIcon.svg" for name in names}
+    expected = ({f"{name}_iconNeutral.svg" for name in names}
                 | {f"{name}_navItemCurrentText.svg" for name in names - {"log-out"}})
     assert expected == {path.name for path in (ICONS / "nav").glob("*.svg")}
 

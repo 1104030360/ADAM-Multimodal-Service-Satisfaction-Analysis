@@ -62,26 +62,26 @@ IN_FLIGHT = (FINISHING, UPLOADING, SAVING)
 
 # QSS 用的顏色：值都來自 myapp/theme.py（和 Theme.qml 同一組，tests/unit/test_ui_copy.py 比對兩邊），這裡不寫死
 COLORS = {
-    "window": RECORD_WINDOW["windowBg"],               # 錄影視窗的底色（DS-34，沿用以前的值）
-    "surface": TOKENS["contentBg"],
+    "window": RECORD_WINDOW["windowBg"],               # 錄影視窗的底色（新版介面的深色，設計稿 StaffRecorder）
+    "surface": TOKENS["card"],                         # 狀態列、次要按鈕的底
     "text": TOKENS["textPrimary"],
     "secondary": TOKENS["textSecondary"],
     "secondary_border": TOKENS["actionSecondaryBorder"],
-    "secondary_hover": TOKENS["surfaceAlt"],           # 次要按鈕的 hover、按下：和 QML 的 BusyButton 一樣（DS-12）
-    "secondary_pressed": TOKENS["surfaceMuted"],
+    "secondary_hover": TOKENS["actionSecondaryHover"],  # 次要按鈕的 hover、按下：和 QML 的 BusyButton 一樣（DS-12）
+    "secondary_pressed": TOKENS["actionSecondaryPressed"],
     "disabled_text": TOKENS["actionDisabledText"],
     "disabled_bg": TOKENS["actionDisabledBg"],
     "track": TOKENS["track"],                          # 進度條的軌道
     "fill": TOKENS["progressFill"],
-    "primary": TOKENS["actionPrimary"],                # 石墨灰（D2）：白字 12.63:1，以前的 #4CAF50 只有 2.78:1
+    "primary": TOKENS["actionPrimary"],                # 淺色膠囊（UD3），深色字 15.5:1
     "primary_hover": TOKENS["actionPrimaryHover"],
     "primary_pressed": TOKENS["actionPrimaryPressed"],
-    "on_dark": TOKENS["textOnDark"],
+    "primary_text": TOKENS["actionPrimaryText"],
     "recording": TOKENS["recording"],                  # 只用在實心的錄影圓點
-    "success": TOKENS["successOnLight"],
-    "error": TOKENS["errorOnLight"],
-    "focus": TOKENS["focusOnLight"],
-    "preview": RECORD_WINDOW["previewBg"],             # 預覽框（沿用以前的值）
+    "success": TOKENS["successOnDark"],
+    "error": TOKENS["errorOnDark"],
+    "focus": TOKENS["focusOnDark"],
+    "preview": RECORD_WINDOW["previewBg"],             # 預覽框
     "preview_border": RECORD_WINDOW["previewBorder"],
 }
 
@@ -230,7 +230,7 @@ def _progress_bar(name, width, accessible_name):
 def _button_style(primary, radius=10, pixel_size=18):
     """DS-12 的按鈕：主要是石墨灰底白字，次要是白底、#596069 框線、#333333 字；hover、按下和 QML 的 BusyButton 一樣。"""
     if primary:
-        normal, hover, pressed = (f"background: {COLORS['primary']}; color: {COLORS['on_dark']}; border: none;",
+        normal, hover, pressed = (f"background: {COLORS['primary']}; color: {COLORS['primary_text']}; border: none;",
                                   f"background: {COLORS['primary_hover']};", f"background: {COLORS['primary_pressed']};")
     else:
         normal, hover, pressed = (f"background: {COLORS['surface']}; color: {COLORS['text']}; "

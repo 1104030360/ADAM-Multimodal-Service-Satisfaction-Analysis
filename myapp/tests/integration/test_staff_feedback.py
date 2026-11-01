@@ -276,12 +276,12 @@ def test_launch_shows_the_shell_at_once_and_loads_in_the_background(engine, serv
         assert window.isVisible()
         assert db_proxy.snapshot()["rt"] == 0  # GUI 執行緒上 0 個往返（以前 15 個）
         assert all(services.tasks.isBusy(key) for key in LAUNCH_KEYS)  # 帳號名稱、分數、分析清單都排在 db lane
-        assert qml(window, "username.text") == ""
+        assert qml(window, "header.userName") == ""
         page = qml(window, "mainContentLoader.item")
         assert ring_text(page, "customer", "total") == "—"
     wait_for_launch(services)
     assert db_proxy.snapshot()["rt"] <= 5  # ENG-21 的預算；實際是 4（名字、分數、清單、監看各 1）
-    assert qml(window, "username.text") == STAFF_NAME == home.accountName
+    assert qml(window, "header.userName") == STAFF_NAME == home.accountName
 
 
 def test_home_shows_dashes_until_scores_arrive_then_repaints(engine, services, db, no_network_on_gui_thread):
@@ -368,7 +368,7 @@ def test_home_failure_offers_retry_and_recovers(engine, services, db, monkeypatc
     assert error.property("busy")
     wait_until(lambda: not services.tasks.isBusy(HOME_SCORES_KEY) and not services.tasks.isBusy(ACCOUNT_NAME_KEY))
     assert not error.isVisible() and find(page, "scoreRows").isVisible()
-    assert qml(window, "username.text") == STAFF_NAME
+    assert qml(window, "header.userName") == STAFF_NAME
 
 
 # ── 分析頁 ───────────────────────────────────────────────────────────────────

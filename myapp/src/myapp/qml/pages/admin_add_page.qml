@@ -103,8 +103,8 @@ Rectangle {
                 radius: Theme.radiusS
                 color: Theme.contentBg
                 border.width: field.error !== "" || input.activeFocus ? 2 : 1
-                border.color: field.error !== "" ? Theme.errorOnLight
-                            : input.activeFocus ? Theme.focusOnLight : Theme.textSecondary
+                border.color: field.error !== "" ? Theme.errorOnDark
+                            : input.activeFocus ? Theme.focusOnDark : Theme.textSecondary
             }
         }
 
@@ -228,10 +228,10 @@ Rectangle {
                         background: Rectangle {
                             implicitHeight: 44
                             radius: Theme.radiusS
-                            color: levelField.enabled ? Theme.contentBg : Theme.surfaceMuted
+                            color: levelField.enabled ? Theme.contentBg : Theme.tile
                             border.width: levelError.hasError || levelField.activeFocus ? 2 : 1
-                            border.color: levelError.hasError ? Theme.errorOnLight
-                                        : levelField.activeFocus ? Theme.focusOnLight : Theme.textSecondary
+                            border.color: levelError.hasError ? Theme.errorOnDark
+                                        : levelField.activeFocus ? Theme.focusOnDark : Theme.textSecondary
                         }
                     }
 

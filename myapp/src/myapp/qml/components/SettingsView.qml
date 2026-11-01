@@ -41,7 +41,7 @@ Rectangle {
             implicitWidth: Theme.iconM
             implicitHeight: Theme.iconM
             radius: width / 2
-            color: option.down ? Theme.surfaceMuted : Theme.contentBg
+            color: option.down ? Theme.tile : Theme.contentBg
             border.width: 2
             border.color: option.checked || option.hovered ? Theme.textPrimary : Theme.textSecondary
 
@@ -73,7 +73,7 @@ Rectangle {
                 anchors.margins: -4
                 radius: Theme.radiusS + 4
                 color: "transparent"
-                border.color: Theme.focusOnLight
+                border.color: Theme.focusOnDark
                 border.width: 2
             }
         }

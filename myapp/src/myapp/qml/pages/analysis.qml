@@ -128,7 +128,7 @@ Page {
 
         height: 40
         color: Theme.contentBg
-        border.color: Theme.divider
+        border.color: Theme.cardBorder
         border.width: 1
 
         Row {
@@ -175,8 +175,8 @@ Page {
         readonly property bool highlighted: serviceId === analysisPage.highlightedServiceId
 
         height: 50
-        color: highlighted ? Theme.infoTint : index % 2 === 0 ? Theme.surfaceAlt : Theme.contentBg
-        border.color: highlighted ? Theme.infoOnLight : Theme.divider
+        color: highlighted ? Theme.infoTint : index % 2 === 0 ? Theme.card : Theme.contentBg
+        border.color: highlighted ? Theme.infoOnDark : Theme.cardBorder
         border.width: 1
         // 狀態寫進那一列的名稱（DS-22：標籤本身不給螢幕閱讀器）
         Accessible.role: Accessible.Row
@@ -352,8 +352,8 @@ Page {
                     required property int index
                     width: content.width
                     height: index === 0 ? 40 : 50
-                    color: index === 0 ? Theme.contentBg : Theme.surfaceMuted
-                    border.color: Theme.divider
+                    color: index === 0 ? Theme.contentBg : Theme.tile
+                    border.color: Theme.cardBorder
                     border.width: 1
                 }
             }

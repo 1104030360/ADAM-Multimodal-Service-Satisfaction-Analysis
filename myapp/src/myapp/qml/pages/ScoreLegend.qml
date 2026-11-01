@@ -13,9 +13,9 @@ Row {
 
     Repeater {
         model: [
-            { color: Theme.successOnLight, text: qsTr("Good: 85 and up") },
-            { color: Theme.warningOnLight, text: qsTr("Fair: 70–84") },
-            { color: Theme.errorOnLight, text: qsTr("Needs improvement: below 70") }
+            { color: Theme.successOnDark, text: qsTr("Good: 85 and up") },
+            { color: Theme.warningOnDark, text: qsTr("Fair: 70–84") },
+            { color: Theme.errorOnDark, text: qsTr("Needs improvement: below 70") }
         ]
 
         Row {
