@@ -3,7 +3,7 @@
 - 登入：背景驗證、按鈕忙碌、Enter 送出、帳號密碼錯和連不上資料庫各自的說明與焦點（DS-31、UX-01～03）
 - launch()：外殼馬上出現；GUI 執行緒 0 個往返、背景 ≤ 5 個（ENG-21）
 - 首頁：還沒有資料是「—」不是 0、資料到了 Canvas 重畫、重新整理時舊的分數變淡、錯誤可以重試（DS-33、UX-05、UX-06）
-- 分析頁：分頁數量、空狀態、狀態標籤、等了多久、-1 顯示「—」、增量更新、自動更新失敗只警告一次（UX-19～21）
+- 分析頁：U2 改版後搬到 test_analysis_page.py（T30）
 - 服務查詢：日期格式錯不查、空狀態、錯誤重試、連按只留最後一次（UX-24）
 - 錄影頁：打開才探測裝置，探測中、裝置不夠、探測失敗各有畫面（UX-13、ENG-06）
 
@@ -20,7 +20,6 @@ from types import SimpleNamespace
 
 import cv2
 import pytest
-import shiboken6
 from PySide6.QtCore import QObject, QPointF, Qt, QUrl, qInstallMessageHandler
 from PySide6.QtTest import QAbstractItemModelTester, QTest
 
@@ -370,126 +369,6 @@ def test_home_failure_offers_retry_and_recovers(engine, services, db, monkeypatc
     wait_until(lambda: not services.tasks.isBusy(HOME_SCORES_KEY) and not services.tasks.isBusy(ACCOUNT_NAME_KEY))
     assert not error.isVisible() and find(page, "scoreRows").isVisible()
     assert qml(window, "header.userName") == STAFF_NAME
-
-
-# ── 分析頁 ───────────────────────────────────────────────────────────────────
-
-def open_analysis(engine, services):
-    home, window = launch_staff(engine, services)
-    wait_for_launch(services)
-    page = show_page(window, "analysisButton")
-    wait_until(lambda: not services.tasks.isBusy(ANALYSIS_KEY))
-    return window, page
-
-
-def cell(row, name):
-    return find(row, name).property("text")
-
-
-def chip(row):
-    return find(row, "statusChip").property("label")
-
-
-def test_analysis_tabs_show_counts_chips_waiting_time_and_scores(engine, services, db, no_network_on_gui_thread):
-    db.add_service("S20261030090000", "2026-10-30 09:00:00")
-    db.add_scores("S20261030090000", customer=80.6, server=70.4)
-    db.add_service("S20261030100000", "2026-10-30 10:00:00")
-    db.add_scores("S20261030100000", customer=-1, server=-1)  # 沒有分數
-    db.add_service("S20261030110000", "2026-10-30 11:00:00", status=2)
-    db.add_service("S20261030120000", "2026-10-30 12:00:00", status=1)
-    db.add_service("S20261030130000", "2026-10-30 13:00:00", status=1)
-    window, page = open_analysis(engine, services)
-    assert [find(page, f"{key}Tab").property("text") for key in ("completed", "analyzing", "notAnalyzed")] == [
-        "Completed (2)", "Analyzing (1)", "Not Analyzed (2)"]
-    assert qml(page, "selectedTab") == "notAnalyzed"  # 剛錄好的在這裡（UX-19）
-
-    not_analyzed = find(page, "notAnalyzedList")
-    rows = rows_of(not_analyzed, "serviceRow")
-    assert [cell(row, "serviceIdCell") for row in rows] == ["S20261030130000", "S20261030120000"]  # 新的在前
-    assert {chip(row) for row in rows} == {"Not Analyzed"}
-    assert find(rows[0], "analyzeButton").property("text") == "Analyze"
-
-    qml(page, 'selectedTab = "completed"')
-    rows = rows_of(find(page, "completedList"), "serviceRow")
-    assert [cell(row, "scoreCell") for row in rows] == ["— / —", "70 / 81"]  # 不顯示 -1，四捨五入（UX-20）
-    assert {chip(row) for row in rows} == {"Completed"}
-    assert qml(rows[1], "Accessible.name") == "S20261030090000, Completed, staff / customer 70 / 81"
-
-    qml(page, 'selectedTab = "analyzing"')
-    [row] = rows_of(find(page, "analyzingList"), "serviceRow")
-    assert chip(row) == "Analyzing"
-    assert cell(row, "waitingText") == "Waiting less than 1 min"
-    since = row.property("waitingSince")
-    qml(page, f"now = {since} + 3 * 60000")
-    assert cell(row, "waitingText") == "Waiting 3 min"
-    qml(page, f"now = {since} + 65 * 60000")
-    assert cell(row, "waitingText") == "Waiting 1 h 5 min"
-
-
-def test_each_analysis_tab_has_an_empty_state(engine, services, db, no_network_on_gui_thread):
-    window, page = open_analysis(engine, services)
-    expected = {"completed": "No completed analyses yet", "analyzing": "Nothing is being analyzed",
-                "notAnalyzed": "No services to analyze"}
-    for key, title in expected.items():
-        qml(page, f'selectedTab = "{key}"')
-        empty = find(page, f"{key}Empty")
-        assert empty.isVisible() and empty.property("title") == title
-        assert find(page, f"{key}Tab").property("text").endswith("(0)")
-    qml(page, 'selectedTab = "completed"')
-    empty = find(page, "completedEmpty")
-    assert empty.property("actionText") == "View Not Analyzed"
-    qml(empty, "actionTriggered()")
-    assert qml(page, "selectedTab") == "notAnalyzed"
-
-
-def test_analysis_refresh_updates_rows_in_place(engine, services, db, no_network_on_gui_thread):
-    db.add_service("S20261030120000", "2026-10-30 12:00:00", status=1)
-    window, page = open_analysis(engine, services)
-    view = find(page, "notAnalyzedList")
-    [old_row] = rows_of(view, "serviceRow")
-    pointer = shiboken6.getCppPointer(old_row)[0]
-    db.add_service("S20261030130000", "2026-10-30 13:00:00", status=1)  # 新錄好的一筆
-    qml(window, "serviceModel.refresh()")  # 錄影存好之後的重新整理（頁面的 15 秒計時器在第三波換成監看）
-    wait_until(lambda: len(rows_of(view, "serviceRow")) == 2)
-    first, second = rows_of(view, "serviceRow")
-    assert cell(first, "serviceIdCell") == "S20261030130000"
-    assert shiboken6.getCppPointer(second)[0] == pointer  # 沒變的那一列沒有重建（ENG-08）
-
-
-def test_analysis_first_load_failure_shows_retry(engine, services, db, monkeypatch, no_network_on_gui_thread):
-    db.add_service("S20261030120000", "2026-10-30 12:00:00", status=1)
-    port = os.environ["DB_PORT"]
-    monkeypatch.setenv("DB_PORT", str(unused_port()))
-    window, page = open_analysis(engine, services)
-    error = find(page, "listError")
-    assert error.isVisible() and error.property("title") == "Couldn't load your services"
-    assert error.property("detail") == OFFLINE
-    assert find(page, "notAnalyzedTab").property("text") == "Not Analyzed"  # 失敗時不顯示假的 0
-    assert not find(page, "notAnalyzedTable").isVisible()
-    monkeypatch.setenv("DB_PORT", port)
-    qml(error, "retry()")
-    wait_until(lambda: not services.tasks.isBusy(ANALYSIS_KEY))
-    assert not error.isVisible() and find(page, "notAnalyzedTable").isVisible()
-    assert find(page, "notAnalyzedTab").property("text") == "Not Analyzed (1)"
-
-
-def test_auto_refresh_failure_keeps_the_list_and_warns_once(engine, services, db, monkeypatch):
-    db.add_service("S20261030120000", "2026-10-30 12:00:00", status=1)
-    window, page = open_analysis(engine, services)
-    restore = cut_database(services, db, monkeypatch)
-    for _ in range(2):  # 斷線期間重新整理失敗兩次：警告只有一則
-        qml(window, "serviceModel.refresh()")
-        wait_until(lambda: not services.tasks.isBusy(ANALYSIS_KEY))
-    [warning] = toasts(services.notifier)
-    assert (warning["severity"], warning["title"], warning["detail"], warning["count"]) == (
-        "warning", "Can't refresh analysis status", "Can't reach the database. Retrying in 15 seconds.", 1)
-    assert find(page, "notAnalyzedTable").isVisible() and not find(page, "listError").isVisible()  # 清單留著
-    assert len(rows_of(find(page, "notAnalyzedList"), "serviceRow")) == 1
-
-    restore()
-    qml(window, "serviceModel.refresh()")
-    wait_until(lambda: not services.tasks.isBusy(ANALYSIS_KEY))
-    assert toasts(services.notifier) == []  # 恢復後警告自己消失
 
 
 # ── 服務查詢 ─────────────────────────────────────────────────────────────────

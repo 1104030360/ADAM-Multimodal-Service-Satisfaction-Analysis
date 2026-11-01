@@ -14,8 +14,8 @@ import sys
 import time
 import requests
 import os
-from PySide6.QtCore import (QAbstractListModel, QCoreApplication, QModelIndex, QObject, Property, Qt, QTimer, QUrl,
-                            Signal, Slot)
+from PySide6.QtCore import (QAbstractListModel, QCoreApplication, QLocale, QModelIndex, QObject, Property, Qt,
+                            QSettings, QTimer, QUrl, Signal, Slot)
 from datetime import datetime, timedelta
 import pyaudio
 from pathlib import Path
@@ -24,7 +24,7 @@ from myapp.notifications import Notifier, user_message
 from myapp.pending_saves import PendingSaveStore
 from myapp.services import AppServices
 from myapp.tasks import TaskRunner
-from myapp.ui_prefs import UiPrefs
+from myapp.ui_prefs import UiPrefs, open_settings
 from myapp.watcher import POLL_KEY as WATCHER_KEY, AnalysisWatcher, DockAttention
 from .record_widget import SAVE_ROLES, SAVED, QuitGuard, RecordingSaver, RecordWidget
 import cv2
@@ -734,22 +734,48 @@ class ServiceScoreManager(QObject):
             self.busyChanged.emit()
 
 
-# ---------------------------------------------------------------- 分析頁（ENG-05、UX-19～21）、送出分析（UX-18）
+# ---------------------------------------------------------------- 分析頁（ENG-05、UX-19～21、U2）、送出分析（UX-18）
 
-# 三個分頁一次查完（以前 3 個查詢、12 個往返）：重新整理 = 1 個往返
+PAGE_SIZE = 8  # 每個分頁一次顯示幾筆，下面是「Showing 8 of 41」和 Show More（UD7）
+# 分頁照流程排（UD6）：Not analyzed → Analyzing → Completed，各自對應 service_status 1、2、3
+TABS = ("notAnalyzed", "analyzing", "completed")
+TAB_STATUS = {"notAnalyzed": 1, "analyzing": 2, "completed": 3}
+CLOCK_TICK_S = 30  # 「Sent 21 min ago」以分鐘顯示，30 秒更新一次就夠（DS-44）
+
+# 三個分頁一次查完（1 個往返）。每個分頁只取前 limit 筆（錄影時間新的在前），每一列帶著那個分頁的總數：
+# 回應的大小和累積了多少服務無關（ENG-01：每個動作的回應小於 8 KB；T16 的 read_timeout）。
+# pin 是要露出來的服務（View Results）：它那個分頁至少取到「它那一頁的下一頁」，和 shown_for(位置) + PAGE_SIZE
+# 一樣，所以同一個往返就看得到它，不用再查一次。排名只用 tbl_service（idx_service_account_status_start），
+# 分數只 JOIN 留下來的那幾列。
 ANALYSIS_SQL = """
-SELECT s.service_id, s.service_start, s.service_end, s.service_status, sc.customer_total, sc.server_total
-FROM tbl_service AS s
-LEFT JOIN tbl_service_score AS sc ON sc.service_id = s.service_id
-WHERE s.account_id = %s AND s.service_status IN (1, 2, 3)
-ORDER BY s.service_start DESC, s.service_id DESC
+WITH ranked AS (
+  SELECT service_id, service_start, service_end, service_status,
+         ROW_NUMBER() OVER (PARTITION BY service_status ORDER BY service_start DESC, service_id DESC) AS position,
+         COUNT(*) OVER (PARTITION BY service_status) AS total
+  FROM tbl_service
+  WHERE account_id = %(account_id)s AND service_status IN (1, 2, 3)
+), pinned AS (
+  SELECT ranked.*,
+         MAX(CASE WHEN service_id = %(pin)s THEN position END) OVER (PARTITION BY service_status) AS pin_position
+  FROM ranked
+)
+SELECT p.service_id, p.service_start, p.service_end, p.service_status, p.position, p.total,
+       sc.customer_total, sc.server_total
+FROM pinned AS p
+LEFT JOIN tbl_service_score AS sc ON sc.service_id = p.service_id
+WHERE p.position <= GREATEST(
+        CASE p.service_status WHEN 1 THEN %(limit_1)s WHEN 2 THEN %(limit_2)s ELSE %(limit_3)s END,
+        COALESCE(((p.pin_position - 1) DIV %(page)s + 2) * %(page)s, 0))
+ORDER BY p.service_start DESC, p.service_id DESC
 """
 # 狀態只會往前走（1 → 2 → 3）：分析服務可能已經寫好 3，不能被這裡蓋回 2
 MARK_SENT_SQL = "UPDATE tbl_service SET service_status = 2 WHERE service_id = %s AND service_status < 2"
-SERVICE_ROLES = ("serviceId", "startTime", "endTime", "status", "staffScore", "customerScore", "waitingSince",
+# 分析頁每一列的角色。startTime 是資料庫的格式（「2026-10-30 12:00:00」），View 打開明細時交給 openServiceDetail()
+SERVICE_ROLES = ("serviceId", "startTime", "recorded", "length", "sentText", "customerScore", "staffScore",
                  "failed", "sending")
 ANALYZE_TIMEOUT = (3, 10)  # (連線逾時, 讀取逾時)，單位是秒；分析服務收到請求就回 200，不等分析做完
 REFRESH_RETRY_S = 15       # 已經有資料、重新整理失敗時，幾秒後自己再試（DS-52「Retrying in 15 seconds.」）
+SENT_GROUP = "analysisSent"  # QSettings 的群組：analysisSent/<帳號>/<service_id> = 送出的時間（epoch ms）
 
 
 def analyze_key(service_id):
@@ -787,26 +813,268 @@ def toast_reason(error):
     return f"{title}. {next_step}." if next_step else f"{title}."
 
 
-def list_services(db, account_id, mark_sent=None):
-    """在 db lane 執行：自己的服務（新的在前）。mark_sent 是剛送出分析的服務，先把它改成 2（多 1 個往返）。"""
+def shown_for(position, page=PAGE_SIZE):
+    """要看得到第 position 筆（從 1 數），分頁要顯示幾筆：補滿到整頁（第 10 筆 → 16）。"""
+    return -(-position // page) * page
+
+
+def recorded_text(start, now):
+    """Recorded 欄：「Nov 1, 14:05」；不是今年的加上年份：「Dec 30, 2025, 10:00」。沒有時間是空字串。
+
+    月份一律英文（PLAN D1）：不用 strftime 的 %b，因為 QCoreApplication 會呼叫 setlocale，%b 會跟著系統語系。
+    """
+    if start is None:
+        return ""
+    return QLocale.c().toString(start, "MMM d, HH:mm" if start.year == now.year else "MMM d, yyyy, HH:mm")
+
+
+def length_text(start, end):
+    """Length 欄：錄了多久，四捨五入到分鐘：「7 min」「1 h」「1 h 5 min」，不到 1 分鐘是「Less than 1 min」。
+
+    不知道是空字串（畫面顯示「—」）：service_end 是 NULL（資料表允許），或比開始早（時鐘被調過）。
+    """
+    if start is None or end is None or end < start:
+        return ""
+    seconds = (end - start).total_seconds()
+    if seconds < 60:
+        return _tr("Less than 1 min")
+    hours, minutes = divmod(int(seconds + 30) // 60, 60)
+    if not hours:
+        return _tr("%1 min", minutes)
+    return _tr("%1 h %2 min", hours, minutes) if minutes else _tr("%1 h", hours)
+
+
+def sent_text(sent_at, now):
+    """Analyzing 的 Sent 欄（以分鐘顯示，DS-44）。sent_at、now 是 epoch ms。
+
+    sent_at 是 0 表示不知道什麼時候送的（別台電腦送的，或這台電腦沒記到）：「Sent earlier」，
+    不拿「第一次看到」的時間冒充送出的時間（T30）。時鐘被往回調時當成剛送出。
+    """
+    if not sent_at:
+        return _tr("Sent earlier")
+    minutes = max(0, int((now - sent_at) // 60000))
+    if minutes < 1:
+        return _tr("Sent less than 1 min ago")
+    if minutes < 60:
+        return _tr("Sent %1 min ago", minutes)
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return _tr("Sent %1 h %2 min ago", hours, minutes) if minutes else _tr("Sent %1 h ago", hours)
+    days = hours // 24
+    return _tr("Sent 1 day ago") if days == 1 else _tr("Sent %1 days ago", days)
+
+
+def default_tab(not_analyzed, analyzing, completed):
+    """一打開分析頁停在哪個分頁（參數是三個分頁的總數）。
+
+    有沒送出的就是 Not analyzed（要動作的在這裡，UX-19）；沒有就是 Completed。Completed 也是空的、
+    但有分析中的，停在 Analyzing，不停在空的分頁；三個都是空的，停在流程的第一步 Not analyzed
+    （它的空狀態說明錄好的服務會出現在這裡）。
+    """
+    if not_analyzed:
+        return "notAnalyzed"
+    if completed:
+        return "completed"
+    return "analyzing" if analyzing else "notAnalyzed"
+
+
+def _score(value):
+    """分數到小數一位：畫面顯示的數字和分數帶（Good 85+、Fair 70–84）用同一個值。-1 一律是 None。"""
+    value = score_or_none(value)
+    return None if value is None else round(value, 1)
+
+
+def list_services(db, account_id, limits=(2 * PAGE_SIZE,) * 3, pin=None, mark_sent=None):
+    """在 db lane 執行：自己的服務，每個分頁（狀態 1、2、3）取前 limits[i] 筆，新的在前；每一列有
+    position（在分頁裡第幾筆）和 total（分頁的總數）。pin 見 ANALYSIS_SQL。1 個往返。
+
+    mark_sent 是剛送出分析的服務，先把它改成 2（多 1 個往返）。
+    """
+    params = {"account_id": account_id, "pin": pin, "page": PAGE_SIZE,
+              **{f"limit_{status}": int(limit) for status, limit in zip((1, 2, 3), limits)}}
     with db.cursor(dictionary=True) as cursor:
         if mark_sent:
             cursor.execute(MARK_SENT_SQL, (mark_sent,))
-        cursor.execute(ANALYSIS_SQL, (account_id,))
+        cursor.execute(ANALYSIS_SQL, params)
         return cursor.fetchall()
 
 
-class ServiceModel(QObject):
-    """分析頁（analysis.qml）的三個清單：completedModel、analyzingModel、notAnalyzedModel（RowListModel），
-    送出分析，以及分析狀態的通知（DS-52）。
+class SentTimes:
+    """送出分析的時間（epoch ms），記在這台電腦（QSettings，和 T26 的 pendingSaves 同一個地方）：
+    重開 app 之後「Sent 21 min ago」還是對的。資料庫沒有送出的時間（UX-19），這一版也不改 schema（PLAN 第 1 節）。
 
-    - status：loading（還沒有資料）、ready、error；busy 是重新整理中。
-    - 清單什麼時候重新整理：launch()、按側邊欄的 Analysis、錄影存好之後（refresh()）、監看發現狀態變了、
-      送出分析之後。頁面不再自己每 15 秒重新整理（ENG-16：由 app 層的 AnalysisWatcher 監看）。
-    - 已經有資料時「更新不到」（重新整理或監看的查詢失敗）：清單留著，只跳一則警告（DS-52），恢復後自己關掉；
-      重新整理失敗時 15 秒後自己再試。第一次載入就失敗才是區塊錯誤（DS-27）。
-    - waitingSince：分析中的服務從什麼時候開始等（epoch ms）。資料庫沒有送出時間（UX-19），
-      所以是分析服務收到這個 app 送出的時間；不是這裡送的，就是這次執行第一次看到它在分析中的時間（T18）。
+    - key：analysisSent/<帳號>/<service_id>。同一台電腦換人登入，各看各的。
+    - 收到 200、狀態改成 2 時記下；看到它不是分析中了（完成、失敗、Analyzing 全部載入了卻沒有它）就刪掉。
+    - 只在 GUI 執行緒讀寫：本機的小檔案，不是網路；寫完馬上 sync()。
+    """
+
+    def __init__(self, account_id, settings=None):
+        self._settings = settings if settings is not None else open_settings()
+        self._group = f"{SENT_GROUP}/{account_id}"
+        self._times = self._read()
+
+    def _read(self):
+        """看不懂的值（不是正數）刪掉，log 記一筆：不然每次登入都會再遇到一次。"""
+        settings = self._settings
+        settings.beginGroup(self._group)
+        try:
+            stored = {key: settings.value(key) for key in settings.childKeys()}
+        finally:
+            settings.endGroup()
+        times = {}
+        for service_id, value in stored.items():
+            try:
+                sent_at = float(value)
+            except (TypeError, ValueError):
+                sent_at = 0.0
+            if sent_at > 0 and sent_at != float("inf"):
+                times[service_id] = sent_at
+                continue
+            logger.warning("dropping the unreadable analysis send time %s=%r", service_id, value)
+            settings.remove(f"{self._group}/{service_id}")
+        return times
+
+    def get(self, service_id):
+        """送出的時間（epoch ms）；不知道是 0。"""
+        return self._times.get(service_id, 0.0)
+
+    def ids(self):
+        return set(self._times)
+
+    def remember(self, service_id, sent_at):
+        self._times[service_id] = float(sent_at)
+        self._settings.setValue(f"{self._group}/{service_id}", float(sent_at))
+        self._sync(f"remember {service_id}")
+
+    def forget(self, service_id):
+        if self._times.pop(service_id, None) is None:
+            return
+        self._settings.remove(f"{self._group}/{service_id}")
+        self._sync(f"forget {service_id}")
+
+    def _sync(self, what):
+        """寫不進去只記 log：送出照常，只是重開 app 之後那一筆會顯示「Sent earlier」。"""
+        self._settings.sync()
+        if self._settings.status() != QSettings.Status.NoError:
+            logger.warning("couldn't %s in %s: %s", what, self._settings.fileName(), self._settings.status())
+
+
+class PagedRowModel(RowListModel):
+    """分析頁的一個分頁（UD7）：顯示載入的前 shown 筆，每按一次 Show More 多 PAGE_SIZE 筆。
+
+    - count：現在顯示幾筆；total：這個分頁在資料庫裡一共幾筆（分頁上的數字、「Showing 8 of 41」）。
+    - limit：要載入幾筆，永遠比顯示的多一頁：按 Show More 時下一頁已經在手上，馬上顯示，不等往返；
+      之後發 moreWanted，ServiceModel 在背景再多載入一頁（1 個往返）。
+    - hasMore：還有沒顯示的（要不要有 Show More）；loadingMore：要顯示的還沒載入（例如連按兩次、
+      或預先載入失敗了），這時 Show More 忙碌，再按也不會多要。
+    - 分析頁每次打開都回到前 PAGE_SIZE 筆（reset()）。
+    """
+
+    totalChanged = Signal()
+    pagingChanged = Signal()  # hasMore、loadingMore
+    moreWanted = Signal()     # 顯示的變多了，要再多載入一頁
+
+    def __init__(self, roles, key, parent=None, page_size=PAGE_SIZE):
+        super().__init__(roles, key, parent)
+        self._page = page_size
+        self._shown = page_size
+        self._loaded = []
+        self._total = 0
+
+    @Property(int, notify=totalChanged)
+    def total(self):
+        return self._total
+
+    @Property(bool, notify=pagingChanged)
+    def hasMore(self):
+        return len(self._rows) < self._total
+
+    @Property(bool, notify=pagingChanged)
+    def loadingMore(self):
+        return len(self._rows) < min(self._total, self._shown)
+
+    @Property(int, constant=True)
+    def pageSize(self):
+        return self._page
+
+    @property
+    def shown(self):
+        """要顯示幾筆（載入的不夠時，實際顯示的 count 會比較少）。"""
+        return self._shown
+
+    @property
+    def limit(self):
+        return self._shown + self._page
+
+    def loaded(self):
+        """載入的每一列（複本），包括還沒顯示的下一頁。"""
+        return [dict(row) for row in self._loaded]
+
+    def satisfied(self):
+        """載入的夠不夠顯示到 limit（總數比較少時，全部載入就夠了）。"""
+        return len(self._loaded) >= min(self._total, self.limit)
+
+    def set_rows(self, rows, total):
+        """查詢的結果：這個分頁載入的列（依畫面順序）和總數。只對變了的列發 signal（RowListModel）。"""
+        before = self._paging()
+        self._loaded = list(rows)
+        if total != self._total:
+            self._total = total
+            self.totalChanged.emit()
+        self._show(before)
+
+    @Slot()
+    def showMore(self):
+        """Show More：多顯示一頁（已經載入的馬上出現），再請 ServiceModel 多載入一頁。"""
+        if not self.hasMore or self.loadingMore:
+            return
+        before = self._paging()
+        self._shown += self._page
+        self._show(before)
+        self.moreWanted.emit()
+
+    def reveal(self, key):
+        """讓載入的那一列顯示出來（補滿到它那一頁）。回傳它在分頁裡的位置（從 0 數），沒載入是 -1。"""
+        index = next((i for i, row in enumerate(self._loaded) if row[self._key] == key), -1)
+        if index >= self._shown:
+            before = self._paging()
+            self._shown = shown_for(index + 1, self._page)
+            self._show(before)
+        return index
+
+    def reset(self):
+        """回到前 PAGE_SIZE 筆（分析頁重新打開）。"""
+        if self._shown != self._page:
+            before = self._paging()
+            self._shown = self._page
+            self._show(before)
+
+    def _paging(self):
+        return self.hasMore, self.loadingMore
+
+    def _show(self, before):
+        self.replace(self._loaded[:self._shown])
+        if self._paging() != before:
+            self.pagingChanged.emit()
+
+
+class ServiceModel(QObject):
+    """分析頁（analysis.qml）的三個分頁、送出分析，以及分析狀態的通知（DS-52）。
+
+    - 三個分頁：notAnalyzedModel、analyzingModel、completedModel（PagedRowModel：count、total、hasMore、
+      loadingMore、showMore()）。每一列的角色見 SERVICE_ROLES。
+    - status：loading（還沒有資料）、ready、error；busy 是重新整理中。loading 時頁面顯示骨架，
+      不顯示空狀態（DS-25）；ready 之後才知道每個分頁是不是空的。
+    - defaultTab：打開分析頁時停在哪個分頁（default_tab()）；還沒載入好是空字串。
+    - 清單什麼時候載入：登入時不載入（PLAN 5-3：首頁的 Overview 已經有各狀態的筆數），打開分析頁時才第一次查
+      （pageOpened()：側邊欄、首頁的服務方塊、View Results）。之後錄影存好、監看發現狀態變了、送出分析、
+      Show More（預先載入下一頁）時重新整理。每次 1 個往返，只取每個分頁要顯示的再多一頁（T30）。
+    - 「更新不到」（重新整理或監看的查詢失敗）：清單留著，只跳一則警告（DS-52），恢復後自己關掉；重新整理失敗時
+      15 秒後自己再試。清單已經有資料，或監看正在等分析結果時才跳（分析頁沒打開過也一樣，T30）；
+      分析頁第一次載入就失敗是區塊錯誤（DS-27），不跳通知。
+    - sentText：什麼時候送出分析的。資料庫沒有送出的時間（UX-19），所以是這台電腦收到 200 的時間，
+      記在 QSettings（SentTimes），重開 app 也還在；不知道（別台電腦送的）就是「Sent earlier」（T30）。
+      每 30 秒更新一次（只有分析中的列會變）。
     - failed：這次執行看過它是 2、後來又變回 1，或監看看到 2 → 1（分析服務失敗時會這樣做，D4、DS-22）。
     - sending：送出中（POST 加上改狀態），那一列的按鈕忙碌（DS-24）。
     - analyzeService()：POST 在 io lane；收到 200 之後在 db lane 改狀態、重新整理清單。結果用 toast 告訴使用者。
@@ -815,42 +1083,51 @@ class ServiceModel(QObject):
     statusChanged = Signal()
     busyChanged = Signal()
     errorChanged = Signal()
+    defaultTabChanged = Signal()
     analysisSent = Signal(str)  # 送出成功（分析服務收到了、狀態也改成 2）：監看從這裡開始看這一筆
 
-    def __init__(self, services, account_id):
+    def __init__(self, services, account_id, *, clock=time.time, sent_times=None):
+        """clock：現在幾秒（epoch），算「Sent 21 min ago」用，測試可以換掉。sent_times：SentTimes，測試可以換掉。"""
         super(ServiceModel, self).__init__()
         self.services = services
         self.account_id = account_id
-        self._completed = RowListModel(SERVICE_ROLES, "serviceId", self)
-        self._analyzing = RowListModel(SERVICE_ROLES, "serviceId", self)
-        self._not_analyzed = RowListModel(SERVICE_ROLES, "serviceId", self)
+        self._clock = clock
+        self._tabs = {tab: PagedRowModel(SERVICE_ROLES, "serviceId", self) for tab in TABS}
+        for model in self._tabs.values():
+            model.moreWanted.connect(self.refresh)
         self._status = "loading"
         self._busy = False
+        self._default_tab = ""
         self._error_detail = self._error_technical = ""
         self._failure_count = 0
-        self._rows = []  # 上一次查到的清單：送出中的狀態改變時重新套用
+        self._rows = []  # 上一次查到的清單：送出中的狀態改變、時間到了（sentText）時重新套用
         self._last_status = {}  # 上一次看到的狀態
-        self._waiting_since = {}
+        self._sent = sent_times if sent_times is not None else SentTimes(account_id)
         self._failed = set()
         self._sending = set()
+        self._pin = None  # 要露出來的服務（View Results）：下一次查詢會多取到它（ANALYSIS_SQL）
+        self._stopped = False  # 外殼關掉了（stop()）：不再計時
         self._refresh_warning = 0  # 「Can't refresh analysis status」那一則的 toastId
         self._toast_ids = {}  # 通知的 key → toastId：Notifier 只能用 toastId 關掉
         self._retry = QTimer(self)  # 已經有資料、重新整理失敗時，過一會兒自己再試
         self._retry.setSingleShot(True)
         self._retry.setInterval(REFRESH_RETRY_S * 1000)
         self._retry.timeout.connect(self.refresh)
+        self._ticker = QTimer(self)  # 有分析中的列時，每 30 秒更新 sentText
+        self._ticker.setInterval(CLOCK_TICK_S * 1000)
+        self._ticker.timeout.connect(self._tick)
 
     @Property(QObject, constant=True)
     def completedModel(self):
-        return self._completed
+        return self._tabs["completed"]
 
     @Property(QObject, constant=True)
     def analyzingModel(self):
-        return self._analyzing
+        return self._tabs["analyzing"]
 
     @Property(QObject, constant=True)
     def notAnalyzedModel(self):
-        return self._not_analyzed
+        return self._tabs["notAnalyzed"]
 
     @Property(str, notify=statusChanged)
     def status(self):
@@ -859,6 +1136,10 @@ class ServiceModel(QObject):
     @Property(bool, notify=busyChanged)
     def busy(self):
         return self._busy
+
+    @Property(str, notify=defaultTabChanged)
+    def defaultTab(self):
+        return self._default_tab
 
     @Property(str, notify=errorChanged)
     def errorDetail(self):
@@ -873,56 +1154,89 @@ class ServiceModel(QObject):
         return self._failure_count
 
     @Slot()
+    @Slot(str)
+    def pageOpened(self, reveal=""):
+        """分析頁打開了（側邊欄、⌘3、View Results）：每個分頁回到前 8 筆，在背景重新整理（1 個往返）。
+
+        reveal 是要露出來的服務（View Results）。已經載入的話馬上顯示到它那一頁；不管有沒有，這次的查詢都會
+        多取到它（重新整理時它可能往下移），回來時再顯示一次。頁面用 indexOfService() 找它在第幾列。
+        """
+        for model in self._tabs.values():
+            model.reset()
+        self._pin = reveal or None
+        if self._pin is not None:
+            self._reveal(self._pin)
+        self.refresh()
+
+    @Slot()
     def refresh(self):
-        """在 db lane 重新整理三個清單（1 個往返）。上一次還沒回來就不再送，而且不會漏掉更新：
+        """在 db lane 重新整理三個分頁（1 個往返）。上一次還沒回來就不再送，而且不會漏掉更新：
         db lane 只有一條執行緒、依序執行，所以呼叫者剛做完的資料庫工作（監看的查詢、錄影寫入、改狀態）
-        如果排在還沒回來的那一次後面，結果不會先回來；還沒回來的那一次一定查得到它。"""
+        如果排在還沒回來的那一次後面，結果不會先回來；還沒回來的那一次一定查得到它。
+        要的筆數或要露出來的服務在這段期間變了（Show More、View Results），回來時會再查一次（_took）。"""
+        request = self._request()
         db, account_id = self.services.db, self.account_id
-        if self.services.tasks.submit("db", ANALYSIS_KEY, lambda token, report: list_services(db, account_id),
-                                      on_ok=self._loaded, on_err=self._failed_to_load):
+        if self.services.tasks.submit("db", ANALYSIS_KEY, lambda token, report: list_services(db, account_id, *request),
+                                      on_ok=lambda rows: self._loaded(request, rows), on_err=self._failed_to_load):
             self._set_busy(True)
+            return True
+        return False
 
     @Slot(str, str, result=int)
     def indexOfService(self, tab, service_id):
-        """service_id 在分頁 tab（completed、analyzing、notAnalyzed）的第幾列，沒有是 -1。分析頁捲到那一列用。"""
-        rows = {"completed": self._completed, "analyzing": self._analyzing,
-                "notAnalyzed": self._not_analyzed}.get(tab)
+        """service_id 在分頁 tab（completed、analyzing、notAnalyzed）顯示的第幾列，沒有是 -1。分析頁捲到那一列用。"""
+        rows = self._tabs.get(tab)
         ids = [row["serviceId"] for row in rows.rows()] if rows is not None else []
         return ids.index(service_id) if service_id in ids else -1
 
-    def _loaded(self, rows):
-        self._took(rows)
-        self._set_busy(False)
+    def _request(self):
+        """這次查詢要的：每個分頁的筆數（照 TABS 的順序，也就是狀態 1、2、3）、要露出來的服務。"""
+        return tuple(self._tabs[tab].limit for tab in TABS), self._pin
 
-    def _took(self, rows):
-        """拿到最新的清單（重新整理，或送出分析之後）：套用，清掉錯誤和「更新不到」的警告。"""
-        self._apply(rows)
+    def _loaded(self, request, rows):
+        if not self._took(rows, request):
+            self._set_busy(False)
+
+    def _took(self, rows, request):
+        """拿到最新的清單（重新整理，或送出分析之後）：套用，清掉錯誤和「更新不到」的警告。
+        要的比這次查的多（查詢期間按了 Show More、View Results）就再查一次；回傳有沒有再查。"""
+        self._apply(rows, request[1], fresh=True)
         if self._failure_count:
             self._failure_count = 0
             self.errorChanged.emit()
         self._set_status("ready")
         self._retry.stop()
         self.refresh_recovered()
+        return self._wants_more(request) and self.refresh()
+
+    def _wants_more(self, request):
+        if self._pin is not None and self._pin != request[1]:
+            return True
+        return not all(model.satisfied() for model in self._tabs.values())
 
     def _failed_to_load(self, error):
         logger.warning("loading the analysis lists failed: %r", error)
         self._set_busy(False)
         if self._status == "ready":  # 清單留著，只跳一則警告；過一會兒自己再試
             self.refresh_failed(error, REFRESH_RETRY_S)
-            self._retry.start()
+            if not self._stopped:
+                self._retry.start()
             return
         self._error_detail, self._error_technical = error_text(error)
         self._failure_count += 1
         self.errorChanged.emit()
         self._set_status("error")
 
-    def refresh_failed(self, error, retry_in):
+    def refresh_failed(self, error, retry_in, watching=False):
         """分析狀態更新不到（清單的重新整理，或監看的查詢；retry_in 秒後會再試）。
 
-        已經有資料時只跳一則警告（同一次斷線不管失敗幾次、從哪裡失敗都只有一則），恢復後自己關掉；
-        還沒有資料時由分析頁的區塊錯誤說明（DS-27），不跳通知。
+        同一次斷線不管失敗幾次、從哪裡失敗都只有一則警告，恢復後自己關掉。什麼時候跳：
+        - 清單已經有資料（分析頁打開過）：清單留著，但可能是舊的。
+        - watching：監看正在等分析結果（有分析中的服務）。分析頁沒打開過也要跳：使用者在首頁等「Analysis complete」，
+          不說的話他不知道通知會晚到（T30）。
+        其他時候不跳：分析頁第一次載入就失敗是區塊錯誤（DS-27）；沒有在等的服務時，監看查不到也不影響任何東西。
         """
-        if self._status != "ready" or self._refresh_warning:
+        if self._refresh_warning or (self._status != "ready" and not watching):
             return
         cause = user_message(error)[1]
         self._refresh_warning = self.services.notifier.notify(
@@ -936,35 +1250,77 @@ class ServiceModel(QObject):
             self.services.notifier.dismiss(self._refresh_warning)
             self._refresh_warning = 0
 
-    def _apply(self, rows):
+    def _apply(self, rows, pin=None, fresh=False):
+        """把查到的清單分到三個分頁。也用來重新套用上一次的清單（送出中的狀態變了、sentText 該更新了）：
+        只有真的變了的列會發 dataChanged。
+
+        fresh：剛從資料庫查到的。只有這時候才清掉不在分析中的送出時間：重新套用的可能是還沒載入時的空清單
+        （例如登入後還沒打開分析頁，就從通知按了 Analyze），拿它來清會把本機記的全部清掉。"""
         self._rows = rows
-        now = time.time() * 1000
-        groups = {1: [], 2: [], 3: []}
+        now = self._clock() * 1000
+        today = datetime.fromtimestamp(now / 1000)
+        groups = {status: [] for status in TAB_STATUS.values()}
+        totals = dict.fromkeys(TAB_STATUS.values(), 0)
         statuses = {}
         for row in rows:
             service_id, status = str(row["service_id"]), int(row["service_status"])
             statuses[service_id] = status
+            totals[status] = int(row["total"])
             if status == 1 and self._last_status.get(service_id) == 2:
                 self._failed.add(service_id)
             elif status != 1:
                 self._failed.discard(service_id)
+            if status != 2 and fresh:  # 不在分析中了：送出的時間沒用了
+                self._sent.forget(service_id)
             groups[status].append({
                 "serviceId": service_id,
                 "startTime": format_time(row["service_start"]),
-                "endTime": format_time(row["service_end"]),
-                "status": status,
-                "staffScore": score_or_none(row["server_total"]),
-                "customerScore": score_or_none(row["customer_total"]),
-                "waitingSince": self._waiting_since.setdefault(service_id, now) if status == 2 else 0.0,
+                "recorded": recorded_text(row["service_start"], today),
+                "length": length_text(row["service_start"], row["service_end"]),
+                "sentText": sent_text(self._sent.get(service_id), now) if status == 2 else "",
+                "customerScore": _score(row["customer_total"]),
+                "staffScore": _score(row["server_total"]),
                 "failed": service_id in self._failed,
                 "sending": service_id in self._sending,
             })
         self._last_status = statuses
-        self._waiting_since = {sid: since for sid, since in self._waiting_since.items() if statuses.get(sid) == 2}
-        self._failed &= set(statuses)
-        self._completed.replace(groups[3])
-        self._analyzing.replace(groups[2])
-        self._not_analyzed.replace(groups[1])
+        if fresh and len(groups[2]) >= totals[2]:  # 分析中的全部載入了：不在裡面的都不是分析中了
+            analyzing = {row["serviceId"] for row in groups[2]}
+            for service_id in self._sent.ids() - analyzing:
+                self._sent.forget(service_id)
+        for tab, status in TAB_STATUS.items():
+            self._tabs[tab].set_rows(groups[status], totals[status])
+        if pin is not None and pin == self._pin:  # 這次的查詢有多取到它：顯示到它那一頁
+            self._reveal(pin)
+            self._pin = None
+        if self._tabs["analyzing"].count and not self._stopped:
+            if not self._ticker.isActive():
+                self._ticker.start()
+        else:
+            self._ticker.stop()
+        self._update_default_tab()
+
+    def stop(self):
+        """外殼關掉時（ServerHome.stop()）：停掉 sentText 的計時和自己重試；之後才回來的結果也不再開計時器。"""
+        self._stopped = True
+        self._ticker.stop()
+        self._retry.stop()
+
+    def _reveal(self, service_id):
+        for model in self._tabs.values():
+            if model.reveal(service_id) >= 0:
+                return
+
+    @Slot()
+    def _tick(self):
+        """30 秒到了：sentText 用現在的時間重新算（只有變了的列會更新）。"""
+        self._apply(self._rows)
+
+    def _update_default_tab(self):
+        tab = default_tab(*(self._tabs[tab].total for tab in TABS)) if self._status == "ready" else ""
+        if tab != self._default_tab:
+            self._default_tab = tab
+            self.defaultTabChanged.emit()
 
     # ------------------------------------------------------------ 送出分析（UX-18、ENG-05、ENG-14）
 
@@ -988,18 +1344,21 @@ class ServiceModel(QObject):
 
     def _posted(self, service_id):
         """分析服務收到了：在 db lane 把狀態改成 2，順便重新整理清單（2 個往返）。"""
-        posted_at = time.time() * 1000  # 從分析服務收到的時候開始等
+        posted_at = self._clock() * 1000  # 從分析服務收到的時候開始等
+        request = self._request()
         db, account_id = self.services.db, self.account_id
-        if not self.services.tasks.submit("db", mark_key(service_id),
-                                          lambda token, report: list_services(db, account_id, mark_sent=service_id),
-                                          on_ok=lambda rows: self._marked(service_id, posted_at, rows),
-                                          on_err=lambda error: self._not_sent(service_id, error)):
+        if not self.services.tasks.submit(
+                "db", mark_key(service_id),
+                lambda token, report: list_services(db, account_id, *request, mark_sent=service_id),
+                on_ok=lambda rows: self._marked(service_id, posted_at, request, rows),
+                on_err=lambda error: self._not_sent(service_id, error)):
             self._set_sending(service_id, False)  # TaskRunner 已經關了（程式正在結束）
 
-    def _marked(self, service_id, posted_at, rows):
-        self._waiting_since[service_id] = posted_at
+    def _marked(self, service_id, posted_at, request, rows):
+        self._sent.remember(service_id, posted_at)  # 先記下：_took 套用時這一列就有送出的時間
+        self._failed.discard(service_id)
         self._sending.discard(service_id)
-        self._took(rows)  # 那一列移到 Analyzing（DS-24：按鈕跟著那一列換掉）
+        self._took(rows, request)  # 那一列移到 Analyzing（DS-24：按鈕跟著那一列換掉）
         self._show_toast("info", _tr("Sent for analysis"),
                          _tr("%1 is being analyzed. You'll be notified when it's done.", service_id),
                          analyze_key(service_id))
@@ -1025,12 +1384,14 @@ class ServiceModel(QObject):
 
     def analysis_finished(self, service_id):
         """2 → 3：成功 toast＋View Results，清單在背景重新整理（不管在哪一頁都會更新）。"""
+        self._sent.forget(service_id)
         self._show_toast("success", _tr("Analysis complete"), _tr("Scores and charts for %1 are ready.", service_id),
                          outcome_key(service_id), f"open-analysis:{service_id}", _tr("View Results"))
         self.refresh()
 
     def analysis_failed(self, service_id):
         """2 → 1（分析服務失敗時把狀態改回 1，D4）：那一列標成 Failed、按鈕變成 Retry，跳常駐的錯誤＋Retry。"""
+        self._sent.forget(service_id)
         self._failed.add(service_id)
         self._show_toast("error", _tr("Analysis failed"),
                          _tr("%1 couldn't be analyzed. You can send it again.", service_id),
@@ -1049,6 +1410,7 @@ class ServiceModel(QObject):
         if status != self._status:
             self._status = status
             self.statusChanged.emit()
+            self._update_default_tab()
 
     def _set_busy(self, busy):
         if busy != self._busy:
@@ -1101,9 +1463,10 @@ class ServerHome(QObject):
         self.deviceFinder.restore_saves()
 
     def stop(self):
-        """外殼關掉時：停止監看，清掉 Dock 的徽章。"""
+        """外殼關掉時：停止監看和分析頁的計時，清掉 Dock 的徽章。"""
         if self.watcher is not None:
             self.watcher.stop()
+        self.serviceModel.stop()
         self.attention.clear()
         self.shell_window = None
 
@@ -1131,7 +1494,7 @@ class ServerHome(QObject):
 
     @Slot(object)
     def _watch_failed(self, error):
-        self.serviceModel.refresh_failed(error, self.watcher.interval())
+        self.serviceModel.refresh_failed(error, self.watcher.interval(), watching=bool(self.watcher.watched))
 
     @Slot(str, int)
     def _on_action(self, action_id, toast_id):
@@ -1146,8 +1509,9 @@ class ServerHome(QObject):
 
     @Slot(str)
     def openAnalysis(self, service_id):
-        """「View Results」：外殼換到分析頁、選 Completed、標出那一列（UX-17）。和側邊欄一樣，換頁時重新整理清單。"""
-        self.serviceModel.refresh()
+        """「View Results」：外殼換到分析頁、選 Completed、標出那一列（UX-17）。和側邊欄一樣，換頁時重新整理清單；
+        那一列不在前 8 筆的話，Completed 顯示到它那一頁（同一個往返，T30）。"""
+        self.serviceModel.pageOpened(service_id)
         self.openAnalysisRequested.emit(service_id)
 
     @Slot()
@@ -1180,7 +1544,8 @@ class ServerHome(QObject):
 
     @Slot()
     def onLoadAnalysis(self):
-        self.serviceModel.refresh()
+        """側邊欄打開分析頁：每個分頁回到前 8 筆，清單在背景重新整理（1 個往返）。"""
+        self.serviceModel.pageOpened()
 
     @Slot(result=str)
     def getAccountName(self):

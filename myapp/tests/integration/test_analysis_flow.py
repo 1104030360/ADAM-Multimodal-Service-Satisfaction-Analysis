@@ -144,10 +144,10 @@ def test_analyze_shows_sending_then_a_toast_and_moves_the_row(engine, services, 
     assert analysis_service.requests == [("/analyze", {"service_id": SID})]
     assert db.status(SID) == 2
     assert home.watcher.watched == [SID] and home.watcher.next_poll_ms == 15_000  # 監看開始看這一筆
-    qml(page, 'selectedTab = "analyzing"')
+    qml(page, 'showTab("analyzing")')
     wait_until(lambda: len(rows_of(find(page, "analyzingList"))) == 1)
     [row] = rows_of(find(page, "analyzingList"))
-    assert find(row, "statusChip").property("label") == "Analyzing"
+    assert find(row, "sentCell").property("text") == "Sent less than 1 min ago"  # 從分析服務收到的時候開始算
 
 
 @pytest.mark.parametrize("problem, reason", [
@@ -245,9 +245,11 @@ def test_failure_is_marked_on_the_row_and_retry_sends_again(engine, services, db
     assert (toast["severity"], toast["detail"], toast["timeoutMs"]) == (
         "error", f"{SID} couldn't be analyzed. You can send it again.", 0)  # 常駐
     assert (toast["actionLabel"], toast["actionId"]) == ("Retry", f"retry-analyze:{SID}")
+    assert qml(page, "selectedTab") == "analyzing"  # 清單變了，頁面不自己換分頁
+    qml(page, 'showTab("notAnalyzed")')
     wait_until(lambda: len(rows_of(find(page, "notAnalyzedList"))) == 1)
     [row] = rows_of(find(page, "notAnalyzedList"))
-    assert find(row, "statusChip").property("label") == "Failed"  # DS-22
+    assert find(row, "failedNote").isVisible()  # 沒有 Status 欄（UD6）：Service ID 下面寫「Analysis failed」
     assert find(row, "analyzeButton").property("text") == "Retry"  # 同一列也能重試（DS-20）
 
     services.notifier.trigger(toast["toastId"])  # toast 上的 Retry
@@ -326,6 +328,7 @@ def test_each_watcher_poll_is_one_round_trip(engine, services, db, db_proxy, no_
 def test_watcher_and_list_share_one_refresh_warning(engine, services, db, monkeypatch, no_network_on_gui_thread):
     db.add_service(SID, "2026-10-31 09:30:00", status=2)
     home = launch_staff(engine, services)
+    open_analysis(home)  # 清單有資料了（分析頁打開時才載入，PLAN 5-3）：之後更新不到才跳警告
     restore = cut_database(services, db, monkeypatch)
     poll(home)  # 監看查不到
     home.serviceModel.refresh()  # 清單也重新整理不到（例如錄影存好之後）
