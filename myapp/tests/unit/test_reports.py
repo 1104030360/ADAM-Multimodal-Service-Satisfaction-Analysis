@@ -100,6 +100,20 @@ def test_titles_name_the_subject():
     assert reports.report_title(across) == "Company · Dec 1, 2025 – Jan 31, 2026"
 
 
+def test_same_name_staff_get_their_username_in_the_title():
+    """清單裡有兩個不同的人同名時，標題加登入帳號才分得出來（PLAN 13.7）；同一個人有好幾份不算。"""
+    mia = report("r1", kind="staff")
+    other_mia = report("r2", kind="staff", staff_id="someone-else", staff_username="mia.c")
+    shared = reports.shared_names([mia, other_mia, report("r3")])
+    assert shared == {"Mia Chen"}
+    assert reports.report_title(mia, shared) == "Mia Chen (mia) · Oct 1 – Oct 31, 2026"
+    assert reports.report_title(other_mia, shared) == "Mia Chen (mia.c) · Oct 1 – Oct 31, 2026"
+    assert reports.report_title(report("r3"), shared) == "S20261101090000 · Mia Chen (mia)"
+    assert reports.report_title(report(kind="company"), shared) == "Company · Oct 1 – Oct 31, 2026"
+    assert reports.shared_names([mia, report("r3"), report("r4", kind="company")]) == frozenset()
+    assert reports.report_row(mia, True, TODAY, shared)["title"] == "Mia Chen (mia) · Oct 1 – Oct 31, 2026"
+
+
 def test_meta_text_and_chip_state_follow_the_status():
     # 管理員：狀態標籤已經說了狀態，第二行只寫種類和時間（已發佈的是發佈的時間）
     assert reports.meta_text(report(status="generating"), True, TODAY) == "Service report · Nov 1, 10:12"
@@ -329,6 +343,20 @@ def test_opening_the_page_lists_once_and_the_admin_expires_stale_rows_first(make
     assert db.executed[0][1] == ("Timed out",) and db.executed[1][1] == (ADMIN,)
     assert [row["reportId"] for row in model.listModel.rows()] == ["r2", "r1"]
 
+
+def test_the_list_and_its_toasts_tell_same_name_staff_apart(make_model, runner, db, notifier):
+    model = make_model(admin=True)
+    model.pageOpened("reports")
+    db.reports = [report("r2", kind="staff", status="generating", staff_id="someone-else", staff_username="mia.c"),
+                  report("r1", kind="staff")]
+    runner.finish(reports.LIST_KEY)
+    assert [row["title"] for row in model.listModel.rows()] == ["Mia Chen (mia.c) · Oct 1 – Oct 31, 2026",
+                                                                "Mia Chen (mia) · Oct 1 – Oct 31, 2026"]
+    db.reports = [report("r2", kind="staff", staff_id="someone-else", staff_username="mia.c"), report("r1", kind="staff")]
+    model.poll()
+    runner.finish(reports.LIST_KEY)
+    assert titles(notifier)[-1][2] == ("Mia Chen (mia.c) · Oct 1 – Oct 31, 2026 is ready. "
+                                       "Check it, then publish it for staff.")
 
 def test_the_detail_card_lists_without_expiring_until_it_polls(make_model, runner, db):
     """明細頁的預算（T31：檔案清單 1 個往返）：報表卡打開時只 CALL；有產生中的、開始輪詢時才順便改逾時的。"""

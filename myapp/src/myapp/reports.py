@@ -323,14 +323,27 @@ def period_text(start, end):
     return range_text(start, end)
 
 
-def report_title(report):
+def shared_names(reports):
+    """清單裡同名、但不是同一個人的名字：這些人的標題後面加登入帳號才分得出來（PLAN 13.7）。"""
+    owners = {}
+    for report in reports:
+        if report.staff_name and report.staff_id:
+            owners.setdefault(report.staff_name, set()).add(report.staff_id)
+    return frozenset(name for name, ids in owners.items() if len(ids) > 1)
+
+
+def report_title(report, shared=frozenset()):
     """清單和檢視器的名稱：「S20261101090000 · Mia Chen」「Mia Chen · Oct 1 – Oct 31, 2026」
-    「Company · Oct 1 – Oct 31, 2026」。名字是報表對象目前的名字（sp_list_reports）。"""
+    「Company · Oct 1 – Oct 31, 2026」。名字是報表對象目前的名字（sp_list_reports）；
+    名字在 shared 裡（清單裡有另一個同名的人）時寫成「Mia Chen (mia)」。"""
+    name = report.staff_name
+    if name in shared and report.staff_username:
+        name = _tr("%1 (%2)", name, report.staff_username)
     if report.kind == SERVICE:
-        return _tr("%1 · %2", report.service_id, report.staff_name) if report.staff_name else report.service_id
+        return _tr("%1 · %2", report.service_id, name) if name else report.service_id
     period = period_text(report.period_start, report.period_end)
     if report.kind == STAFF:
-        return _tr("%1 · %2", report.staff_name or report.staff_username or _tr("Staff"), period)
+        return _tr("%1 · %2", name or report.staff_username or _tr("Staff"), period)
     return _tr("Company · %1", period)
 
 
@@ -355,10 +368,10 @@ def meta_text(report, admin, today):
     return _tr("%1 · %2", kind_text(report.kind), when) if when else kind_text(report.kind)
 
 
-def report_row(report, admin, today):
-    """Report → 清單模型的一列（REPORT_ROLES）。"""
+def report_row(report, admin, today, shared=frozenset()):
+    """Report → 清單模型的一列（REPORT_ROLES）。shared：清單裡同名的人（shared_names）。"""
     return {
-        "reportId": report.report_id, "kind": report.kind, "title": report_title(report),
+        "reportId": report.report_id, "kind": report.kind, "title": report_title(report, shared),
         "kindText": kind_text(report.kind), "metaText": meta_text(report, admin, today),
         "chipState": chip_state(report), "status": report.status, "published": report.published,
         "failureReason": report.failure_reason if report.status == FAILED else "",
@@ -433,6 +446,7 @@ class ReportsModel(QObject):
         self._pdf = pdf
         self._list = RowListModel(REPORT_ROLES, "reportId", self)
         self._reports = []           # [Report]，新的在前
+        self._shared = frozenset()   # 清單裡同名、不同人的名字（標題加登入帳號）
         self._list_state = "idle"
         self._list_busy = False
         self._error_detail = self._error_technical = ""
@@ -504,13 +518,13 @@ class ReportsModel(QObject):
     def selected(self):
         """選到的那一份（清單的一列，REPORT_ROLES）；沒有是空的。"""
         report = self._find(self._selected)
-        return report_row(report, self._admin, date.today()) if report is not None else {}
+        return report_row(report, self._admin, date.today(), self._shared) if report is not None else {}
 
     @Property("QVariantMap", notify=selectedChanged)
     def detailReport(self):
         """管理員明細頁那筆服務最新的報表（清單的一列）；沒有是空的。"""
         report = self._service_report(self._detail_service)
-        return report_row(report, self._admin, date.today()) if report is not None else {}
+        return report_row(report, self._admin, date.today(), self._shared) if report is not None else {}
 
     @Property(bool, notify=busyChanged)
     def submitting(self):
@@ -679,12 +693,13 @@ class ReportsModel(QObject):
     def _apply(self, reports):
         """套用查到的清單：通知狀態的變化、更新列、維持選取、打開剛變成 ready 的那一份。"""
         today = date.today()
+        self._shared = shared_names(reports)  # 通知的標題也要分得出同名的人，所以先算
         if self._admin:
             self._notify_admin(reports)
         else:
             self._notify_staff(reports)
         self._reports = list(reports)
-        self._list.replace([report_row(report, self._admin, today) for report in reports])
+        self._list.replace([report_row(report, self._admin, today, self._shared) for report in reports])
         self._follow_selection()
         self.busyChanged.emit()  # generatingKeys
         self.selectedChanged.emit()
@@ -706,7 +721,7 @@ class ReportsModel(QObject):
             fresh = [report for report in reports if report.report_id not in self._seen]
             if len(fresh) == 1:
                 report = fresh[0]
-                self._notify("info", _tr("New report"), _tr("%1 is ready to read.", report_title(report)),
+                self._notify("info", _tr("New report"), _tr("%1 is ready to read.", report_title(report, self._shared)),
                              toast_key(report.report_id), f"{OPEN_ACTION}:{report.report_id}", _tr("View"))
             elif fresh:
                 self._notify("info", _tr("%1 new reports", len(fresh)), _tr("They're ready to read."),
@@ -715,15 +730,15 @@ class ReportsModel(QObject):
 
     def _report_ready(self, report):
         if report.kind == COMPANY:
-            detail = _tr("%1 is ready. Only admins can see company reports.", report_title(report))
+            detail = _tr("%1 is ready. Only admins can see company reports.", report_title(report, self._shared))
         else:
-            detail = _tr("%1 is ready. Check it, then publish it for staff.", report_title(report))
+            detail = _tr("%1 is ready. Check it, then publish it for staff.", report_title(report, self._shared))
         self._notify("success", _tr("Report ready"), detail, toast_key(report.report_id),
                      f"{OPEN_ACTION}:{report.report_id}", _tr("Open"))
 
     def _report_failed(self, report):
         reason = report.failure_reason or _tr("This report couldn't be generated.")
-        self._notify("error", _tr("Report wasn't generated"), _tr("%1: %2", report_title(report), reason),
+        self._notify("error", _tr("Report wasn't generated"), _tr("%1: %2", report_title(report, self._shared), reason),
                      toast_key(report.report_id), f"{RETRY_ACTION}:{report.report_id}", _tr("Retry"))
 
     def _notify(self, severity, title, detail, key, action_id="", action_label=""):
@@ -784,7 +799,8 @@ class ReportsModel(QObject):
         report = self._find(self._selected)
         if report is not None and report.status == READY:
             if force or self._pdf.current != report.report_id:
-                self._pdf.open_report(report.report_id, report.s3_key, report_title(report), self._target_height)
+                self._pdf.open_report(report.report_id, report.s3_key, report_title(report, self._shared),
+                                      self._target_height)
         elif self._pdf.current:
             self._pdf.clear()
 
@@ -892,7 +908,7 @@ class ReportsModel(QObject):
         """連資料庫也寫不進去：那一列在資料庫裡還是 generating，10 分鐘後會變成 Timed out；先用通知說原因。"""
         logger.warning("marking report %s failed: %r", report_id, exc)
         report = self._find(report_id)
-        title = report_title(report) if report is not None else report_id
+        title = report_title(report, self._shared) if report is not None else report_id
         self._notify("error", _tr("Report wasn't generated"), _tr("%1: %2", title, reason), toast_key(report_id),
                      f"{RETRY_ACTION}:{report_id}" if report is not None else "",
                      _tr("Retry") if report is not None else "")
@@ -926,7 +942,8 @@ class ReportsModel(QObject):
         self._listed(reports)
         report = self._find(report_id)
         if report is not None and report.published:
-            self._notify("success", _tr("Report published"), _tr("Staff can now see %1.", report_title(report)),
+            self._notify("success", _tr("Report published"),
+                         _tr("Staff can now see %1.", report_title(report, self._shared)),
                          toast_key(report_id))
         else:
             self._notify("warning", _tr("Report wasn't published"),

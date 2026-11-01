@@ -53,6 +53,12 @@ Dialog {
         vm.generate(kind, staffId, serviceId, startField.text, endField.text)
     }
 
+    // Last 7 days、This month：兩格一起填（和 Services 頁的 applyRange 一樣）
+    function applyRange(start, end) {
+        startField.text = start
+        endField.text = end
+    }
+
     function chooseKind(value) {
         if (kind === value)
             return
@@ -294,11 +300,15 @@ Dialog {
             FieldLabel { text: qsTr("From") }
             FieldLabel { text: qsTr("To") }
 
-            // 日期欄和 Services 頁共用（DateField.qml）：只用它的 text、invalid
+            // 日期欄和 Services 頁共用（DateField.qml）：text、invalid，和期間的快捷（rangeChosen 填好兩格）。
+            // 這是對話框，月曆要疊在對話框上面（popupZ），不然點不到
             DateField {
                 id: startField
                 objectName: "reportStartField"
                 Layout.preferredWidth: periodGrid.half
+                popupZ: Theme.zDialogOverlay
+                rangeOptions: true
+                onRangeChosen: (start, end) => root.applyRange(start, end)
                 invalid: root.vm !== null && root.vm.startDateError !== ""
                 Accessible.name: qsTr("From date")
                 onTextChanged: {
@@ -311,6 +321,9 @@ Dialog {
                 id: endField
                 objectName: "reportEndField"
                 Layout.preferredWidth: periodGrid.half
+                popupZ: Theme.zDialogOverlay
+                rangeOptions: true
+                onRangeChosen: (start, end) => root.applyRange(start, end)
                 invalid: root.vm !== null && root.vm.endDateError !== ""
                 Accessible.name: qsTr("To date")
                 onTextChanged: {

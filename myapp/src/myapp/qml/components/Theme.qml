@@ -165,6 +165,7 @@ QtObject {
     readonly property int zContent: 0
     readonly property int zPageOverlay: 10
     readonly property int zDialog: 100
+    readonly property int zDialogOverlay: 110   // 對話框裡打開的月曆：要在對話框之上、toast 之下
     readonly property int zToast: 200
     readonly property color scrim: Qt.rgba(0, 0, 0, 0.6)      // 新增：對話框背後變暗（深色底上要更暗才分得出來）
 

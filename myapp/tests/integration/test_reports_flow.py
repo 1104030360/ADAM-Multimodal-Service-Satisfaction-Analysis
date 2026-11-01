@@ -498,3 +498,34 @@ def test_the_list_error_can_be_retried(ui, services, db, monkeypatch):
     qml(error, "retry()")
     wait_until(lambda: home.reportsModel.listState == "empty")
     assert find(page, "reportsEmpty").isVisible()
+
+
+# ── 表單的期間用月曆選（PLAN 7.3 用 N2 的日期選擇器）────────────────────────────
+
+def test_the_report_period_is_picked_on_the_calendar_above_the_dialog(ui, services, db):
+    """New Report 是對話框：月曆要疊在對話框上面（DateField 的 popupZ），用滑鼠點得到；This month 兩格一起填。"""
+    from types import SimpleNamespace
+
+    from tests.integration.test_date_picker import calendar, child, click, open_calendar, pick
+
+    home, window = launch(admin_home_init, ui, ADMIN_ID, services)
+    page = show(window, "admin_reports_page.qml")
+    wait_until(lambda: home.reportsModel.listState == "empty")
+    qml(page, "openGenerator()")
+    dialog = qml(page, "generator")
+    wait_until(lambda: qml(dialog, "opened"))
+    qml(dialog, 'chooseKind("company")')
+    start, end = qml(dialog, "startDateField"), qml(dialog, "endDateField")
+    for field in (start, end):
+        field.setProperty("today", "2026-11-12")
+    form = SimpleNamespace(window=window)
+    assert qml(calendar(start), "z") > qml(dialog, "z")
+
+    pick(form, start, "2026-10-20", months_back=1)  # 點到的就是指著的那一天（pick 裡檢查）
+    assert qml(dialog, "opened")  # 點月曆不會關掉對話框
+
+    open_calendar(form, end)
+    click(window, child(calendar(end), "thisMonthOption"))
+    wait_until(lambda: not end.property("calendarOpen"))
+    assert (start.property("text"), end.property("text")) == ("2026-11-01", "2026-11-12")  # 1 號到今天
+    qml(dialog, "close()")

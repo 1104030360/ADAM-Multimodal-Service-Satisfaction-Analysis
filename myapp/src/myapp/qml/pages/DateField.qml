@@ -18,6 +18,8 @@ import "../components"
 // - 月曆：上面是上一個月、Month、Year、下一個月，下面是 Qt 的 DayOfWeekRow、MonthGrid。一週從星期日開始（en_US），
 //   「今天」是這台電腦的日期（today 屬性給測試固定日期），日期下面有一個點、字比較粗；選到的那天是亮底。
 // - 左邊的快捷：Today、Clear；rangeOptions 打開時多 Last 7 days、This month。
+// - 月曆疊在 popupZ 這一層：放在頁面上是 zPageOverlay；放在對話框裡（報表的 New Report）要設 Theme.zDialogOverlay，
+//   不然月曆在對話框後面、點不到。不一律設高，是因為頁面上月曆開著時跳出的確認（⌘Q 的 Quit）要蓋在月曆上面。
 // - 選了一天（或 Today、Clear）：改 text、關掉月曆、焦點回到欄位，並發出 textEdited()（和打字一樣，頁面照舊清掉錯誤）。
 //   Last 7 days、This month 是一段期間，一個欄位裝不下：發出 rangeChosen(start, end)，由頁面把兩格都填好（T35）。
 //   選了不會自己查詢，要按 Search。結束日早於開始日的錯誤照舊在按 Search 時檢查（service_list.date_errors）。
@@ -30,6 +32,7 @@ TextField {
     property string accessibleName: ""
     property string errorText: ""
     property bool rangeOptions: false   // 快捷多 Last 7 days、This month（選了發 rangeChosen）
+    property int popupZ: Theme.zPageOverlay   // 月曆疊在哪一層；在對話框裡用 Theme.zDialogOverlay
     property string today: ""           // 「今天」（YYYY-MM-DD）；空的是這台電腦的日期。測試用
     property var announced: []          // 鍵盤移動時唸過的日期（Accessible.announce 在測試裡看不到，T17 的做法）
     readonly property bool calendarOpen: calendar.visible
@@ -302,7 +305,7 @@ TextField {
         id: calendar
         objectName: "calendarPopup"
         y: field.height + 6
-        z: Theme.zPageOverlay
+        z: field.popupZ
         margins: Theme.spaceS               // 放不下時推回視窗裡
         padding: Theme.spaceM
         modal: false

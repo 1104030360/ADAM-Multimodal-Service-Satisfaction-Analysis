@@ -1145,7 +1145,7 @@ def test_theme_sizes_and_layers_match_the_design_system(harness):
                 "spaceXL": 24, "radiusS": 5, "radiusM": 10, "controlHeight": 44, "controlHeightL": 50,
                 "railWidth": 96, "navTile": 44, "radiusCard": 16, "contentMaxWidth": 1360,
                 "chipHeight": 24, "iconS": 16, "iconM": 20, "toastWidth": 360, "hitMin": 32,
-                "zContent": 0, "zPageOverlay": 10, "zDialog": 100, "zToast": 200}
+                "zContent": 0, "zPageOverlay": 10, "zDialog": 100, "zDialogOverlay": 110, "zToast": 200}
     assert {name: theme(window, name) for name in expected} == expected
 
 
