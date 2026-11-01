@@ -88,7 +88,7 @@ Window {
         switch (file) {
         case "admin_add_page.qml": return qsTr("Add a staff or admin account.")
         case "admin_service_page.qml": return qsTr("Find any staff member's services and open their videos and charts.")
-        case "admin_reports_page.qml": return qsTr("Choose a staff member's report to read it here.")
+        case "admin_reports_page.qml": return qsTr("Choose a report to read it here.")
         case "admin_setting_page.qml": return qsTr("Changes apply right away and are kept for next time.")
         }
         return ""

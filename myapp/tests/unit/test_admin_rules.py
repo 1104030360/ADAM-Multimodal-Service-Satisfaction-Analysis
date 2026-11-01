@@ -144,7 +144,7 @@ def test_added_account_is_hashed_and_announced(services, accounts):
     assert events.added == [(True, "Account added")]
     [toast] = toasts(services.notifier)
     assert (toast["severity"], toast["title"], toast["detail"]) == ("success", "Account added",
-                                                                    "new_staff · 新同事 · Level 1")
+                                                                    "新同事 can log in as new_staff (level 1 · Staff).")
     assert not manager.busy
 
 
@@ -153,7 +153,15 @@ def test_messages_keep_user_text_that_looks_like_a_placeholder(services, account
     manager.addAccount("100%2off", "pw", "50%1", "1", "")
     settle(services)
     [toast] = toasts(services.notifier)
-    assert toast["detail"] == "100%2off · 50%1 · Level 1"  # 名字裡的「%2」「%1」不會被當成要替換的位置
+    assert toast["detail"] == "50%1 can log in as 100%2off (level 1 · Staff)."  # 名字裡的「%2」「%1」不會被替換
+
+
+def test_added_admin_is_announced_with_the_admin_label(services, accounts):
+    manager, _ = accounts
+    manager.addAccount("lead", "pw", "Lead", "3", "")
+    settle(services)
+    [toast] = toasts(services.notifier)
+    assert toast["detail"] == "Lead can log in as lead (level 3 · Admin)."  # 和選單同一個寫法（PLAN D9）
 
 
 def test_duplicate_username_becomes_a_field_error(services, accounts):

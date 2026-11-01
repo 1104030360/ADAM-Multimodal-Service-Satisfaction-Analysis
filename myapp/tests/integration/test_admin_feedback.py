@@ -213,15 +213,25 @@ def test_launch_shows_the_shell_first_and_loads_in_the_background(db, db_proxy, 
 # ---------------------------------------------------------------- 新增帳號（UX-33、UX-34、DS-52）
 
 
+def open_add_page(ui):
+    """打開新增帳號頁，等等級選單有選項，再畫一個畫格：Layout 在畫格之前才排好位置，沒畫過就點，會點到舊的位置。"""
+    page = open_page(ui, "admin_add_page.qml")
+    wait_until(lambda: qml(page, "levelField.count") > 0)
+    render_frames(ui.window)
+    return page
+
+
+
 def test_add_account_success_shows_a_toast_clears_the_form_and_focuses_username(admin, db):
-    page = open_page(admin, "admin_add_page.qml")
+    page = open_add_page(admin)
     wait_until(lambda: qml(page, "levelField.count") == 5)
     fill(page, usernameField="new_staff", passwordField="S3cret-pass", nameField="新同事", jobTitleField="櫃檯人員")
     admin.proxy.reset()
     click(admin.window, child(page, "addAccountButton"))
 
     toast = toast_titled(admin.window, "Account added")
-    assert (toast.property("severity"), toast.property("detail")) == ("success", "new_staff · 新同事 · Level 1")
+    assert (toast.property("severity"), toast.property("detail")) == (
+        "success", "新同事 can log in as new_staff (level 1 · Staff).")
     assert admin.proxy.snapshot()["rt"] == 1  # 一個 INSERT
     assert [qml(page, f"{field}.text") for field in FORM_FIELDS] == ["", "", "", ""]
     wait_until(lambda: qml(page, "usernameField.input.activeFocus"))  # 接著新增下一個
@@ -231,12 +241,19 @@ def test_add_account_success_shows_a_toast_clears_the_form_and_focuses_username(
 
 
 def test_add_account_with_the_keyboard_only(admin, db):
-    page = open_page(admin, "admin_add_page.qml")
+    page = open_add_page(admin)
     wait_until(lambda: qml(page, "levelField.count") == 5)
     wait_until(lambda: qml(page, "usernameField.input.activeFocus"))  # 一打開就可以打字
-    for text in ("kb_staff", "S3cret-pass", "鍵盤"):
-        type_text(admin.window, text)
-        QTest.keyClick(admin.window, Qt.Key.Key_Tab)
+    type_text(admin.window, "kb_staff")
+    QTest.keyClick(admin.window, Qt.Key.Key_Tab)
+    type_text(admin.window, "S3cret-pass")
+    QTest.keyClick(admin.window, Qt.Key.Key_Tab)  # 密碼後面是 Show：Space 顯示出來核對
+    assert qml(page, "showButton.activeFocus") and qml(page, "showButton.visualFocus")
+    QTest.keyClick(admin.window, Qt.Key.Key_Space)
+    assert qml(page, "passwordField.echoMode === TextInput.Normal")
+    QTest.keyClick(admin.window, Qt.Key.Key_Tab)
+    type_text(admin.window, "鍵盤")
+    QTest.keyClick(admin.window, Qt.Key.Key_Tab)
     assert qml(page, "levelField.activeFocus")
     QTest.keyClick(admin.window, Qt.Key.Key_Tab)  # 等級用預設的 1 · Staff
     type_text(admin.window, "櫃檯")
@@ -247,7 +264,7 @@ def test_add_account_with_the_keyboard_only(admin, db):
 
 
 def test_duplicate_username_is_a_field_error_and_moves_focus_there(admin, db):
-    page = open_page(admin, "admin_add_page.qml")
+    page = open_add_page(admin)
     wait_until(lambda: qml(page, "levelField.count") == 5)
     fill(page, usernameField="placeholder_staff", passwordField="pw", nameField="重複")
     click(admin.window, child(page, "addAccountButton"))
@@ -261,7 +278,7 @@ def test_duplicate_username_is_a_field_error_and_moves_focus_there(admin, db):
 
 
 def test_required_fields_are_checked_on_submit_without_touching_the_database(admin):
-    page = open_page(admin, "admin_add_page.qml")
+    page = open_add_page(admin)
     wait_until(lambda: qml(page, "levelField.count") == 5)
     admin.proxy.reset()
     click(admin.window, child(page, "addAccountButton"))
@@ -277,7 +294,7 @@ def test_required_fields_are_checked_on_submit_without_touching_the_database(adm
 
 
 def test_offline_add_keeps_the_entries_and_retry_on_the_toast_saves(admin, db, mysql_server, monkeypatch):
-    page = open_page(admin, "admin_add_page.qml")
+    page = open_add_page(admin)
     wait_until(lambda: qml(page, "levelField.count") == 5)
     fill(page, usernameField="new_staff", passwordField="S3cret-pass", nameField="新同事", jobTitleField="櫃檯人員")
     admin.proxy.kill()  # 連線斷掉，之後也連不上
@@ -302,19 +319,18 @@ def test_level_picker_lists_only_levels_the_admin_can_assign(db, engine, service
     account_id = f"00000000-0000-0000-0000-00000000010{level}"
     db.add_account(account_id, f"admin{level}", f"管理員{level}", level=str(level))
     ui = launch(engine, services, account_id)
-    page = open_page(ui, "admin_add_page.qml")
+    page = open_add_page(ui)
     wait_until(lambda: qml(page, "levelField.count") == level)
     assert [qml(page, f"levelField.textAt({i})") for i in range(level)] == (
         ["1 · Staff"] + [f"{n} · Admin" for n in range(2, level + 1)])
-    assert child(page, "levelHelp").property("text") == (
-        f"You can assign levels 1–{level} (your level is {level}). Admins can add accounts up to their own level.")
+    assert child(page, "levelHelp").property("text") == f"You can add levels 1–{level} (your level is {level})."
 
 
 def test_level_above_own_level_is_rejected_on_the_level_field(db, engine, services, qml_warnings,
                                                               no_network_on_gui_thread):
     db.add_account("00000000-0000-0000-0000-000000000103", "admin3", "管理員3", level="3")
     ui = launch(engine, services, "00000000-0000-0000-0000-000000000103")
-    page = open_page(ui, "admin_add_page.qml")
+    page = open_add_page(ui)
     wait_until(lambda: qml(page, "levelField.count") == 3)
     qml(page, 'accountManager.addAccount("boss", "pw", "老闆", "5", "")')  # 繞過選單：Python 端照樣擋
     level_error = child(page, "levelError")
@@ -325,9 +341,55 @@ def test_level_above_own_level_is_rejected_on_the_level_field(db, engine, servic
 
 
 def test_update_account_is_hidden(admin):
-    page = open_page(admin, "admin_add_page.qml")
+    page = open_add_page(admin)
     assert find_button(page, "Add Account") is not None
     assert find_button(page, "Update Account") is None  # PLAN D8：沒有帳號清單可以選，先拿掉
+
+
+def texts(item):
+    """item 底下看得到的 Text 的字（Repeater、Row 建立的也算），依畫面上的順序。"""
+    found, pending = [], [item]
+    while pending:
+        current = pending.pop(0)
+        if current.inherits("QQuickText") and current.isVisible() and current.property("text"):
+            found.append(current.property("text"))
+        pending.extend(current.childItems())
+    return found
+
+
+def test_add_account_page_layout_and_copy(admin):
+    """新版介面 PLAN 6-8：標題在外殼的頁首；表單卡「New account」，旁邊「Account levels」說明 1 和 2～5（D9）。"""
+    page = open_add_page(admin)
+    wait_until(lambda: qml(page, "levelField.count") == 5)
+    assert (qml(admin.window, "header.title"), qml(admin.window, "header.subtitle")) == (
+        "Add Account", "Add a staff or admin account.")
+    assert texts(child(page, "formCard"))[0] == "New account"  # 頁面不再自己畫一次頁面標題
+    assert child(page, "passwordHelp").property("text") == "Hand it over in person. It can't be seen in the app later."
+    assert texts(child(page, "levelsCard")) == [
+        "Account levels",
+        "1 · Staff", "Records services and sees only their own results.",
+        "2–5 · Admin", "Sees every staff member's services and scores. Can add accounts up to their own level."]
+    assert "(optional)" in texts(child(page, "jobTitleField"))  # 職稱可以空白，標籤上寫清楚
+    assert qml(page, "jobTitleField.input.Accessible.name") == "Job Title"
+
+
+def test_show_password_reveals_it_and_the_next_account_starts_hidden(admin, db):
+    page = open_add_page(admin)
+    wait_until(lambda: qml(page, "levelField.count") == 5)
+    show = child(page, "showPasswordButton")
+    assert qml(page, "passwordField.echoMode === TextInput.Password")
+    assert (show.property("text"), qml(show, "Accessible.name")) == ("Show", "Show password")
+    width = show.width()
+    click(admin.window, show)
+    assert qml(page, "passwordField.echoMode === TextInput.Normal")
+    assert (show.property("text"), qml(show, "Accessible.name")) == ("Hide", "Hide password")
+    assert show.width() == width  # 換字時按鈕不變寬，密碼欄不跟著縮放
+
+    fill(page, usernameField="shown_pw", passwordField="S3cret-pass", nameField="顯示")
+    click(admin.window, child(page, "addAccountButton"))
+    toast_titled(admin.window, "Account added")
+    assert qml(page, "passwordField.echoMode === TextInput.Password")  # 下一個帳號的密碼預設不顯示
+    assert show.property("text") == "Show"
 
 
 # ---------------------------------------------------------------- 外殼的通知（DS-21）

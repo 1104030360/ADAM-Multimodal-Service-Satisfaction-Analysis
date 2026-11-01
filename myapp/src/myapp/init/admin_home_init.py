@@ -379,10 +379,16 @@ class AccountManager(QObject):
         return self.services.tasks.submit("db", self.ADD_KEY, work, on_ok=self._added,
                                           on_err=lambda exc: self._add_failed(payload, exc))
 
+    def _level_label(self, level):
+        """「1 · Staff」「3 · Admin」：和新增帳號頁的選單同一個寫法（PLAN D9：1 是服務人員，2～5 是管理員）。"""
+        return fill(self.tr("%1 · Staff") if int(level) == 1 else self.tr("%1 · Admin"), level)
+
     def _added(self, payload):
         self._retry_payload = None
         self._show_errors(dict.fromkeys(self.FIELDS, ""))
-        detail = fill(self.tr("%1 · %2 · Level %3"), payload["username"], payload["name"], payload["level"])
+        # 一句話講清楚新帳號怎麼用（設計稿 AdminAddAccount）：「王小明 can log in as staff07 (level 1 · Staff).」
+        detail = fill(self.tr("%1 can log in as %2 (level %3)."), payload["name"], payload["username"],
+                      self._level_label(payload["level"]))
         # 同一個 key：之前「沒有存到」的錯誤通知就地變成成功，所以不再記著它
         self.services.notifier.notify("success", self.tr("Account added"), detail, self.ADD_KEY)
         self._failure_toast = 0

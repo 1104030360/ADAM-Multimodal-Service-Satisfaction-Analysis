@@ -13,8 +13,9 @@
 - 離開明細頁（頁面的 Component.onDestruction 呼叫 close()）：取消還沒下載完的，已經下載好的留在快取（T21）。
 - 一個檔案失敗只影響它自己：那個位置顯示錯誤和 Retry；圖表有幾張沒載入時，圖表區上方有警告列（DS-27、DS-52）。
 
-報表（PLAN D7、UX-26、UX-27、ENG-07）：PDFHandler 列出 src/myapp/pdf/ 裡的 PDF；沒有來源時頁面顯示空狀態。
-開檔、畫頁面都在 pdf lane（PyMuPDF 只在一條執行緒用），頁面圖存到快取資料夾，檔名帶版本，換文件不會顯示到舊圖。
+報表（PLAN D7、UX-26、UX-27、ENG-07）：PDFHandler 列出 src/myapp/pdf/ 裡的 PDF（新的在前，名稱、頁數、日期）；
+沒有來源時頁面顯示空狀態。開檔、畫頁面、數頁數都在 pdf lane（PyMuPDF 只在一條執行緒用），頁面圖存到快取資料夾，
+檔名帶版本，換文件不會顯示到舊圖。
 """
 import logging
 import os
@@ -26,7 +27,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 
 import fitz
-from PySide6.QtCore import QCoreApplication, Property, QObject, QUrl, Signal, Slot
+from PySide6.QtCore import QCoreApplication, QDateTime, QLocale, Property, QObject, QUrl, Signal, Slot
 
 from myapp import storage
 from myapp.database import DatabaseConnector
@@ -825,6 +826,32 @@ def render_page(pdf_path, page_number, target_height, out_dir):
     return count, index + 1, image
 
 
+def report_title(name):
+    """清單和檢視器上的名稱：檔名去掉 .pdf（清單裡全部都是 PDF，副檔名不提供資訊）。"""
+    stem, extension = os.path.splitext(name)
+    return stem if extension.lower() == ".pdf" else name
+
+
+def modified_text(mtime_ns):
+    """修改日期，例如「Nov 1, 2026」：介面是英文（PLAN D1），不跟著系統的語言。"""
+    moment = QDateTime.fromMSecsSinceEpoch(mtime_ns // 1_000_000)
+    return QLocale(QLocale.Language.English, QLocale.Country.UnitedStates).toString(moment.date(), "MMM d, yyyy")
+
+
+def count_pages(folder, wanted, token=None):
+    """在 pdf lane 執行：wanted 是 [(檔名, 版本)]，回傳 {(檔名, 版本): 頁數}；打不開、讀不出來的是 -1。"""
+    counts = {}
+    for name, version in wanted:
+        if token is not None and token.cancelled:
+            break
+        try:
+            with fitz.open(os.path.join(folder, name)) as document:
+                counts[(name, version)] = document.page_count
+        except Exception:  # noqa: BLE001（壞掉的、不見的 PDF：清單只是不寫頁數，打開時再顯示原因）
+            counts[(name, version)] = -1
+    return counts
+
+
 def describe_report_failure(exc):
     """報表打不開：(原因, 技術細節)。"""
     if isinstance(exc, fitz.FileDataError):
@@ -837,16 +864,22 @@ def describe_report_failure(exc):
 
 
 class PDFHandler(QObject):
-    """報表頁（ReportsView.qml）。PDF 的開檔、畫頁面都在 pdf lane（PyMuPDF 只在一條執行緒用，ENG-07）。
+    """報表頁（ReportsView.qml）。PDF 的開檔、畫頁面、數頁數都在 pdf lane（PyMuPDF 只在一條執行緒用，ENG-07）。
 
-    - reports：reports_dir 裡的 PDF 檔名；state：idle（還沒看過資料夾）、empty（沒有來源，PLAN D7）、ready。
-    - 檢視：current（檔名）、page（1 起算）、pageCount、pageSource（頁面圖的 URL）、
+    - reports：reports_dir 裡的 PDF，新的在前（修改時間）。每一份是 {name, title, pages, modified}：
+      name 是檔名（open() 用它），title 是去掉 .pdf 的名稱，modified 是修改日期（「Nov 1, 2026」），
+      pages 是頁數（0＝還在數，-1＝讀不出來）。列目錄、看修改時間很快，在 GUI 執行緒做；頁數在 pdf lane 數，
+      數完再更新同一份清單（新版介面 PLAN 6-6：每一份寫名稱、頁數、日期）。
+      state：idle（還沒看過資料夾）、empty（沒有來源，PLAN D7）、ready。
+    - 檢視：current（檔名）、currentTitle、page（1 起算）、pageCount、pageSource（頁面圖的 URL）、
       viewState：idle（還沒選）、loading、error（errorDetail、errorTechnical、failureCount）、ready。
-    - services 是 None（ServerHome、AdminHome 建立時沒有給）時，用自己的一條 pdf lane（T21）。
+    - services 是 None（直接建立、沒有給 services 的呼叫端；ServerHome、AdminHome 都會給）時，用自己的一條 pdf lane（T21）。
     """
 
     reportsChanged = Signal()
     viewChanged = Signal()
+
+    LIST_KEY = "pdf:list"  # 數頁數的工作；畫頁面的是 pdf:<檔名>（檔名一定以 .pdf 結尾，不會撞名）
 
     def __init__(self, services=None, reports_dir=None, parent=None):
         super().__init__(parent)
@@ -854,6 +887,7 @@ class PDFHandler(QObject):
         self._own_tasks = None
         self.reports_dir = reports_dir or REPORTS_DIR
         self._reports = []
+        self._pages = {}  # (檔名, 修改時間, 大小) → 頁數：同一個檔案沒變就不再數一次
         self._state = IDLE
         self._current = ""
         self._page = self._page_count = 0
@@ -870,11 +904,15 @@ class PDFHandler(QObject):
 
     @Property("QVariantList", notify=reportsChanged)
     def reports(self):
-        return list(self._reports)
+        return [{key: report[key] for key in ("name", "title", "pages", "modified")} for report in self._reports]
 
     @Property(str, notify=viewChanged)
     def current(self):
         return self._current
+
+    @Property(str, notify=viewChanged)
+    def currentTitle(self):
+        return report_title(self._current)
 
     @Property(str, notify=viewChanged)
     def currentFileUrl(self):
@@ -910,16 +948,24 @@ class PDFHandler(QObject):
 
     @Slot()
     def refresh(self):
-        """重新看一次報表資料夾（列目錄很快，在 GUI 執行緒做；開 PDF 才到 pdf lane）。"""
+        """重新看一次報表資料夾（列目錄、看修改時間很快，在 GUI 執行緒做；數頁數、開 PDF 才到 pdf lane）。"""
+        found = []
         try:
-            names = sorted(name for name in os.listdir(self.reports_dir)
-                           if name.lower().endswith(".pdf") and os.path.isfile(os.path.join(self.reports_dir, name)))
+            with os.scandir(self.reports_dir) as entries:
+                for entry in entries:
+                    if entry.name.lower().endswith(".pdf") and entry.is_file():
+                        info = entry.stat()
+                        found.append((entry.name, info.st_mtime_ns, info.st_size))
         except OSError:  # 資料夾不存在（現在就是這樣，D7）或讀不到：都當成還沒有報表
-            names = []
-        self._reports = names
-        self._state = READY if names else EMPTY
+            found = []
+        found.sort(key=lambda item: (-item[1], item[0]))  # 新的在前；同一個時間依檔名
+        self._reports = [{"name": name, "title": report_title(name), "pages": self._pages.get((name, mtime, size), 0),
+                          "modified": modified_text(mtime), "version": (mtime, size)}
+                         for name, mtime, size in found]
+        self._state = READY if found else EMPTY
         self.reportsChanged.emit()
-        if self._current and self._current not in names:
+        self._count_pages()
+        if self._current and self._current not in self._names():
             self._current, self._page, self._page_count, self._source, self._view = "", 0, 0, "", IDLE
             self.viewChanged.emit()
 
@@ -927,7 +973,7 @@ class PDFHandler(QObject):
     @Slot(str, int, result=bool)
     def open(self, name, target_height=0):
         """打開 name 的第 1 頁。target_height：顯示區的高度（裝置像素），決定解析度。"""
-        if name not in self._reports:
+        if name not in self._names():
             return False
         if name != self._current:
             self._failures = 0
@@ -954,8 +1000,11 @@ class PDFHandler(QObject):
         return True
 
     def bind(self, services):
-        """之後才拿到 services 時（ServerHome、AdminHome 建構時沒有給）：改用 app 共用的 pdf lane。"""
+        """之後才拿到 services 時（建立時沒有給）：改用 app 共用的 pdf lane。"""
         self._services = services
+
+    def _names(self):
+        return {report["name"] for report in self._reports}
 
     def _go(self, page):
         if self._view != READY or not 1 <= page <= self._page_count or page == self._page:
@@ -973,6 +1022,28 @@ class PDFHandler(QObject):
             if app is not None:  # 和 app 共用的 TaskRunner 一樣：結束時取消，不等工作做完（ENG-14）
                 app.aboutToQuit.connect(self._own_tasks.shutdown)
         return self._own_tasks
+
+    def _count_pages(self):
+        """還不知道頁數的報表，在 pdf lane 一次數完（排在畫頁面之前；只讀 PDF 的目錄，很快）。"""
+        wanted = [(report["name"], report["version"]) for report in self._reports if not report["pages"]]
+        if not wanted:
+            return
+        folder = self.reports_dir
+        self._tasks().submit("pdf", self.LIST_KEY, lambda token, report: count_pages(folder, wanted, token),
+                             on_ok=self._counted, on_err=lambda exc: _log_failure("counting report pages", exc),
+                             replace=True)
+
+    def _counted(self, counts):
+        """counts：{(檔名, 版本): 頁數}。數的期間清單換過也沒關係：只更新檔名和版本都對得上的那幾份。"""
+        self._pages.update({(name, *version): pages for (name, version), pages in counts.items()})
+        changed = False
+        for report in self._reports:
+            pages = counts.get((report["name"], report["version"]))
+            if pages is not None and pages != report["pages"]:
+                report["pages"] = pages
+                changed = True
+        if changed:
+            self.reportsChanged.emit()
 
     def _render(self):
         path = os.path.join(self.reports_dir, self._current)

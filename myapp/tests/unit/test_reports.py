@@ -1,8 +1,11 @@
 """報表頁的 PDFHandler（兩端共用 myapp/media.py）：沒有來源時是空狀態（PLAN D7），有 PDF 時在 pdf lane 開檔、畫頁面（ENG-07）。
 
+清單的每一份有名稱、頁數、日期（新版介面 PLAN 6-6）：列目錄在 GUI 執行緒，頁數在 pdf lane 數。
 PDF 用 PyMuPDF 在暫存資料夾現做；等結果用 wait_until（一邊處理 Qt 事件），不用固定的 sleep。
 """
+import os
 import threading
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -52,6 +55,18 @@ def opened(handler, name, target_height=0):
     return handler
 
 
+def touch(path, moment):
+    """把檔案的修改時間改成 moment（「YYYY-MM-DD HH:MM」，本地時間）：清單依它排序、顯示日期。"""
+    stamp = datetime.strptime(moment, "%Y-%m-%d %H:%M").timestamp()
+    os.utime(path, (stamp, stamp))
+
+
+def counted(handler):
+    """等頁數數完（pdf lane 上的 pdf:list 工作）。"""
+    wait_until(lambda: all(report["pages"] for report in handler.reports))
+    return handler.reports
+
+
 def test_both_sides_use_the_shared_handler():
     assert server_home_init.PDFHandler is admin_home_init.PDFHandler is media.PDFHandler
 
@@ -69,13 +84,73 @@ def test_the_default_source_is_the_package_pdf_folder():
     assert media.PDFHandler().reports_dir == media.REPORTS_DIR
 
 
-def test_only_pdf_files_are_listed_in_name_order(handler, source):
+def test_only_pdf_files_are_listed_newest_first_with_title_and_date(handler, source):
+    make_pdf(source / "September 2026.pdf", 1)
+    make_pdf(source / "October 2026.PDF", 1)
     make_pdf(source / "b.pdf", 1)
-    make_pdf(source / "A.PDF", 1)
+    make_pdf(source / "a.pdf", 1)
+    touch(source / "September 2026.pdf", "2026-10-01 09:00")
+    touch(source / "October 2026.PDF", "2026-11-01 09:00")
+    for name in ("a.pdf", "b.pdf"):  # 同一個時間：依檔名
+        touch(source / name, "2026-08-31 18:30")
     (source / "notes.txt").write_text("not a report")
     (source / "folder.pdf").mkdir()
     handler.refresh()
-    assert (handler.state, handler.reports) == ("ready", ["A.PDF", "b.pdf"])
+    assert handler.state == "ready"
+    assert [(report["name"], report["title"], report["modified"]) for report in handler.reports] == [
+        ("October 2026.PDF", "October 2026", "Nov 1, 2026"),  # 副檔名不分大小寫，名稱不帶副檔名
+        ("September 2026.pdf", "September 2026", "Oct 1, 2026"),
+        ("a.pdf", "a", "Aug 31, 2026"),
+        ("b.pdf", "b", "Aug 31, 2026")]
+
+
+def test_page_counts_arrive_from_the_pdf_lane_and_are_not_counted_twice(handler, source, monkeypatch):
+    make_pdf(source / "long.pdf", 4)
+    make_pdf(source / "short.pdf", 1)
+    (source / "broken.pdf").write_bytes(b"this is not a pdf")
+    threads = []
+    real_open = fitz.open
+    monkeypatch.setattr(fitz, "open", lambda *args, **kwargs: threads.append(threading.current_thread().name)
+                        or real_open(*args, **kwargs))
+    handler.refresh()
+    assert {report["name"]: report["pages"] for report in handler.reports} == {
+        "long.pdf": 0, "short.pdf": 0, "broken.pdf": 0}  # 列目錄時還不知道：0＝還在數，不是「0 頁」
+    assert {report["name"]: report["pages"] for report in counted(handler)} == {
+        "long.pdf": 4, "short.pdf": 1, "broken.pdf": -1}  # 讀不出來的是 -1（清單只是不寫頁數）
+    assert len(threads) == 3 and all(name.startswith("pdf-lane") for name in threads)  # PyMuPDF 只在 pdf lane 用
+
+    threads.clear()
+    handler.refresh()  # 檔案沒變：頁數直接用，不再開檔
+    assert {report["name"]: report["pages"] for report in handler.reports} == {
+        "long.pdf": 4, "short.pdf": 1, "broken.pdf": -1}
+    assert threads == []
+
+    make_pdf(source / "short.pdf", 2)  # 換了內容（大小、修改時間不同）：只重新數這一份
+    handler.refresh()
+    assert {report["name"]: report["pages"] for report in counted(handler)}["short.pdf"] == 2
+    assert len(threads) == 1 and threads[0].startswith("pdf-lane")
+
+
+def test_counting_applies_only_to_the_same_version_of_a_report(handler, source):
+    """數頁數的期間清單換過：結果只套用檔名和版本都對得上的那幾份。"""
+    make_pdf(source / "report.pdf", 2)
+    handler.refresh()
+    handler._counted({("report.pdf", (1, 1)): 9, ("gone.pdf", (1, 1)): 3})  # 舊版本、已經不在清單裡的
+    assert handler.reports[0]["pages"] != 9
+    assert counted(handler)[0]["pages"] == 2
+
+
+def test_counting_stops_when_cancelled(source):
+    make_pdf(source / "a.pdf", 1)
+    token = SimpleNamespace(cancelled=True)
+    assert media.count_pages(str(source), [("a.pdf", (1, 1))], token) == {}
+    assert media.count_pages(str(source), [("a.pdf", (1, 1)), ("missing.pdf", (1, 1))]) == {
+        ("a.pdf", (1, 1)): 1, ("missing.pdf", (1, 1)): -1}
+
+
+def test_titles_drop_only_the_pdf_extension():
+    assert [media.report_title(name) for name in ("October 2026.pdf", "a.b.PDF", "notes", "")] == [
+        "October 2026", "a.b", "notes", ""]
 
 
 def test_pages_render_on_the_pdf_lane_and_stay_inside_the_document(handler, source, tmp_path, monkeypatch):
@@ -87,6 +162,7 @@ def test_pages_render_on_the_pdf_lane_and_stay_inside_the_document(handler, sour
     handler.refresh()
     opened(handler, "report.pdf")
     assert (handler.viewState, handler.current, handler.page, handler.pageCount) == ("ready", "report.pdf", 1, 2)
+    assert handler.currentTitle == "report"  # 檢視器的標題不帶副檔名
     assert threads and all(name.startswith("pdf-lane") for name in threads)  # PyMuPDF 只在 pdf lane 用
     first = handler.pageSource
     assert Path(QUrl(first).toLocalFile()).parent == tmp_path / "reports"  # 不寫進套件資料夾（ENG-07）

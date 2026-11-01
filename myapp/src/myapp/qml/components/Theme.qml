@@ -39,6 +39,7 @@ QtObject {
     readonly property color cardBorder: "#24272C"          // 新增：卡片的框線、分隔線、表格的底線
     readonly property color tile: "#1A1D21"                // 新增：圖示方塊、骨架、選到的清單項目
     readonly property color tileBorder: "#2C3036"          // 新增：圖示方塊的框線
+    readonly property color tileSelected: "#1F2328"        // 新增：選到的選項方塊、清單項目（設定頁、報表清單）
     readonly property color field: "#17191D"               // 新增：輸入框、下拉選單的底；等於 chromeField
     readonly property color fieldBorder: "#606770"         // 新增：輸入框的框線，在卡片上 3.1:1（WCAG 1.4.11）
     readonly property color track: "#2C3036"               // 進度條、滑桿的軌道

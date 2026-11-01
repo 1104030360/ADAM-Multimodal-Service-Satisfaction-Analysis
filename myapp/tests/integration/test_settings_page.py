@@ -1,10 +1,11 @@
 """設定頁（components/SettingsView.qml，兩端共用）：英文、Basic 的單選鈕、鍵盤和輔助技術（F5、T23）。
 
+- 新版介面（PLAN 6-7）：一張卡片兩組，選項是整塊可以點的方塊；頁面標題在外殼的頁首。
 - Window：Windowed／Full Screen 的選取狀態跟著主視窗，按下去會切換主視窗。
 - Reduce Motion 存起來、切換 Theme 的測試在 test_navigation_a11y.py。
 """
 import pytest
-from PySide6.QtCore import QObject, Qt
+from PySide6.QtCore import QObject, QPointF, Qt
 from PySide6.QtGui import QWindow
 from PySide6.QtTest import QTest
 
@@ -71,11 +72,14 @@ def test_window_mode_options_follow_and_switch_main_window(engine, services, qml
 
 @SIDES
 def test_settings_page_is_english_with_named_groups(engine, services, qml_warnings, home_init, account_id, page):
-    _window, _page, view = open_settings(engine, home_init, account_id, page, services)
-    assert option(view, "settingsTitle").property("text") == "Settings"
+    window, _page, view = open_settings(engine, home_init, account_id, page, services)
+    assert qml(window, "header.title") == "Settings"  # 頁面標題在外殼的頁首，頁面自己不畫（新版介面 PLAN 6-1）
+    assert qml(window, "header.subtitle") == "Changes apply right away and are kept for next time."
     assert [option(view, name).property("text") for name in OPTIONS] == [
         "Windowed", "Full Screen", "Follow System", "On", "Off"]
-    assert option(view, "motionHint").property("text") == "Follow System uses the Reduce Motion setting on this Mac."
+    assert option(option(view, "motionSection"), "groupHint").property("text") == (
+        "Follow System uses the Reduce Motion setting on this Mac. On turns off page fades and other animations.")
+    assert not option(option(view, "windowSection"), "groupHint").isVisible()  # Window 沒有說明
     # 輔助技術：每一組有名字，選項是單選鈕、名字就是文字（DS-51：區塊叫 Window、Reduce Motion）
     for section, name in (("windowSection", "Window"), ("motionSection", "Reduce Motion")):
         assert qml(option(view, section), "Accessible.role === Accessible.Grouping")
@@ -83,6 +87,27 @@ def test_settings_page_is_english_with_named_groups(engine, services, qml_warnin
     for name in OPTIONS:
         assert qml(option(view, name), "Accessible.role === Accessible.RadioButton")
         assert qml(option(view, name), "Accessible.name") == option(view, name).property("text")
+
+
+@SIDES
+def test_options_are_whole_tiles_that_show_which_one_is_chosen(engine, services, qml_warnings, home_init, account_id,
+                                                                page):
+    """新版介面 PLAN 6-7：選項是整塊可以點的方塊（52 高）；選到的方塊底色、框線不同，圓圈裡有點（不只靠顏色）。"""
+    window, _page, view = open_settings(engine, home_init, account_id, page, services)
+    wait_until(window.isExposed)  # offscreen 的全螢幕是 800×600
+    tiles = [option(view, name) for name in OPTIONS]
+    assert {tile.height() for tile in tiles} == {52}
+    assert tiles[0].width() == tiles[1].width() and tiles[2].width() == tiles[3].width() == tiles[4].width()
+    follow, on = option(view, "motionFollowSystem"), option(view, "motionOn")
+    assert qml(follow, "background.color") == qml(follow, "Theme.tileSelected")
+    assert qml(on, "background.color") == qml(on, "Theme.tile")
+    assert qml(follow, "indicator.children[0].visible") and not qml(on, "indicator.children[0].visible")
+
+    right_edge = on.mapToScene(QPointF(on.width() - 12, on.height() / 2)).toPoint()  # 離圓圈和字都很遠的地方
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, right_edge)
+    assert services.ui_prefs.motionMode == 1
+    assert qml(on, "background.color") == qml(on, "Theme.tileSelected") and qml(on, "indicator.children[0].visible")
+    assert qml(follow, "background.color") == qml(follow, "Theme.tile")
 
 
 def test_options_take_tab_focus_show_the_focus_ring_and_toggle_with_space(engine, services, qml_warnings):
