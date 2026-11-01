@@ -1,6 +1,5 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
-import QtQuick.Controls.Material 2.15
 import QtCharts 2.15
 import QtQuick.Layouts 1.15
 import "../components"
@@ -9,13 +8,15 @@ import "../components"
 // - 資料在 Python 的屬性裡（ENG-08）：頁面建立時每一項送一次載入（ENG-06：不再重複載入），在背景執行，畫面先出來。
 // - 每個區塊分成載入中、沒有資料、錯誤（可以重試）、有資料四種畫面（DS-25～27）。
 //   重新整理時舊資料留著、變淡；300 ms 內結束就什麼都不變，免得閃一下（DS-25、DS-33）。
+// - 分頁是和服務人員首頁、分析頁共用的 SegmentTab：選取的是石墨灰（D2、DS-12），不再是 Material Green。
+//   排名的四格是中性的灰底：紅綠只代表狀態（DS-12、DS-13），前 5 名、後 5 名由標題說明。
 Page {
     id: root
     width: 1024
     height: 768
-    title: "Ranking Overview"
-    Material.theme: Material.Light
-    Material.accent: Material.Green
+    title: qsTr("Home")     // 和側邊欄的名稱一樣（DS-51）；服務人員首頁也是
+
+    background: Rectangle { color: Theme.contentBg }
 
     property int currentTab: 0
 
@@ -254,6 +255,13 @@ Page {
             }
         }
 
+        // 弧線顏色的說明（UX-07），和服務人員首頁同一個元件
+        ScoreLegend {
+            objectName: "scoreLegend"
+            Layout.alignment: Qt.AlignHCenter
+            visible: panel.panelState !== "error"
+        }
+
         // 失敗：整排換成區塊錯誤（DS-33、DS-27）
         InlineError {
             objectName: "scoresError"
@@ -268,17 +276,22 @@ Page {
         }
     }
 
-    // 排名的一格：標題＋最多 5 列「1. 姓名 (分數)」
+    // 排名的一格：標題＋最多 5 列「1. 姓名 (分數)」。中性的灰底、#333333 的字（11.63:1）：
+    // 以前四格各用綠、橘、藍、紅（標題只有 1.87～3.66:1，UX-45），後來的語意色也會讓「後 5 名」看起來像錯誤
     component RankingBox: Rectangle {
         id: box
 
         property string title: ""
         property var entries: []
-        property color accent: Theme.textPrimary
 
         Layout.fillWidth: true
         Layout.fillHeight: true
         radius: Theme.radiusM
+        color: Theme.surfaceAlt
+        border.color: Theme.divider
+        border.width: 1
+        Accessible.role: Accessible.List
+        Accessible.name: title
 
         ColumnLayout {
             anchors.fill: parent
@@ -287,7 +300,7 @@ Page {
 
             Text {
                 text: box.title
-                color: box.accent
+                color: Theme.textPrimary
                 font.pixelSize: Theme.fontTitle
                 font.weight: Font.Bold
                 Accessible.role: Accessible.Heading
@@ -302,6 +315,9 @@ Page {
                     text: qsTr("%1. %2 (%3)").arg(index + 1).arg(modelData.name).arg(modelData.score)
                     color: Theme.textPrimary
                     font.pixelSize: Theme.fontBody
+                    font.features: { "tnum": 1 }
+                    Accessible.role: Accessible.ListItem
+                    Accessible.name: text
                 }
             }
 
@@ -316,38 +332,40 @@ Page {
     Wait { id: trendsDim; active: trendDataManager.refreshing }
     Wait { id: trendsSlow; active: trendDataManager.state === "loading"; interval: Theme.slowAfter }
 
-    TabBar {
-        id: tabbar
-        width: parent.width
-        Layout.fillWidth: true
-        Layout.preferredHeight: 40
+    // 分頁：和服務人員首頁、分析頁同一個 SegmentTab。以前是 Material 的 TabButton，選取的是 Material Green
+    //（白字 2.78:1），而且在 macOS 樣式下 Material.background 根本畫不出來
+    RowLayout {
+        id: tabBar
+        anchors.top: parent.top
+        anchors.topMargin: Theme.spaceL
+        anchors.horizontalCenter: parent.horizontalCenter
+        spacing: Theme.spaceS
+        Accessible.role: Accessible.PageTabList
+        Accessible.name: qsTr("Home sections")
 
-        TabButton {
-            text: "Daily Scores"
+        SegmentTab {
+            objectName: "dailyTab"
+            text: qsTr("Daily Scores")
+            selected: root.currentTab === 0
             onClicked: root.currentTab = 0
-            Material.background: root.currentTab == 0 ? Material.accent : "#E7E7E7"
-            font.pixelSize: 16
         }
-
-        TabButton {
-            text: "Weekly Scores"
+        SegmentTab {
+            objectName: "weeklyTab"
+            text: qsTr("Weekly Scores")
+            selected: root.currentTab === 1
             onClicked: root.currentTab = 1
-            Material.background: root.currentTab == 1 ? Material.accent : "#E7E7E7"
-            font.pixelSize: 16
         }
-
-        TabButton {
-            text: "Ranking"
+        SegmentTab {
+            objectName: "rankingTab"
+            text: qsTr("Ranking")
+            selected: root.currentTab === 2
             onClicked: root.currentTab = 2
-            Material.background: root.currentTab == 2 ? Material.accent : "#E7E7E7"
-            font.pixelSize: 16
         }
-
-        TabButton {
-            text: "Trends"
+        SegmentTab {
+            objectName: "trendsTab"
+            text: qsTr("Trends")
+            selected: root.currentTab === 3
             onClicked: root.currentTab = 3
-            Material.background: root.currentTab == 3 ? Material.accent : "#E7E7E7"
-            font.pixelSize: 16
         }
     }
 
@@ -355,8 +373,8 @@ Page {
     ScorePanel {
         id: dailyPanel
         objectName: "dailyPanel"
-        anchors.top: tabbar.bottom
-        anchors.topMargin: 60
+        anchors.top: tabBar.bottom
+        anchors.topMargin: Theme.space3XL
         anchors.horizontalCenter: parent.horizontalCenter
         visible: root.currentTab == 0
         countText: qsTr("Services analyzed today: %1").arg(serviceScoreManager.dailyCount)
@@ -376,8 +394,8 @@ Page {
     ScorePanel {
         id: weeklyPanel
         objectName: "weeklyPanel"
-        anchors.top: tabbar.bottom
-        anchors.topMargin: 60
+        anchors.top: tabBar.bottom
+        anchors.topMargin: Theme.space3XL
         anchors.horizontalCenter: parent.horizontalCenter
         visible: root.currentTab == 1
         countText: qsTr("Services analyzed in the last 7 days: %1").arg(serviceScoreManager.weeklyCount)
@@ -395,10 +413,10 @@ Page {
 
     // Ranking Page：全部期間、已完成的服務，依平均分數取前 5 名和後 5 名
     Item {
-        id: rankingTab
-        objectName: "rankingTab"
+        id: rankingPanel
+        objectName: "rankingPanel"
         visible: root.currentTab == 2
-        anchors.top: tabbar.bottom
+        anchors.top: tabBar.bottom
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
@@ -416,7 +434,7 @@ Page {
             id: rankingGrid
             objectName: "rankingGrid"
             anchors.top: parent.top
-            anchors.topMargin: 30
+            anchors.topMargin: Theme.space2XL
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: rankingCaption.top
@@ -425,8 +443,8 @@ Page {
             opacity: rankingDim.elapsed ? 0.5 : 1
             rows: 2
             columns: 2
-            rowSpacing: 30
-            columnSpacing: 30
+            rowSpacing: Theme.space2XL
+            columnSpacing: Theme.space2XL
 
             Behavior on opacity {
                 enabled: Theme.durBase > 0
@@ -434,31 +452,27 @@ Page {
             }
 
             RankingBox {
+                objectName: "topCustomers"
                 title: qsTr("Top 5 Customers")
                 entries: rankingModel.topCustomer
-                color: Theme.successTint
-                accent: Theme.successOnLight
             }
 
             RankingBox {
+                objectName: "bottomCustomers"
                 title: qsTr("Bottom 5 Customers")
                 entries: rankingModel.bottomCustomer
-                color: Theme.warningTint
-                accent: Theme.warningOnLight
             }
 
             RankingBox {
+                objectName: "topStaff"
                 title: qsTr("Top 5 Staff")
                 entries: rankingModel.topStaff
-                color: Theme.infoTint
-                accent: Theme.infoOnLight
             }
 
             RankingBox {
+                objectName: "bottomStaff"
                 title: qsTr("Bottom 5 Staff")
                 entries: rankingModel.bottomStaff
-                color: Theme.errorTint
-                accent: Theme.errorOnLight
             }
         }
 
@@ -496,36 +510,42 @@ Page {
 
     // Trends Page：沒有資料的日子是空白（UX-30），只畫有資料的點，連續的日子才連線；x 軸是那個月實際的天數
     ColumnLayout {
+        objectName: "trendsPanel"
         anchors.left: parent.left
-        anchors.leftMargin: 50
+        anchors.leftMargin: Theme.space4XL
         anchors.right: parent.right
-        anchors.rightMargin: 50
-        anchors.top: tabbar.bottom
+        anchors.rightMargin: Theme.space4XL
+        anchors.top: tabBar.bottom
+        anchors.topMargin: Theme.spaceL
         anchors.bottom: parent.bottom
-        spacing: 20
+        spacing: Theme.spaceL
         visible: root.currentTab == 3
 
         ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            spacing: 10
+            spacing: Theme.spaceS
 
-            // Month and Year selection
+            // 月份和年份
             RowLayout {
-                spacing: 20
-                Layout.alignment: Qt.AlignCenter  // Centering the RowLayout
+                spacing: Theme.spaceL
+                Layout.alignment: Qt.AlignCenter
 
                 ComboBox {
                     id: monthSelector
-                    model: ["January", "February", "March", "April", "May", "June",
-                            "July", "August", "September", "October", "November", "December"]
+                    objectName: "monthSelector"
+                    model: [qsTr("January"), qsTr("February"), qsTr("March"), qsTr("April"), qsTr("May"),
+                            qsTr("June"), qsTr("July"), qsTr("August"), qsTr("September"), qsTr("October"),
+                            qsTr("November"), qsTr("December")]
                     currentIndex: new Date().getMonth()  // 預設本月；getMonth() 從 0 開始
                     Layout.alignment: Qt.AlignCenter
+                    Accessible.name: qsTr("Month")
                     onActivated: root.reloadTrends()  // 只在使用者改選時觸發
                 }
 
                 ComboBox {
                     id: yearSelector
+                    objectName: "yearSelector"
                     // 今年和前 4 年；跨年之後新的年份會自動出現
                     model: {
                         var thisYear = new Date().getFullYear();
@@ -536,14 +556,15 @@ Page {
                     }
                     currentIndex: 4  // 今年
                     Layout.alignment: Qt.AlignCenter
+                    Accessible.name: qsTr("Year")
                     onActivated: root.reloadTrends()
                 }
             }
 
             // 要顯示的線；勾選框左邊的色塊就是圖例（線分成好幾段，ChartView 內建的圖例會重複）
             RowLayout {
-                spacing: 20
-                Layout.alignment: Qt.AlignCenter  // Centering the RowLayout
+                spacing: Theme.spaceL
+                Layout.alignment: Qt.AlignCenter
 
                 Rectangle {
                     width: 12
@@ -558,7 +579,7 @@ Page {
                     text: qsTr("Show Staff Trend")
                     checked: true
                     Layout.alignment: Qt.AlignCenter
-                    font.pixelSize: 14
+                    font.pixelSize: Theme.fontCaption
                     onToggled: root.redrawTrends()
                 }
 
@@ -575,7 +596,7 @@ Page {
                     text: qsTr("Show Customer Trend")
                     checked: true
                     Layout.alignment: Qt.AlignCenter
-                    font.pixelSize: 14
+                    font.pixelSize: Theme.fontCaption
                     onToggled: root.redrawTrends()
                 }
 
@@ -597,6 +618,12 @@ Page {
                     anchors.fill: parent
                     antialiasing: true
                     legend.visible: false
+                    // 圖表讀不出來給輔助技術：名稱寫哪一個月，說明寫每條線有幾天的資料
+                    Accessible.role: Accessible.Chart
+                    Accessible.name: qsTr("Daily average scores, %1 %2")
+                        .arg(monthSelector.model[trendDataManager.month - 1]).arg(trendDataManager.year)
+                    Accessible.description: qsTr("Days with data: staff %1, customers %2.")
+                        .arg(trendDataManager.staffPoints.length).arg(trendDataManager.customerPoints.length)
                     visible: trendDataManager.state === "ready" || trendDataManager.state === "loading"
                     opacity: trendsDim.elapsed ? 0.5 : 1
 

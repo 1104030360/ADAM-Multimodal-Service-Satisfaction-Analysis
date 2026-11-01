@@ -97,49 +97,19 @@ Page {
         onTriggered: analysisPage.showPlaceholder = true
     }
 
-    component StatusTab: Button {
-        id: tab
+    // 狀態分頁：外觀是共用的 SegmentTab（石墨灰，D2、DS-12），這裡只加上數量
+    component StatusTab: SegmentTab {
         required property string key
         required property string label
         required property int count
-
-        readonly property bool selected: analysisPage.selectedTab === key
-
-        objectName: key + "Tab"
         // 載入中、載入失敗時不顯示數量（0 是假的）
         readonly property bool showsCount: !analysisPage.loading && !analysisPage.failed
+
+        objectName: key + "Tab"
+        selected: analysisPage.selectedTab === key
         text: showsCount ? qsTr("%1 (%2)").arg(label).arg(count) : label
-        implicitWidth: Math.max(150, implicitContentWidth + 2 * Theme.spaceL)
-        implicitHeight: Theme.controlHeightL
-        focusPolicy: Qt.StrongFocus
-        font.pixelSize: Theme.fontBody
-        font.weight: selected ? Font.DemiBold : Font.Normal
-        Accessible.role: Accessible.PageTab
         Accessible.name: showsCount ? qsTr("%1, %2 services").arg(label).arg(count) : label
-        Accessible.selected: selected
         onClicked: analysisPage.selectedTab = key
-
-        contentItem: Text {
-            text: tab.text
-            font: tab.font
-            color: tab.selected ? Theme.segmentSelectedText : Theme.segmentIdleText
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-        }
-        background: Rectangle {
-            radius: height / 2
-            color: tab.selected ? Theme.segmentSelected : Theme.segmentIdle
-
-            Rectangle {     // 鍵盤焦點框（DS-30）
-                visible: tab.visualFocus
-                anchors.fill: parent
-                anchors.margins: -4
-                radius: parent.radius + 4
-                color: "transparent"
-                border.color: Theme.focusOnLight
-                border.width: 2
-            }
-        }
     }
 
     component Cell: Text {

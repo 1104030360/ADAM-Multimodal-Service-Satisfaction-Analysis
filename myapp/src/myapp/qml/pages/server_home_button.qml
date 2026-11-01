@@ -1,6 +1,6 @@
 pragma ComponentBehavior: Bound
 import QtQuick
-// 分頁按鈕自訂了 background、contentItem，要用 Basic 樣式（T13）
+// Page 自訂了 background，要用 Basic 樣式（T13）
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../components"
@@ -13,7 +13,7 @@ import "../components"
 // - 失敗（error）：整排換成區塊錯誤，可以重試
 Page {
     id: homePage
-    title: qsTr("Service Scores")
+    title: qsTr("Home")     // 和側邊欄的名稱一樣（DS-51）；管理員首頁也是
 
     readonly property var manager: typeof serviceScoreManager !== "undefined" ? serviceScoreManager : null
     property bool showDaily: true
@@ -41,41 +41,6 @@ Page {
         return typeof value === "number" && value >= 0
     }
 
-    // 分頁按鈕（Daily／Weekly）：選取的是石墨灰（D2、DS-12）
-    component SegmentButton: Button {
-        id: segment
-        required property bool selected
-
-        implicitWidth: 180
-        implicitHeight: 60
-        focusPolicy: Qt.StrongFocus
-        font.pixelSize: Theme.fontBodyLarge
-        Accessible.role: Accessible.PageTab
-        Accessible.selected: selected
-
-        contentItem: Text {
-            text: segment.text
-            font: segment.font
-            color: segment.selected ? Theme.segmentSelectedText : Theme.segmentIdleText
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-        }
-        background: Rectangle {
-            radius: height / 2
-            color: segment.selected ? Theme.segmentSelected : Theme.segmentIdle
-
-            Rectangle {     // 鍵盤焦點框（DS-30）
-                visible: segment.visualFocus
-                anchors.fill: parent
-                anchors.margins: -4
-                radius: parent.radius + 4
-                color: "transparent"
-                border.color: Theme.focusOnLight
-                border.width: 2
-            }
-        }
-    }
-
     // 一個分數環：Canvas 只畫軌道和弧線，數字是另外的 Text，資料改變時才重畫（UX-06）
     component ScoreRing: ColumnLayout {
         id: ring
@@ -101,11 +66,14 @@ Page {
             Layout.alignment: Qt.AlignHCenter
             implicitWidth: 150
             implicitHeight: 150
-            Accessible.role: Accessible.StaticText
-            Accessible.name: ring.hasScore
-                             ? qsTr("%1 %2 score %3, %4").arg(ring.sideLabel).arg(ring.label.toLowerCase())
-                                   .arg(Math.round(ring.score)).arg(ring.grade)
-                             : qsTr("%1 %2 score, no data").arg(ring.sideLabel).arg(ring.label.toLowerCase())
+            // 和管理員首頁的分數環唸法一樣（UX-46）：分數和等級、沒有資料、載入中，重新整理時加「updating」
+            Accessible.role: Accessible.Graphic
+            Accessible.name: (ring.hasScore
+                              ? qsTr("%1 %2 score %3, %4").arg(ring.sideLabel).arg(ring.label.toLowerCase())
+                                    .arg(Math.round(ring.score)).arg(ring.grade)
+                              : homePage.loading ? qsTr("%1 %2 score, loading").arg(ring.sideLabel).arg(ring.label.toLowerCase())
+                              : qsTr("%1 %2 score, no data").arg(ring.sideLabel).arg(ring.label.toLowerCase()))
+                             + (homePage.refreshing ? qsTr(", updating") : "")
 
             Canvas {
                 id: canvas
@@ -190,20 +158,21 @@ Page {
         anchors.margins: Theme.spaceL
         spacing: Theme.spaceL
 
+        // 分頁：和管理員首頁、分析頁同一個 SegmentTab（石墨灰，D2、DS-12）
         RowLayout {
             Layout.alignment: Qt.AlignHCenter
-            spacing: Theme.spaceL
+            spacing: Theme.spaceS
             Accessible.role: Accessible.PageTabList
             Accessible.name: qsTr("Period")
 
-            SegmentButton {
+            SegmentTab {
                 objectName: "dailyTab"
                 text: qsTr("Daily Scores")
                 selected: homePage.showDaily
                 onClicked: homePage.showDaily = true
             }
 
-            SegmentButton {
+            SegmentTab {
                 objectName: "weeklyTab"
                 text: qsTr("Weekly Scores")
                 selected: !homePage.showDaily
@@ -222,10 +191,12 @@ Page {
                 objectName: "countText"
                 anchors.centerIn: parent
                 visible: !homePage.loading
+                // 「Weekly」其實是今天加上前 7 天（UX-07）：寫「in the last 7 days」，和管理員首頁同一句
                 text: homePage.serviceCount === 0
-                      ? (homePage.showDaily ? qsTr("No completed analyses today") : qsTr("No completed analyses this week"))
+                      ? (homePage.showDaily ? qsTr("No completed analyses today")
+                                            : qsTr("No completed analyses in the last 7 days"))
                       : (homePage.showDaily ? qsTr("Services analyzed today: %1")
-                                            : qsTr("Services analyzed this week: %1")).arg(homePage.serviceCount)
+                                            : qsTr("Services analyzed in the last 7 days: %1")).arg(homePage.serviceCount)
                 color: Theme.textPrimary
                 font.pixelSize: Theme.fontBodyLarge
                 font.features: { "tnum": 1 }
@@ -294,6 +265,13 @@ Page {
                 side: "staff"
                 title: qsTr("Staff Scores")
             }
+        }
+
+        // 弧線顏色的說明（UX-07），和管理員首頁同一個元件
+        ScoreLegend {
+            objectName: "scoreLegend"
+            Layout.alignment: Qt.AlignHCenter
+            visible: !homePage.failed
         }
 
         InlineError {

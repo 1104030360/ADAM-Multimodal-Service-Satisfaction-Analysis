@@ -56,7 +56,7 @@ Button {
     font.weight: Font.DemiBold
 
     Accessible.name: internal.shown && busyText !== "" ? busyText : text
-    Accessible.description: internal.shown ? qsTr("In progress") : ""
+    Accessible.description: internal.shown ? qsTr("Busy") : ""     // DS-24、DS-51 的用詞
 
     QtObject {
         id: internal

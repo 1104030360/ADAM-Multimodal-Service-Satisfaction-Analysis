@@ -645,7 +645,7 @@ def test_busy_button_shows_busy_text_and_spinner_only_after_the_delay(harness):
     assert spinner.property("source").fileName() == "loader-circle_textSecondary.svg"
     assert button.width() == width  # 寬度取兩種文字中較寬的，換字時不變
     assert qml(button, "Accessible.name") == "Sending…"
-    assert qml(button, "Accessible.description") == "In progress"
+    assert qml(button, "Accessible.description") == "Busy"  # DS-24、DS-51 的用詞
     assert qml(button, "background.color") == theme(window, "surfaceMuted")
     assert qml(button, "background.border.color") == theme(window, "divider")
     assert qml(find(button, "busyLabel"), "color") == theme(window, "textSecondary")
@@ -792,7 +792,7 @@ def test_inline_error_retry_details_and_repeated_failure_hint(harness):
     assert not hint.isVisible()
     error.setProperty("failureCount", 3)  # 同一個區塊連續失敗 3 次：多一行建議，並再唸一次
     assert hint.isVisible()
-    assert hint.property("text") == "If this keeps failing, check your network or contact your administrator."
+    assert hint.property("text") == "If it still fails, check your network or contact your administrator."  # DS-52
     assert len(value(error, "announced")) == 3
 
     bare = find(window, "bare")

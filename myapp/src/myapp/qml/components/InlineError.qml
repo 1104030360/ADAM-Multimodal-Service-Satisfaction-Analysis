@@ -72,7 +72,7 @@ Item {
             objectName: "errorHint"
             width: parent.width
             visible: root.showsHint
-            text: qsTr("If this keeps failing, check your network or contact your administrator.")
+            text: qsTr("If it still fails, check your network or contact your administrator.")   // DS-52 的原句
             color: Theme.textSecondary
             font.pixelSize: Theme.fontCaption
             horizontalAlignment: Text.AlignHCenter

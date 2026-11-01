@@ -296,6 +296,7 @@ def test_home_shows_dashes_until_scores_arrive_then_repaints(engine, services, d
         assert {ring_text(page, side, kind) for side in ("customer", "staff")
                 for kind in ("total", "text", "audio", "facial")} == {"—"}  # 還沒載入：「—」，不是 0（UX-05）
         assert not find(page, "countText").isVisible()
+        assert qml(ring, "children[0].Accessible.name") == "Customer overall score, loading"  # 和管理員首頁一樣（F5）
     wait_until(lambda: not services.tasks.isBusy(HOME_SCORES_KEY))
     assert (ring_text(page, "customer", "total"), ring_text(page, "customer", "text")) == ("74", "60")
     assert ring_text(page, "staff", "total") == "82"
@@ -304,7 +305,7 @@ def test_home_shows_dashes_until_scores_arrive_then_repaints(engine, services, d
     assert qml(ring, "children[0].Accessible.name") == "Customer overall score 74, fair"
 
     qml(page, "showDaily = false")
-    assert find(page, "countText").property("text") == "Services analyzed this week: 2"
+    assert find(page, "countText").property("text") == "Services analyzed in the last 7 days: 2"  # UX-07
     assert find(page, "weeklyTab").property("selected") and not find(page, "dailyTab").property("selected")
 
 
@@ -314,8 +315,17 @@ def test_home_without_data_shows_dashes_and_says_why(engine, services, db, no_ne
     page = qml(window, "mainContentLoader.item")
     assert find(page, "countText").property("text") == "No completed analyses today"
     assert {ring_text(page, "staff", kind) for kind in ("total", "text", "audio", "facial")} == {"—"}
+    ring = find_item(page, "scoreRing_staff_total")
+    assert qml(ring, "children[0].Accessible.name") == "Staff overall score, no data"
+    legend = find(page, "scoreLegend")  # 弧線顏色的門檻寫出來（UX-07），和管理員首頁同一個元件
+    assert legend.isVisible() and qml(legend, "Accessible.name") == (
+        "Arc colors: good is 85 and up, fair is 70 to 84, needs improvement is below 70.")
+    # 分頁是共用的 SegmentTab：選取的是石墨灰白字（D2、DS-12）
+    daily, weekly = find(page, "dailyTab"), find(page, "weeklyTab")
+    assert qml(daily, "Qt.colorEqual(background.color, Theme.segmentSelected) && Accessible.selected")
+    assert qml(weekly, "Qt.colorEqual(background.color, Theme.segmentIdle) && !Accessible.selected")
     qml(page, "showDaily = false")
-    assert find(page, "countText").property("text") == "No completed analyses this week"
+    assert find(page, "countText").property("text") == "No completed analyses in the last 7 days"
 
 
 def test_home_refresh_keeps_the_old_scores_dimmed(engine, services, db, no_network_on_gui_thread):

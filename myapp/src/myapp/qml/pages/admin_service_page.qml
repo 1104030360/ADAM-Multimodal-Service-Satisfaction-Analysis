@@ -1,20 +1,23 @@
+pragma ComponentBehavior: Bound
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import QtQuick.Window 2.15
-import QtQuick.Controls.Material 2.15
 import "../components"
 
 // 服務查詢（UX-24、DS-26、DS-27）：服務人員名單和搜尋都在背景（Python 的 serviceManager），畫面不會凍住。
-// - 日期格式不對：欄位下方顯示錯誤，不送出。
+// - 日期格式不對：欄位下方顯示錯誤、框線變紅，不送出。
 // - 搜尋中：按鈕忙碌（Searching…）；已經有結果時舊結果留著、變淡。新的搜尋取代還沒回來的舊搜尋。
 // - 沒有結果是空狀態，失敗是區塊錯誤＋Retry，兩者分開（UX-38）。
 // - Details 先換頁，影音和圖表在明細頁的背景下載（UX-22、ENG-04）：這裡不碰網路。
+// - 外觀和服務人員端的查詢頁一樣（UX-46）：同一個日期欄（DateField.qml）、表頭和列的顏色都取自 Theme，
+//   Search 是這一頁唯一的主要按鈕（石墨灰，DS-12）。以前是寫死的 #dddddd、#f4f4f4 和 Material 的強調色。
 Item {
     id: searchPage
     anchors.fill: parent
 
     readonly property bool searching: serviceManager.state === "loading" || serviceManager.refreshing
+    readonly property int listBottomMargin: typeof toastHost !== "undefined" && toastHost ? toastHost.occupiedHeight : 0
     // 使用者在選單選的名字；空字串＝不篩選（選單第 0 項「All Staff」）。名單在背景載入，
     // 換名單時 ComboBox 會回到第 0 項，所以選了誰記在這裡，名單換好再放回去
     property string chosenName: ""
@@ -27,6 +30,25 @@ Item {
         running: active && !elapsed
         onTriggered: elapsed = true
         onActiveChanged: if (!active) elapsed = false
+    }
+
+    component HeaderText: Text {
+        Layout.fillWidth: true
+        Layout.preferredWidth: 1
+        color: Theme.textPrimary
+        font.pixelSize: Theme.fontBody
+        font.weight: Font.DemiBold
+        horizontalAlignment: Text.AlignHCenter
+        verticalAlignment: Text.AlignVCenter
+    }
+
+    component CellText: Text {
+        Layout.fillWidth: true
+        Layout.preferredWidth: 1
+        color: Theme.textPrimary
+        font.pixelSize: Theme.fontBody
+        horizontalAlignment: Text.AlignHCenter
+        elide: Text.ElideRight
     }
 
     Wait { id: resultsDim; active: serviceManager.refreshing }
@@ -56,15 +78,18 @@ Item {
 
     ColumnLayout {
         anchors.fill: parent
-        spacing: 10
+        anchors.margins: Theme.spaceL
+        spacing: Theme.spaceS
 
-        // Name Selection：第 0 項是不篩選（以前選了名字就改不回全部，UX-36）
+        // 服務人員：第 0 項是不篩選（以前選了名字就改不回全部，UX-36）
         ComboBox {
             id: nameComboBox
-            Layout.fillWidth: true
+            objectName: "nameComboBox"
+            Layout.preferredWidth: 2 * startDateField.implicitWidth + Theme.spaceM
             model: [qsTr("All Staff")].concat(serviceManager.names)
             currentIndex: 0
             enabled: serviceManager.names.length > 0
+            font.pixelSize: Theme.fontBody
             displayText: currentIndex > 0 ? currentText
                        : serviceManager.names.length === 0 && serviceManager.namesState === "loading"
                          ? qsTr("Loading staff…") : qsTr("All Staff")
@@ -81,7 +106,7 @@ Item {
             spacing: Theme.spaceS
 
             FieldError {
-                Layout.fillWidth: true
+                Layout.preferredWidth: 2 * startDateField.implicitWidth
                 text: qsTr("The staff list didn't load.")
             }
 
@@ -91,202 +116,172 @@ Item {
             }
         }
 
-        // Date Selection
+        // 查詢條件：日期兩欄＋Search，和服務人員端的查詢頁同一個版面
         RowLayout {
-            spacing: 10
+            spacing: Theme.spaceM
 
             ColumnLayout {
-                Layout.fillWidth: true
-                Layout.preferredWidth: 1    // 兩欄平分寬度：錯誤訊息再長，欄位也不會變寬
                 Layout.alignment: Qt.AlignTop
                 spacing: 4
 
-                TextField {
+                DateField {
                     id: startDateField
-                    placeholderText: "Start Date (YYYY-MM-DD)"
-                    Layout.fillWidth: true
-                    Material.accent: serviceManager.startDateError !== "" ? Theme.errorOnLight : Theme.focusOnLight
-                    Accessible.name: qsTr("Start date")
-                    Accessible.description: serviceManager.startDateError
+                    objectName: "startDateField"
+                    placeholderText: qsTr("Start Date (YYYY-MM-DD)")
+                    accessibleName: qsTr("Start date")
+                    errorText: serviceManager.startDateError
+                    invalid: serviceManager.startDateError !== ""
                     onTextEdited: serviceManager.clearDateError("start")
                     onAccepted: searchPage.search()
                 }
 
                 FieldError {
                     objectName: "startDateError"
-                    Layout.fillWidth: true
+                    Layout.preferredWidth: startDateField.implicitWidth
+                    Layout.preferredHeight: 2 * lineHeight  // 這句在 280 寬會排成兩行：先留好，錯誤出現時版面不跳
                     text: serviceManager.startDateError
                 }
             }
 
             ColumnLayout {
-                Layout.fillWidth: true
-                Layout.preferredWidth: 1    // 兩欄平分寬度：錯誤訊息再長，欄位也不會變寬
                 Layout.alignment: Qt.AlignTop
                 spacing: 4
 
-                TextField {
+                DateField {
                     id: endDateField
-                    placeholderText: "End Date (YYYY-MM-DD)"
-                    Layout.fillWidth: true
-                    Material.accent: serviceManager.endDateError !== "" ? Theme.errorOnLight : Theme.focusOnLight
-                    Accessible.name: qsTr("End date")
-                    Accessible.description: serviceManager.endDateError
+                    objectName: "endDateField"
+                    placeholderText: qsTr("End Date (YYYY-MM-DD)")
+                    accessibleName: qsTr("End date")
+                    errorText: serviceManager.endDateError
+                    invalid: serviceManager.endDateError !== ""
                     onTextEdited: serviceManager.clearDateError("end")
                     onAccepted: searchPage.search()
                 }
 
                 FieldError {
                     objectName: "endDateError"
-                    Layout.fillWidth: true
+                    Layout.preferredWidth: endDateField.implicitWidth
+                    Layout.preferredHeight: 2 * lineHeight
                     text: serviceManager.endDateError
                 }
             }
-        }
 
-        // Search Button
-        BusyButton {
-            id: searchButton
-            objectName: "searchButton"
-            text: qsTr("Search")
-            busyText: qsTr("Searching…")
-            busy: searchPage.searching
-            Layout.alignment: Qt.AlignHCenter
-            onClicked: {
-                if (busy)       // 輔助技術的「按下」不經過 BusyButton 的擋板
-                    return
-                searchPage.search()
+            BusyButton {
+                id: searchButton
+                objectName: "searchButton"
+                Layout.alignment: Qt.AlignTop
+                variant: "primary"
+                text: qsTr("Search")
+                busyText: qsTr("Searching…")
+                busy: searchPage.searching
+                onClicked: {
+                    if (busy)       // 輔助技術的「按下」不經過 BusyButton 的擋板
+                        return
+                    searchPage.search()
+                }
             }
+
+            Item { Layout.fillWidth: true }
         }
 
-        // Fixed Headers
+        // 表頭
         Rectangle {
             Layout.fillWidth: true
-            height: 40
-            color: "#dddddd"
-            border.color: "#cccccc"
+            Layout.preferredHeight: Theme.controlHeight
+            color: Theme.surfaceMuted
+            border.color: Theme.divider
             border.width: 1
-            radius: 5
+            radius: Theme.radiusS
 
             RowLayout {
                 anchors.fill: parent
-                spacing: 20
-                anchors.margins: 10
+                anchors.margins: Theme.spaceS
+                spacing: Theme.spaceL
 
-                Text {
-                    text: "Service ID"
-                    font.bold: true
-                    width: parent.width * 0.25
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-
-                Text {
-                    text: "Name"
-                    font.bold: true
-                    width: parent.width * 0.25
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-
-                Text {
-                    text: "Date"
-                    font.bold: true
-                    width: parent.width * 0.25
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-
-                Text {
-                    text: "Details"
-                    font.bold: true
-                    width: parent.width * 0.25
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
+                HeaderText { text: qsTr("Service ID") }
+                HeaderText { text: qsTr("Name") }
+                HeaderText { text: qsTr("Date") }
+                HeaderText { text: qsTr("Details") }
             }
         }
 
-        // Result List
-        Rectangle {
+        // 結果
+        Item {
             id: resultArea
-            color: "#f4f4f4"
-            radius: 10
-            border.color: "#cccccc"
-            border.width: 1
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.alignment: Qt.AlignTop
 
-            ColumnLayout {
+            ListView {
+                id: resultListView
+                objectName: "resultList"
                 anchors.fill: parent
-                spacing: 10
-                anchors.margins: 10
                 // 有結果（包括重新搜尋時留著的舊結果）才顯示清單
                 visible: serviceManager.state === "ready"
                 opacity: resultsDim.elapsed ? 0.5 : 1
+                clip: true
+                spacing: 4
+                model: resultsModel
+                bottomMargin: searchPage.listBottomMargin  // 最後一列不會被通知蓋住（DS-21）
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar {}
+                Accessible.role: Accessible.Table
+                Accessible.name: qsTr("Search results")
 
                 Behavior on opacity {       // M-9：重新搜尋時變淡
                     enabled: Theme.durBase > 0
                     OpacityAnimator { duration: Theme.durBase }
                 }
 
-                ScrollView {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
+                delegate: Rectangle {
+                    id: resultRow
+                    objectName: "resultRow"
+                    required property int index
+                    required property string service_id
+                    required property string name
+                    required property string start_datetime
 
-                    ListView {
-                        id: resultListView
-                        objectName: "resultList"
-                        width: parent.width
-                        model: resultsModel  // Bind to serviceManager.resultsModel
-                        clip: true
-                        bottomMargin: toastHost.occupiedHeight  // 最後一列不會被通知蓋住（DS-21）
+                    width: ListView.view.width
+                    height: 60
+                    radius: Theme.radiusS
+                    color: index % 2 === 0 ? Theme.contentBg : Theme.surfaceAlt
+                    border.color: Theme.divider
+                    border.width: 1
+                    Accessible.role: Accessible.Row
+                    Accessible.name: [service_id, name, start_datetime].join(", ")
 
-                        delegate: Rectangle {
-                            width: parent.width
-                            height: 60
-                            color: index % 2 == 0 ? "#ffffff" : "#f2f2f2"
-                            border.color: "#cccccc"
-                            border.width: 1
-                            radius: 5
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.margins: Theme.spaceS
+                        spacing: Theme.spaceL
 
-                            RowLayout {
-                                anchors.fill: parent
-                                spacing: 20
+                        CellText {
+                            text: resultRow.service_id
+                            font.weight: Font.DemiBold
+                            font.features: { "tnum": 1 }
+                        }
+                        CellText {
+                            text: resultRow.name
+                        }
+                        CellText {
+                            text: resultRow.start_datetime
+                            font.features: { "tnum": 1 }
+                        }
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: 1
+                            Layout.fillHeight: true
 
-                                Text {
-                                    text: service_id
-                                    font.bold: true
-                                    width: parent.width * 0.25
-                                    horizontalAlignment: Text.AlignHCenter
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-
-                                Text {
-                                    text: name
-                                    font.bold: true
-                                    width: parent.width * 0.25
-                                    horizontalAlignment: Text.AlignHCenter
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-
-                                Text {
-                                    text: start_datetime
-                                    width: parent.width * 0.25
-                                    horizontalAlignment: Text.AlignHCenter
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-
-                                BusyButton {
-                                    objectName: "detailsButton"
-                                    text: qsTr("Details")
-                                    Accessible.name: text + ", " + service_id
-                                    onClicked: {
-                                        // 只改屬性、送出背景工作，馬上換頁；頁首的 ID 和時間直接用這一列的
-                                        adminHome.load_service_media(service_id, start_datetime)
-                                        mainContentLoader.source = "../../qml/pages/admin_service_detail_page.qml"
-                                    }
+                            BusyButton {
+                                objectName: "detailsButton"
+                                anchors.centerIn: parent
+                                text: qsTr("Details")
+                                Accessible.name: text + ", " + resultRow.service_id
+                                onClicked: {
+                                    if (busy)
+                                        return
+                                    // 只改屬性、送出背景工作，馬上換頁；頁首的 ID 和時間直接用這一列的
+                                    adminHome.load_service_media(resultRow.service_id, resultRow.start_datetime)
+                                    mainContentLoader.source = "../../qml/pages/admin_service_detail_page.qml"
                                 }
                             }
                         }
@@ -296,8 +291,9 @@ Item {
 
             EmptyState {
                 objectName: "searchEmpty"
-                anchors.centerIn: parent
-                width: 360
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: Theme.space4XL
+                width: Math.min(parent.width, 360)
                 visible: serviceManager.state === "empty"
                 title: searchPage.emptyTitle(serviceManager.lastQuery)
                 description: serviceManager.lastQuery.name ? qsTr("Try a different staff member or date range.")
@@ -306,8 +302,9 @@ Item {
 
             InlineError {
                 objectName: "searchError"
-                anchors.centerIn: parent
-                width: 480
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: Theme.space4XL
+                width: Math.min(parent.width, 480)
                 visible: serviceManager.state === "error"
                 title: qsTr("Search failed")
                 detail: serviceManager.errorDetail
@@ -318,6 +315,7 @@ Item {
             }
         }
     }
+
     // 回到這一頁時，把上一次搜尋的條件放回欄位（結果還在 Python 裡）
     Component.onCompleted: {
         const query = serviceManager.lastQuery

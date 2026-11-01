@@ -254,13 +254,14 @@ Item {
         id: box
         property var slot: null                 // FileSlot
         property string title: ""
+        property string accessibleName: title   // 輔助技術唸的名稱，例如「Customer video」（標題只寫 Customer）
         property string failedTitle: qsTr("Video failed to load")
         readonly property string slotState: slot ? slot.state : "idle"
         property alias output: videoOutput
 
         spacing: Theme.spaceXS
         Accessible.role: Accessible.Grouping
-        Accessible.name: title
+        Accessible.name: accessibleName
 
         Wait { id: loadingWait; active: box.slotState === "waiting" || box.slotState === "downloading" }
 
@@ -453,12 +454,14 @@ Item {
                                 id: cam0Box
                                 objectName: "cam0Box"
                                 title: qsTr("Customer")
+                                accessibleName: qsTr("Customer video")
                                 slot: detail.media ? detail.media.cam0 : null
                             }
                             VideoBox {
                                 id: cam1Box
                                 objectName: "cam1Box"
                                 title: qsTr("Staff")
+                                accessibleName: qsTr("Staff video")
                                 slot: detail.media ? detail.media.cam1 : null
                             }
                         }

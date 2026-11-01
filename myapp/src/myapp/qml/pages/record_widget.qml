@@ -2,7 +2,6 @@ pragma ComponentBehavior: Bound
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
-import QtQuick.Controls.Material 2.15
 import "../components"
 
 // 錄影頁：選鏡頭和麥克風（UX-13、UX-14、ENG-06）。
@@ -11,11 +10,10 @@ import "../components"
 // - 員工鏡頭預設選第二支；兩支相同時顯示欄位錯誤，Activate 停用。
 // - Activate 打開錄影視窗（QtWidgets 的 RecordWidget，F3）。同時只開一個：錄影中再按是把它帶回最前面，
 //   按鈕的字也跟著改；錄好之後的上傳在背景進行，結果在主視窗的通知（UX-08、DS-34）。
+// - 主要按鈕（Activate）是 Theme 的石墨灰（D2）；以前另外設了 Material 的藍色強調色，現在顏色都取自 Theme。
 Item {
     id: recordPage
     anchors.fill: parent
-    Material.theme: Material.Light
-    Material.accent: Material.Blue
 
     readonly property var finder: typeof deviceFinder !== "undefined" ? deviceFinder : null
     readonly property string status: finder ? finder.status : "idle"

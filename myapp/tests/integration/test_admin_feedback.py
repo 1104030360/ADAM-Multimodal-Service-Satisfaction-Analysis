@@ -354,6 +354,9 @@ def test_home_without_data_shows_empty_states_not_zeros(admin):
     assert child(daily, "panelSummary").property("text") == "No completed analyses today"
     assert {child(ring, "scoreText").property("text") for ring in rings(page)} == {"—"}
     assert qml(rings(page)[0], "Accessible.name") == "Customer overall score, no data"
+    legend = child(daily, "scoreLegend")  # 弧線顏色的門檻寫出來（UX-07）
+    assert legend.isVisible() and qml(legend, "Accessible.name") == (
+        "Arc colors: good is 85 and up, fair is 70 to 84, needs improvement is below 70.")
 
     qml(page, "root.currentTab = 2")
     empty = child(page, "rankingEmpty")
@@ -365,6 +368,55 @@ def test_home_without_data_shows_empty_states_not_zeros(admin):
     empty = child(page, "trendsEmpty")
     assert empty.isVisible()
     assert child(empty, "emptyTitle").property("text") == f"No completed analyses in {MONTHS[today.month - 1]} {today.year}"
+
+
+def test_home_tabs_are_graphite_segments_for_mouse_and_keyboard(admin):
+    """F5（D2、DS-12、UX-41）：四個分頁是和服務人員端共用的 SegmentTab。選取的是石墨灰白字（以前是 Material Green，
+    白字 2.78:1），沒選的是 #E0E0E0；滑鼠和鍵盤都能切換，輔助技術知道它是分頁、哪一個被選取。"""
+    page = qml(admin.window, "mainContentLoader.item")
+    tabs = [child(page, name) for name in ("dailyTab", "weeklyTab", "rankingTab", "trendsTab")]
+    assert [tab.property("text") for tab in tabs] == ["Daily Scores", "Weekly Scores", "Ranking", "Trends"]
+    assert [tab.property("selected") for tab in tabs] == [True, False, False, False]
+    assert qml(tabs[0], "Qt.colorEqual(background.color, Theme.segmentSelected)"
+                        " && Qt.colorEqual(contentItem.color, Theme.segmentSelectedText)")
+    assert qml(tabs[1], "Qt.colorEqual(background.color, Theme.segmentIdle)"
+                        " && Qt.colorEqual(contentItem.color, Theme.segmentIdleText)")
+    assert qml(tabs[0], "Accessible.role === Accessible.PageTab && Accessible.selected")
+
+    click(admin.window, tabs[2])
+    assert qml(page, "currentTab") == 2 and tabs[2].property("selected") and not tabs[0].property("selected")
+    assert child(page, "rankingPanel").isVisible() and not child(page, "dailyPanel").isVisible()
+
+    tabs[3].forceActiveFocus(Qt.FocusReason.TabFocusReason)  # 用鍵盤：Tab 到「Trends」，按空白鍵
+    assert qml(tabs[3], "visualFocus")  # 看得到焦點框（DS-30）
+    QTest.keyClick(admin.window, Qt.Key.Key_Space)
+    wait_until(lambda: qml(page, "currentTab") == 3)
+    assert child(page, "trendsPanel").isVisible() and not child(page, "rankingPanel").isVisible()
+
+
+def test_ranking_boxes_are_neutral_and_trend_controls_have_names(admin, db):
+    """排名的四格是中性的灰底、#333333 的字：紅綠只代表狀態（DS-12、DS-13），以前的綠、橘、藍、紅標題不到 4.5:1（UX-45）。
+    趨勢的選單和圖表有給輔助技術的名稱（UX-41）。"""
+    today = date.today()
+    service_id = f"S{today:%Y%m%d}090000"
+    db.add_service(service_id, f"{today} 09:00:00")
+    db.add_scores(service_id, customer=92, server=64)
+    page = qml(admin.window, "mainContentLoader.item")
+    qml(page, "rankingModel.refresh(); root.reloadTrends()")
+    wait_until(lambda: admin.home.rankingModel.state == "ready" and admin.home.trendDataManager.state == "ready")
+    qml(page, "root.currentTab = 2")
+    for name, title in (("topCustomers", "Top 5 Customers"), ("bottomCustomers", "Bottom 5 Customers"),
+                        ("topStaff", "Top 5 Staff"), ("bottomStaff", "Bottom 5 Staff")):
+        box = child(page, name)
+        assert qml(box, "Qt.colorEqual(color, Theme.surfaceAlt) && Qt.colorEqual(border.color, Theme.divider)"), name
+        assert qml(box, "Accessible.role === Accessible.List") and qml(box, "Accessible.name") == title
+
+    qml(page, "root.currentTab = 3")
+    assert (qml(page, "monthSelector.Accessible.name"), qml(page, "yearSelector.Accessible.name")) == ("Month", "Year")
+    chart = child(page, "trendChart")
+    assert qml(chart, "Accessible.role === Accessible.Chart")
+    assert qml(chart, "Accessible.name") == f"Daily average scores, {MONTHS[today.month - 1]} {today.year}"
+    assert qml(chart, "Accessible.description") == "Days with data: staff 1, customers 1."
 
 
 def test_scores_refresh_keeps_old_rings_dimmed_and_repaints_on_change(admin, db):
@@ -449,18 +501,25 @@ def test_search_shows_date_errors_empty_results_and_rows(admin, db):
     wait_until(lambda: manager.namesState == "ready")
     assert qml(page, "nameComboBox.displayText") == "All Staff"  # 名單載入後不會自己選第一個人
     assert qml(page, "nameComboBox.count") == 2  # 「All Staff」＋一位服務人員
+    assert qml(child(page, "searchButton"), "variant") == "primary"  # 這一頁唯一的主要按鈕：石墨灰（DS-12）
     qml(page, 'startDateField.text = "2026/10/01"; endDateField.text = "2026-10-31"')
     click(admin.window, child(page, "searchButton"))
     assert field_error(page, "startDateError") == "Enter the date as YYYY-MM-DD, for example 2026-10-31."
     assert field_error(page, "endDateError") == ""
     assert manager.state == "idle"  # 日期不對：沒有送出
+    # 和服務人員端同一個日期欄（DateField.qml）：框線變紅，錯誤寫進給輔助技術的說明（DS-27）
+    start, end = child(page, "startDateField"), child(page, "endDateField")
+    assert qml(start, "invalid && Qt.colorEqual(background.border.color, Theme.errorOnLight)")
+    assert qml(start, "Accessible.name") == "Start date"
+    assert qml(start, "Accessible.description") == "Enter the date as YYYY-MM-DD, for example 2026-10-31."
+    assert not qml(end, "invalid") and qml(end, "Accessible.description") == ""
 
     qml(page, 'startDateField.text = "2026-09-01"; endDateField.text = "2026-09-30"')
     admin.proxy.reset()
     click(admin.window, child(page, "searchButton"))
     wait_until(lambda: manager.state == "empty")
     assert admin.proxy.snapshot()["rt"] == 1
-    assert field_error(page, "startDateError") == ""
+    assert field_error(page, "startDateError") == "" and not qml(start, "invalid")
     empty = child(page, "searchEmpty")
     assert child(empty, "emptyTitle").property("text") == "No services from 2026-09-01 to 2026-09-30"
     assert child(empty, "emptyDescription").property("text") == "Try a different date range."

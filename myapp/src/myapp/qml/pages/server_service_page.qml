@@ -1,6 +1,6 @@
 pragma ComponentBehavior: Bound
 import QtQuick
-// 日期欄、表格按鈕自訂了 background，要用 Basic 樣式（T13）
+// 日期欄（DateField.qml）、按鈕（BusyButton）自己 import Basic；這裡的捲軸也用 Basic，和以前一樣（T13）
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../components"
@@ -52,31 +52,6 @@ Item {
         }
     }
 
-    component DateField: TextField {
-        id: field
-        property bool invalid: false
-        property string accessibleName: ""
-
-        Layout.preferredWidth: 280
-        implicitHeight: Theme.controlHeight
-        leftPadding: Theme.spaceM
-        rightPadding: Theme.spaceM
-        font.pixelSize: Theme.fontBody
-        color: Theme.textPrimary
-        placeholderTextColor: Theme.textSecondary
-        selectByMouse: true
-        Accessible.name: accessibleName
-        Accessible.description: invalid ? searchPage.dateHint : ""
-        onAccepted: searchPage.submit()     // 在任一欄按 Enter 都會送出
-
-        background: Rectangle {
-            radius: height / 2
-            color: Theme.contentBg
-            border.width: field.activeFocus || field.invalid ? 2 : 1
-            border.color: field.invalid ? Theme.errorOnLight : field.activeFocus ? Theme.focusOnLight : Theme.textSecondary
-        }
-    }
-
     component HeaderText: Text {
         Layout.fillWidth: true
         Layout.preferredWidth: 1
@@ -100,12 +75,15 @@ Item {
                 Layout.alignment: Qt.AlignTop
                 spacing: 4
 
+                // 日期欄和管理員端的查詢頁共用（DateField.qml）。在任一欄按 Enter 都會送出
                 DateField {
                     id: startDateField
                     objectName: "startDateField"
                     placeholderText: qsTr("Start Date (YYYY-MM-DD)")
                     accessibleName: qsTr("Start date")
+                    errorText: searchPage.dateHint
                     invalid: searchPage.manager !== null && searchPage.manager.startDateInvalid
+                    onAccepted: searchPage.submit()
                 }
                 FieldError {
                     objectName: "startDateError"
@@ -124,7 +102,9 @@ Item {
                     objectName: "endDateField"
                     placeholderText: qsTr("End Date (YYYY-MM-DD)")
                     accessibleName: qsTr("End date")
+                    errorText: searchPage.dateHint
                     invalid: searchPage.manager !== null && searchPage.manager.endDateInvalid
+                    onAccepted: searchPage.submit()
                 }
                 FieldError {
                     objectName: "endDateError"

@@ -13,11 +13,13 @@
 - `QuitGuard`：⌘Q 不會經過 QML 外殼的 onClosing（app 是 QApplication，結束時只問 QWidget 視窗；T20 實測），
   所以錄影中、存檔中時，DeviceFinder 在 app 上裝這個 filter 攔下 QEvent.Quit。
 
-介面文字照 DS-50～52 的英文。顏色和 qml/components/Theme.qml 是同一組值（QtWidgets 讀不到 QML 的 Theme 單例）。
+介面文字照 DS-50～52 的英文，經過 _tr()（日後可以加翻譯）。顏色取自 myapp/theme.py，和 qml/components/Theme.qml
+是同一組值（QtWidgets 讀不到 QML 的 Theme 單例；tests/unit/test_ui_copy.py 比對兩邊）。
 """
 import logging
 import math
 import os
+import re
 import threading
 import time
 import wave
@@ -34,6 +36,7 @@ from PySide6.QtSvg import QSvgRenderer
 
 from myapp import storage
 from myapp.notifications import DISK_FULL, FILE_NOT_FOUND, NO_PERMISSION, user_message
+from myapp.theme import RECORD_WINDOW, TOKENS
 from myapp.ui_prefs import MOTION_FULL, MOTION_REDUCE
 
 logger = logging.getLogger(__name__)
@@ -54,26 +57,29 @@ QUIT_WAIT_S = 5.0             # 結束程式時等檔案寫完，最多等這麼
 FINISHING, UPLOADING, SAVING, SAVED, FAILED = "finishing", "uploading", "saving", "saved", "failed"
 IN_FLIGHT = (FINISHING, UPLOADING, SAVING)
 
+# QSS 用的顏色：值都來自 myapp/theme.py（和 Theme.qml 同一組，tests/unit/test_ui_copy.py 比對兩邊），這裡不寫死
 COLORS = {
-    "window": "#F0F0F0",          # 錄影視窗的底色（DS-34，沿用以前的值）
-    "surface": "#FFFFFF",         # contentBg
-    "text": "#333333",            # textPrimary
-    "secondary": "#596069",       # textSecondary、actionSecondaryBorder
-    "disabled_text": "#8E959F",   # textDisabled、actionDisabledText
-    "disabled_bg": "#E0E0E0",     # actionDisabledBg
-    "track": "#E0E0E0",           # 進度條的軌道
-    "fill": "#333333",            # progressFill
-    "primary": "#333333",         # actionPrimary
-    "primary_hover": "#444444",
-    "primary_pressed": "#555555",
-    "muted": "#EFEFEF",           # surfaceMuted：次要按鈕按下
-    "on_dark": "#FFFFFF",
-    "recording": "#E53935",
-    "success": "#2E7D32",         # successOnLight
-    "error": "#C62828",           # errorOnLight
-    "focus": "#1565C0",           # focusOnLight
-    "preview": "#D3D3D3",         # 預覽框（沿用以前的值）
-    "preview_border": "#B0B0B0",
+    "window": RECORD_WINDOW["windowBg"],               # 錄影視窗的底色（DS-34，沿用以前的值）
+    "surface": TOKENS["contentBg"],
+    "text": TOKENS["textPrimary"],
+    "secondary": TOKENS["textSecondary"],
+    "secondary_border": TOKENS["actionSecondaryBorder"],
+    "secondary_hover": TOKENS["surfaceAlt"],           # 次要按鈕的 hover、按下：和 QML 的 BusyButton 一樣（DS-12）
+    "secondary_pressed": TOKENS["surfaceMuted"],
+    "disabled_text": TOKENS["actionDisabledText"],
+    "disabled_bg": TOKENS["actionDisabledBg"],
+    "track": TOKENS["track"],                          # 進度條的軌道
+    "fill": TOKENS["progressFill"],
+    "primary": TOKENS["actionPrimary"],                # 石墨灰（D2）：白字 12.63:1，以前的 #4CAF50 只有 2.78:1
+    "primary_hover": TOKENS["actionPrimaryHover"],
+    "primary_pressed": TOKENS["actionPrimaryPressed"],
+    "on_dark": TOKENS["textOnDark"],
+    "recording": TOKENS["recording"],                  # 只用在實心的錄影圓點
+    "success": TOKENS["successOnLight"],
+    "error": TOKENS["errorOnLight"],
+    "focus": TOKENS["focusOnLight"],
+    "preview": RECORD_WINDOW["previewBg"],             # 預覽框（沿用以前的值）
+    "preview_border": RECORD_WINDOW["previewBorder"],
 }
 
 # Lucide 圖示的內容（ISC 授權，見 myapp/src/myapp/images/icons/LICENSE-lucide.txt），畫的時候才上色
@@ -95,12 +101,19 @@ _ICONS = {
 
 # ---------------------------------------------------------------- 小工具
 
+def _tr(text, *values):
+    """介面上的英文（PLAN D1、DS-51）：經過 translate，日後加翻譯檔就能換語言；%1、%2… 一次換成 values
+    （像 QString::arg，使用者的資料裡就算有「%2」也不會被換掉）。和 media.py 的 _tr 一樣，context 是 RecordWidget。"""
+    text = QtCore.QCoreApplication.translate("RecordWidget", text)
+    return re.sub(r"%(\d)", lambda match: str(values[int(match[1]) - 1]), text) if values else text
+
+
 def transfer_text(done, total):
     """DS-23 的數字「58.6 / 124.0 MB · 47%」，和 QML 的 Theme.transferText 一樣：MB 一位小數，百分比無條件捨去。"""
     if not total > 0:
         return ""
     done = max(0.0, min(float(done), float(total)))
-    return f"{done / 1e6:.1f} / {total / 1e6:.1f} MB · {math.floor(done / total * 100)}%"
+    return _tr("%1 / %2 MB · %3%", f"{done / 1e6:.1f}", f"{total / 1e6:.1f}", math.floor(done / total * 100))
 
 
 def file_number(done, sizes):
@@ -136,11 +149,11 @@ def level_from_peak(peak):
 def failure_detail(error, stage):
     """DS-52 的「<sid> wasn't saved」內文：先講原因，再講檔案還在。最多兩句；技術代碼不放進來（寫進 log）。"""
     if stage == "database":
-        return "The files uploaded, but the database couldn't be updated. Retry to finish saving."
+        return _tr("The files uploaded, but the database couldn't be updated. Retry to finish saving.")
     _, title, detail, _ = user_message(error)
     if title in (FILE_NOT_FOUND.title, NO_PERMISSION.title, DISK_FULL.title):  # 本機檔案的問題：照 ENG-12 的說明
         return f"{title}. {detail}"
-    return f"{title}. The recording is still on this computer."
+    return _tr("%1. The recording is still on this computer.", title)
 
 
 def reduce_motion(ui_prefs):
@@ -205,13 +218,15 @@ def _progress_bar(name, width, accessible_name):
 
 
 def _button_style(primary, radius=10, pixel_size=18):
+    """DS-12 的按鈕：主要是石墨灰底白字，次要是白底、#596069 框線、#333333 字；hover、按下和 QML 的 BusyButton 一樣。"""
     if primary:
         normal, hover, pressed = (f"background: {COLORS['primary']}; color: {COLORS['on_dark']}; border: none;",
                                   f"background: {COLORS['primary_hover']};", f"background: {COLORS['primary_pressed']};")
     else:
         normal, hover, pressed = (f"background: {COLORS['surface']}; color: {COLORS['text']}; "
-                                  f"border: 1px solid {COLORS['secondary']};",
-                                  f"background: {COLORS['muted']};", f"background: {COLORS['track']};")
+                                  f"border: 1px solid {COLORS['secondary_border']};",
+                                  f"background: {COLORS['secondary_hover']};",
+                                  f"background: {COLORS['secondary_pressed']};")
     return (f"QPushButton {{ {normal} border-radius: {radius}px; padding: 0 16px; font-size: {pixel_size}px; "
             "font-weight: bold; }"
             f"QPushButton:hover {{ {hover} }}"
@@ -452,8 +467,9 @@ class SaveJob:
     @property
     def title(self):
         """「Uploading S20261031093000」；重試時加「(attempt 2)」（DS-23）。"""
-        attempt = f" (attempt {self.attempt})" if self.attempt > 1 else ""
-        return f"Uploading {self.service_id}{attempt}"
+        if self.attempt > 1:
+            return _tr("Uploading %1 (attempt %2)", self.service_id, self.attempt)
+        return _tr("Uploading %1", self.service_id)
 
     @property
     def file_number(self):
@@ -572,7 +588,7 @@ class RecordingSaver(QtCore.QObject):
             return self._not_submitted(job, key)
         job.state = UPLOADING if job.recording.finished else FINISHING
         job.done = job.total = 0.0
-        self.services.notifier.progress(key, 0, 0, job.title, f"File 1 of {FILE_COUNT}")
+        self.services.notifier.progress(key, 0, 0, job.title, _tr("File %1 of %2", 1, FILE_COUNT))
         self._emit(job)
         return True
 
@@ -583,7 +599,7 @@ class RecordingSaver(QtCore.QObject):
             return
         job.state = UPLOADING
         job.done, job.total = done, total
-        self.services.notifier.progress(key, done, total, job.title, f"File {job.file_number} of {FILE_COUNT}")
+        self.services.notifier.progress(key, done, total, job.title, _tr("File %1 of %2", job.file_number, FILE_COUNT))
         self._emit(job)
 
     def _uploaded(self, job, urls):
@@ -601,7 +617,7 @@ class RecordingSaver(QtCore.QObject):
             return self._not_submitted(job, key)
         job.state = SAVING
         self.services.notifier.progress(UPLOAD_KEY.format(job.service_id), job.total, job.total, job.title,
-                                        "Saving to the database…")
+                                        _tr("Saving to the database…"))
         self._emit(job)
         return True
 
@@ -609,8 +625,8 @@ class RecordingSaver(QtCore.QObject):
         service_id = job.service_id
         job.state = SAVED
         job.toast_id = self.services.notifier.notify(
-            "success", f"Saved {service_id}", "Video and audio uploaded.", UPLOAD_KEY.format(service_id),
-            ANALYZE_ACTION.format(service_id), "Analyze")
+            "success", _tr("Saved %1", service_id), _tr("Video and audio uploaded."), UPLOAD_KEY.format(service_id),
+            ANALYZE_ACTION.format(service_id), _tr("Analyze"))
         self._emit(job)
         if self._on_saved is not None:
             self._on_saved(service_id)
@@ -620,20 +636,20 @@ class RecordingSaver(QtCore.QObject):
         logger.warning("saving %s failed while %s: %r", service_id,  # 技術細節只進 log（DS-50）
                        "uploading" if stage == "upload" else "writing the database", error, exc_info=error)
         job.state = FAILED
-        job.error_title = f"{service_id} wasn't saved"
+        job.error_title = _tr("%1 wasn't saved", service_id)
         job.error_detail = failure_detail(error, stage)
         job.retryable = not isinstance(error, FileNotFoundError)  # 檔案不見了，重試也一樣
         job.toast_id = self.services.notifier.notify(
             "error", job.error_title, job.error_detail, UPLOAD_KEY.format(service_id),
-            RETRY_PREFIX + service_id if job.retryable else "", "Retry" if job.retryable else "")
+            RETRY_PREFIX + service_id if job.retryable else "", _tr("Retry") if job.retryable else "")
         self._emit(job)
 
     def _not_submitted(self, job, key):
         # 只會發生在結束程式的途中（TaskRunner 已經 shutdown）：記成失敗，不算在進行中
         logger.warning("couldn't start %s; the app is shutting down", key)
         job.state = FAILED
-        job.error_title = f"{job.service_id} wasn't saved"
-        job.error_detail = "The app is closing. The recording is still on this computer."
+        job.error_title = _tr("%1 wasn't saved", job.service_id)
+        job.error_detail = _tr("The app is closing. The recording is still on this computer.")
         self._emit(job)
         return False
 
@@ -791,7 +807,6 @@ class CameraPreview(QtWidgets.QFrame):
     """一支鏡頭的預覽框（480×360）。打不開或沒有畫面時在框裡說明（DS-34、UX-11），不擋另一支鏡頭。"""
 
     SIZE = (480, 360)
-    HINT = "Check the cable, or go back and choose another camera."
 
     def __init__(self, camera_name, parent=None):
         super().__init__(parent)
@@ -826,15 +841,16 @@ class CameraPreview(QtWidgets.QFrame):
         self.image.setPixmap(QtGui.QPixmap.fromImage(image))
 
     def set_problem(self, problem):
-        title = f"{self.camera_name} has no picture" if problem else ""
+        title = _tr("%1 has no picture", self.camera_name) if problem else ""
         if title == self.problem:
             return
         self.problem = title
         if problem:
+            hint = _tr("Check the cable, or go back and choose another camera.")
             self.problem_title.setText(title)
-            self.problem_body.setText(self.HINT)
+            self.problem_body.setText(hint)
             self._stack.setCurrentWidget(self.message)
-            self.setAccessibleDescription(f"{title}. {self.HINT}")
+            self.setAccessibleDescription(f"{title}. {hint}")
         else:
             self._stack.setCurrentWidget(self.image)
             self.setAccessibleDescription("")
@@ -856,7 +872,7 @@ class MicrophoneRow(QtWidgets.QWidget):
         self.icon.setPixmap(icon_pixmap("mic-off", COLORS["error"], 16))
         self.icon.hide()
         self.label = _label("microphoneLabel", 14, COLORS["secondary"])
-        self.level = _progress_bar("levelMeter", 160, "Microphone level")
+        self.level = _progress_bar("levelMeter", 160, _tr("Microphone level"))
         self.level.setRange(0, 100)
         self.level.hide()
         layout.addStretch(1)
@@ -883,14 +899,15 @@ class MicrophoneRow(QtWidgets.QWidget):
         self.problem = problem
         if problem:
             self.icon.show()
-            self.label.setText(f"{self.name} isn't working. Check the cable, or go back and choose another microphone.")
+            self.label.setText(_tr("%1 isn't working. Check the cable, or go back and choose another microphone.",
+                                   self.name))
             self.label.setStyleSheet(f"color: {COLORS['error']}; background: transparent;")
         else:
             self._show_name()
 
     def _show_name(self):
         self.icon.hide()
-        self.label.setText(f"Microphone: {self.name}")
+        self.label.setText(_tr("Microphone: %1", self.name))
         self.label.setStyleSheet(f"color: {COLORS['secondary']}; background: transparent;")
 
 
@@ -914,8 +931,8 @@ class RecordWidget(QtWidgets.QWidget):
         self.mic_index = mic_index
         self.account_id = account_id
         self.saver = saver
-        self.camera_names = tuple(camera_names or (f"Camera {cam0_index}", f"Camera {cam1_index}"))
-        self.microphone_name = microphone_name or f"Microphone {mic_index}"
+        self.camera_names = tuple(camera_names or (_tr("Camera %1", cam0_index), _tr("Camera %1", cam1_index)))
+        self.microphone_name = microphone_name or _tr("Microphone %1", mic_index)
         self.CAM_NUMS = [cam0_index, cam1_index]  # 顧客、員工
         self.timer_cameras = []  # 每支鏡頭的預覽計時器
         self.caps = []  # 每支鏡頭的預覽 VideoCapture
@@ -943,7 +960,7 @@ class RecordWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------ 畫面
 
     def set_ui(self):
-        self.setWindowTitle("Recording")
+        self.setWindowTitle(_tr("Recording"))
         self.setFixedSize(1024, 640)
         palette = self.palette()
         palette.setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor(COLORS["window"]))
@@ -961,12 +978,12 @@ class RecordWidget(QtWidgets.QWidget):
         cameras = QtWidgets.QGridLayout()
         cameras.setSpacing(10)
         self.label_customer = _label("customerCameraLabel", 14, COLORS["text"], center=True)
-        self.label_customer.setText("Customer Camera")
+        self.label_customer.setText(_tr("Customer Camera"))
         self.label_staff = _label("staffCameraLabel", 14, COLORS["text"], center=True)
-        self.label_staff.setText("Staff Camera")
+        self.label_staff.setText(_tr("Staff Camera"))
         self.previews = [CameraPreview(name) for name in self.camera_names]
-        self.previews[0].setAccessibleName("Customer Camera")
-        self.previews[1].setAccessibleName("Staff Camera")
+        self.previews[0].setAccessibleName(_tr("Customer Camera"))
+        self.previews[1].setAccessibleName(_tr("Staff Camera"))
         self.label_cameras = [preview.image for preview in self.previews]  # 預覽畫面的 QLabel（舊名稱）
         cameras.addWidget(self.label_customer, 0, 0)
         cameras.addWidget(self.label_staff, 0, 1)
@@ -980,11 +997,11 @@ class RecordWidget(QtWidgets.QWidget):
 
         buttons = QtWidgets.QHBoxLayout()
         buttons.setSpacing(10)
-        self.button_start_recording = QtWidgets.QPushButton("Start Recording")
+        self.button_start_recording = QtWidgets.QPushButton(_tr("Start Recording"))
         self.button_start_recording.setStyleSheet(_button_style(primary=True))
         self.button_start_recording.setIcon(_button_icon("dot", COLORS["recording"], 12))
         self.button_start_recording.setIconSize(QtCore.QSize(12 + BUTTON_ICON_GAP, 12))
-        self.button_stop_recording = QtWidgets.QPushButton("Stop Recording")
+        self.button_stop_recording = QtWidgets.QPushButton(_tr("Stop Recording"))
         self.button_stop_recording.setStyleSheet(_button_style(primary=False))
         self.button_stop_recording.setIcon(_button_icon("square", COLORS["text"], 16))
         self.button_stop_recording.setIconSize(QtCore.QSize(16 + BUTTON_ICON_GAP, 16))
@@ -1128,35 +1145,37 @@ class RecordWidget(QtWidgets.QWidget):
         bar = self.status_bar
         recording = self.current
         if recording is not None:
-            bar.show_state("recording", "dot", COLORS["recording"], "Recording", recording.service_id,
+            bar.show_state("recording", "dot", COLORS["recording"], _tr("Recording"), recording.service_id,
                            elapsed=format_elapsed(recording.elapsed()))
-            self._announce(("recording", recording.service_id), f"Recording {recording.service_id}")
+            self._announce(("recording", recording.service_id), _tr("Recording %1", recording.service_id))
             return
         job = self.saver.job(self.last_recording.service_id) if self.last_recording is not None else None
         if job is None:
             cam0, cam1 = self.camera_names
-            bar.show_state("ready", "circle", COLORS["secondary"], "Ready to record",
-                           f"Customer camera: {cam0} · Staff camera: {cam1} · Microphone: {self.microphone_name}")
+            bar.show_state("ready", "circle", COLORS["secondary"], _tr("Ready to record"),
+                           _tr("Customer camera: %1 · Staff camera: %2 · Microphone: %3", cam0, cam1,
+                               self.microphone_name))
         elif job.state == FINISHING:
-            bar.show_state("finishing", "loader", COLORS["secondary"], "Saving recording…", job.service_id,
+            bar.show_state("finishing", "loader", COLORS["secondary"], _tr("Saving recording…"), job.service_id,
                            progress="busy", still=reduce_motion(self.saver.services.ui_prefs))
         elif job.state == UPLOADING:
-            file_text = f"File {job.file_number} of {FILE_COUNT}: {job.file_name}"
+            file_text = _tr("File %1 of %2: %3", job.file_number, FILE_COUNT, job.file_name)
             amount = transfer_text(job.done, job.total)
             bar.show_state("uploading", "upload", COLORS["text"], job.title,
                            f"{amount} · {file_text}" if amount else file_text, progress=(job.done, job.total))
         elif job.state == SAVING:
             amount = transfer_text(job.total, job.total)
-            detail = "Saving to the database…"
+            detail = _tr("Saving to the database…")
             bar.show_state("saving", "upload", COLORS["text"], job.title, f"{amount} · {detail}" if amount else detail,
                            progress=(job.total, job.total))
         elif job.state == SAVED:
-            bar.show_state("saved", "circle-check", COLORS["success"], f"Saved {job.service_id}",
-                           f"{FILE_COUNT} files uploaded", action="Analyze", action_enabled=not job.analyze_requested)
-            self._announce(("saved", job.service_id), f"Saved {job.service_id}. {FILE_COUNT} files uploaded")
+            uploaded = _tr("%1 files uploaded", FILE_COUNT)
+            bar.show_state("saved", "circle-check", COLORS["success"], _tr("Saved %1", job.service_id), uploaded,
+                           action=_tr("Analyze"), action_enabled=not job.analyze_requested)
+            self._announce(("saved", job.service_id), f"{_tr('Saved %1', job.service_id)}. {uploaded}")
         else:
             bar.show_state("failed", "circle-x", COLORS["error"], job.error_title, job.error_detail,
-                           action="Retry" if job.retryable else "")
+                           action=_tr("Retry") if job.retryable else "")
             self._announce(("failed", job.service_id, job.attempt), f"{job.error_title}. {job.error_detail}",
                            assertive=True)
 

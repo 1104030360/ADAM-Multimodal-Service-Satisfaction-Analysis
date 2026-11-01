@@ -124,6 +124,35 @@ def test_admin_page_has_no_warnings(engine, services, qml_warnings, page):
     assert qml_warnings == []
 
 
+def test_admin_home_tabs_and_search_states_have_no_warnings(engine, services, db, qml_warnings):
+    """F5（D2）：管理員首頁的四個分頁（共用的 SegmentTab）、有資料的排名和趨勢圖，
+    以及查詢頁（共用的 DateField）的日期錯誤和結果，都畫出來，零警告。"""
+    from datetime import date
+
+    today = date.today()
+    db.add_service(f"S{today:%Y%m%d}090000", f"{today} 09:00:00")
+    db.add_scores(f"S{today:%Y%m%d}090000", customer=92, server=64)
+    home = admin_home_init.launch(engine, ADMIN_ID, services)
+    window = engine.rootObjects()[-1]
+    sections = (home.serviceScoreManager, home.rankingModel, home.trendDataManager)
+    wait_until(lambda: all(section.state not in ("loading", "idle") for section in sections))
+    page = qml(window, "mainContentLoader.item")  # 留著參照，子物件的 wrapper 才不會失效（T17）
+    for name in ("weeklyTab", "rankingTab", "trendsTab", "dailyTab"):
+        tab = page.findChild(QObject, name)
+        qml(tab, "clicked()")
+        wait_until(lambda: qml(tab, "selected"))
+        settle()
+    show_page(window, "admin_service_page.qml")
+    search = qml(window, "mainContentLoader.item")
+    wait_until(lambda: home.serviceManager.namesState == "ready")
+    qml(search, 'startDateField.text = "2026/10/01"; search()')  # 日期格式不對：欄位下方的錯誤、紅框
+    wait_until(lambda: home.serviceManager.startDateError != "")
+    qml(search, f'startDateField.text = "{today}"; search()')
+    wait_until(lambda: home.serviceManager.state == "ready")
+    settle()
+    assert qml_warnings == []
+
+
 @pytest.mark.parametrize("side", ["staff", "admin"])
 def test_service_detail_and_reports_with_data_have_no_warnings(engine, services, db, s3, qml_warnings, side, tmp_path):
     """明細頁的每一種狀態（好了、失敗、沒有這個檔案、圖表警告列）和打開 PDF 的報表頁都畫出來，零警告（C2）。"""

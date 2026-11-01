@@ -9,11 +9,13 @@ F2（前端重建第二波）：資料庫的讀寫都搬到 db lane（ENG-01、E
   送出分析在 ServiceModel、分析完成的通知在 watcher.py。
 """
 import logging
+import re
 import sys
 import time
 import requests
 import os
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QObject, Property, Qt, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import (QAbstractListModel, QCoreApplication, QModelIndex, QObject, Property, Qt, QTimer, QUrl,
+                            Signal, Slot)
 from datetime import datetime, timedelta
 import pyaudio
 from pathlib import Path
@@ -41,6 +43,13 @@ LAUNCH_KEYS = (ACCOUNT_NAME_KEY, HOME_SCORES_KEY, ANALYSIS_KEY, WATCHER_KEY)
 ANALYSIS_REFRESH_TOAST_KEY = "analysis-refresh"
 
 _FIRST_ROLE = int(Qt.ItemDataRole.UserRole)
+
+
+def _tr(text, *values):
+    """介面上的英文（PLAN D1、DS-51）：經過 translate，日後加翻譯檔就能換語言；%1、%2… 一次換成 values
+    （像 QString::arg）。和 media.py 的 _tr 一樣，context 是 ServerHome。"""
+    text = QCoreApplication.translate("ServerHome", text)
+    return re.sub(r"%(\d)", lambda match: str(values[int(match[1]) - 1]), text) if values else text
 
 
 def error_text(error):
@@ -301,7 +310,7 @@ def probe_cameras():
     for camera_id in range(10):
         cap = cv2.VideoCapture(camera_id)
         if cap.isOpened():
-            names.append(f"Camera {camera_id}")  # 使用編號代替名稱
+            names.append(_tr("Camera %1", camera_id))  # 使用編號代替名稱
             ids.append(camera_id)
             cap.release()  # 釋放攝影機
     return names, ids
@@ -845,7 +854,7 @@ class ServiceModel(QObject):
             return
         cause = user_message(error)[1]
         self._refresh_warning = self.services.notifier.notify(
-            "warning", "Can't refresh analysis status", f"{cause}. Retrying in {retry_in} seconds.",
+            "warning", _tr("Can't refresh analysis status"), _tr("%1. Retrying in %2 seconds.", cause, retry_in),
             ANALYSIS_REFRESH_TOAST_KEY)
 
     def refresh_recovered(self):
@@ -918,8 +927,9 @@ class ServiceModel(QObject):
         self._waiting_since[service_id] = posted_at
         self._sending.discard(service_id)
         self._took(rows)  # 那一列移到 Analyzing（DS-24：按鈕跟著那一列換掉）
-        self._show_toast("info", "Sent for analysis",
-                         f"{service_id} is being analyzed. You'll be notified when it's done.", analyze_key(service_id))
+        self._show_toast("info", _tr("Sent for analysis"),
+                         _tr("%1 is being analyzed. You'll be notified when it's done.", service_id),
+                         analyze_key(service_id))
         self.analysisSent.emit(service_id)
 
     def _not_sent(self, service_id, error):
@@ -928,8 +938,8 @@ class ServiceModel(QObject):
         logger.warning("sending %s for analysis failed: %r", service_id, error)
         self._set_sending(service_id, False)
         retryable = user_message(error)[3]
-        self._show_toast("error", "Couldn't send for analysis", toast_reason(error), analyze_key(service_id),
-                         f"retry-analyze:{service_id}" if retryable else "", "Retry" if retryable else "")
+        self._show_toast("error", _tr("Couldn't send for analysis"), toast_reason(error), analyze_key(service_id),
+                         f"retry-analyze:{service_id}" if retryable else "", _tr("Retry") if retryable else "")
 
     def _set_sending(self, service_id, sending):
         if sending:
@@ -942,15 +952,16 @@ class ServiceModel(QObject):
 
     def analysis_finished(self, service_id):
         """2 → 3：成功 toast＋View Results，清單在背景重新整理（不管在哪一頁都會更新）。"""
-        self._show_toast("success", "Analysis complete", f"Scores and charts for {service_id} are ready.",
-                         outcome_key(service_id), f"open-analysis:{service_id}", "View Results")
+        self._show_toast("success", _tr("Analysis complete"), _tr("Scores and charts for %1 are ready.", service_id),
+                         outcome_key(service_id), f"open-analysis:{service_id}", _tr("View Results"))
         self.refresh()
 
     def analysis_failed(self, service_id):
         """2 → 1（分析服務失敗時把狀態改回 1，D4）：那一列標成 Failed、按鈕變成 Retry，跳常駐的錯誤＋Retry。"""
         self._failed.add(service_id)
-        self._show_toast("error", "Analysis failed", f"{service_id} couldn't be analyzed. You can send it again.",
-                         outcome_key(service_id), f"retry-analyze:{service_id}", "Retry")
+        self._show_toast("error", _tr("Analysis failed"),
+                         _tr("%1 couldn't be analyzed. You can send it again.", service_id),
+                         outcome_key(service_id), f"retry-analyze:{service_id}", _tr("Retry"))
         self.refresh()
 
     def _show_toast(self, severity, title, detail, key, action_id="", action_label=""):
