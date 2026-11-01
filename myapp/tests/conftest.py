@@ -7,6 +7,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"  # Qt 不開真的視窗
 os.environ["OPENCV_AVFOUNDATION_SKIP_AUTH"] = "1"  # 萬一碰到真的鏡頭，也不跳出授權視窗
 os.environ["ADAM_ANIMATION_SCALE"] = "0"  # 動畫時間全部變 0（UiPrefs.animationScale → Theme），測試不必等動畫
 
+import gc
 import threading
 
 import boto3
@@ -41,6 +42,26 @@ def qapp():
     app = QApplication.instance() or QApplication([])
     app.setQuitOnLastWindowClosed(False)  # 測試會一直開關視窗，不要因此結束 app
     return app
+
+
+@pytest.fixture(scope="session", autouse=True)
+def garbage_collected_on_the_main_thread():
+    """Python 的循環 GC 只在主執行緒、每個測試結束時跑（T34）。
+
+    GC 平常由「剛好在配置物件的那條執行緒」觸發。測試自己建的、沒有 parent 的 QObject（例如單元測試的清單模型）
+    在循環參照裡時，可能在背景執行緒（TaskRunner、db lane）上被刪掉：解構時 PySide 要等 GIL，主執行緒卻拿著 GIL
+    等同一個 Qt 的連線鎖，兩邊互等，整套測試卡住（2026-11-01 整合時遇到一次）。app 自己的物件都有 parent，不受影響。
+    """
+    gc.disable()
+    yield
+    gc.enable()
+
+
+@pytest.fixture(autouse=True)
+def collect_garbage():
+    """每個測試結束、其他 fixture 都收完之後，在主執行緒把循環的垃圾收掉。"""
+    yield
+    gc.collect()
 
 
 @pytest.fixture(autouse=True)

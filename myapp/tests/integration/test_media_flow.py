@@ -725,7 +725,11 @@ def test_going_back_before_the_file_list_arrives_cancels_it(side, ui, services, 
 # ── 不需要畫面的部分：檔案清單、下載、錯誤的文字 ─────────────────────────────
 
 class Rows:
-    """假的 cursor：execute 記下參數，fetchall 回傳 rows。"""
+    """假的 cursor：execute 記下參數，fetchall 回傳 rows；tuple 的列用 column_names 對應欄位（mysql-connector 的做法）。"""
+
+    column_names = ("service_start", "service_end", "service_status", "account_name",
+                    *(f"{who}_{kind}" for who in ("customer", "server") for kind in ("total", "text", "audio", "facial")),
+                    "kind", "url")
 
     def __init__(self, rows):
         self.rows, self.params = rows, None
@@ -737,14 +741,19 @@ class Rows:
         return self.rows
 
 
-def test_file_list_reads_tuple_and_dict_rows_and_skips_rows_without_a_name():
+def test_detail_reads_tuple_and_dict_rows_and_skips_rows_without_a_file():
+    """明細頁的查詢（DETAIL_SQL）：每個檔案一列、服務的欄位在每一列重複；沒有檔名的列不算檔案。"""
     url = f"s3://adam-test/video/{SID}_cam0.avi"
-    tuples = Rows([(1, 0, "cam0", url), (4, 7, b"chart", "s3://adam-test/charts/"), (3, 0, "audio", None)])
-    assert media.list_files(tuples, SID) == [media.MediaFile("cam0", url, f"{SID}_cam0.avi")]
-    assert tuples.params == (SID, "%cam0%", SID, "%cam1%", SID, SID)
-    dicts = Rows([{"part": 4, "seq": 1, "kind": "chart", "url": f"s3://adam-test/charts/{SID}_a.png"}])
-    [chart] = media.list_files(dicts, SID)
+    service = ("2026-10-31 09:15:00", "2026-10-31 09:21:00", 3, "Mia Chen", *([80.0] * 4), *([70.0] * 4))
+    tuples = Rows([(*service, "cam0", url), (*service, b"chart", "s3://adam-test/charts/"), (*service, "audio", None)])
+    summary, files = media.load_detail(tuples, SID)
+    assert files == [media.MediaFile("cam0", url, f"{SID}_cam0.avi")]
+    assert tuples.params == (SID, "%cam0%", SID, "%cam1%", SID, SID, SID)
+    assert (summary.status, summary.staff_name, summary.scores["customer"]["total"]) == (3, "Mia Chen", 80.0)
+    dicts = Rows([dict(zip(Rows.column_names, (*service, "chart", f"s3://adam-test/charts/{SID}_a.png")))])
+    [chart] = media.load_detail(dicts, SID)[1]
     assert (chart.kind, chart.key) == ("chart", f"charts/{SID}_a.png")
+    assert media.load_detail(Rows([]), SID) == (None, [])  # 資料庫裡沒有這筆服務
 
 
 def test_fetch_uses_a_cached_file_without_downloading(tmp_path, monkeypatch):

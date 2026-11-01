@@ -15,9 +15,8 @@ import sys
 import time
 import requests
 import os
-from PySide6.QtCore import (QAbstractListModel, QCoreApplication, QLocale, QModelIndex, QObject, Property, Qt,
-                            QSettings, QTimer, QUrl, Signal, Slot)
-from datetime import datetime, timedelta
+from PySide6.QtCore import QCoreApplication, QLocale, QObject, Property, Qt, QSettings, QTimer, QUrl, Signal, Slot
+from datetime import datetime
 import pyaudio
 from pathlib import Path
 from myapp.db_lane import DbLane

@@ -64,7 +64,6 @@ UNION ALL
 UNION ALL
 (SELECT 4, charts_id, 'chart', charts_url FROM tbl_charts_storage WHERE service_id = %s)
 """
-FILES_SQL = FILES_UNION + "ORDER BY part, seq\n"
 
 # 明細頁打開時的查詢（新版介面 U2，T31 第 3 節）：服務本身（時間、狀態、服務人員、8 個分數）＋檔案清單，還是 1 個往返。
 # 每個檔案一列，服務的欄位在每一列重複（最多十來列）；沒有檔案時剩一列、kind 是 NULL；沒有這筆服務時 0 列
@@ -176,18 +175,6 @@ def _media_file(kind, url):
     url = url or ""
     name = os.path.basename(url)
     return MediaFile(kind, url, name) if kind and name else None
-
-
-def list_files(cursor, service_id):
-    """一筆服務的檔案（1 個往返）：影片、錄音最多各一個，圖表依寫入的順序。cursor 的列可以是 tuple 或 dict。"""
-    cursor.execute(FILES_SQL, _files_params(service_id))
-    files = []
-    for row in cursor.fetchall():
-        kind, url = (row["kind"], row["url"]) if isinstance(row, dict) else (row[2], row[3])
-        file = _media_file(kind, url)
-        if file is not None:
-            files.append(file)
-    return files
 
 
 @dataclass(frozen=True)

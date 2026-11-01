@@ -12,11 +12,9 @@ GUI 執行緒上不碰資料庫。結果放進屬性（Property＋notify），�
 import logging
 import re
 import sys
-from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, Qt, QUrl, Signal, Slot
-from PySide6.QtGui import QStandardItem, QStandardItemModel
+from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
 from myapp.db_lane import DbLane
 from myapp.home_dashboard import HomeDashboard
