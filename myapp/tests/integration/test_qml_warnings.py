@@ -9,6 +9,7 @@ from PySide6.QtCore import QObject, QUrl
 from myapp import main, storage
 from myapp.init import admin_home_init, server_home_init
 from myapp.main import MainWindow
+from tests.fakes import FakeSaver, every_save_status
 from tests.integration.helpers import ADMIN_ID, STAFF_ID, qml, wait_until
 
 pytestmark = pytest.mark.integration
@@ -61,6 +62,22 @@ def test_staff_page_has_no_warnings(engine, services, qml_warnings, page):
     server_home_init.launch(engine, STAFF_ID, services)
     home = engine.rootObjects()[0]
     show_page(home, page)
+    wait_for_staff_data(services)
+    settle()
+    assert qml_warnings == []
+
+
+def test_record_page_with_every_save_status_and_an_open_select_has_no_warnings(engine, services, qml_warnings):
+    """錄影頁（U2）：Saving 卡片的每一種列、打開的下拉選單、兩支鏡頭選成同一支的欄位錯誤。"""
+    home = server_home_init.launch(engine, STAFF_ID, services)
+    window = engine.rootObjects()[0]
+    show_page(window, "record_widget.qml")
+    wait_until(lambda: qml(window, "deviceFinder.status") == "ready")
+    home.deviceFinder.saves.attach(FakeSaver(every_save_status()))
+    page = qml(window, "mainContentLoader.item")
+    qml(page, "cam1ComboBox.currentIndex = 0")
+    qml(page, "micComboBox.popup.open()")
+    wait_until(lambda: qml(page, "micComboBox.popup.opened"))
     wait_for_staff_data(services)
     settle()
     assert qml_warnings == []

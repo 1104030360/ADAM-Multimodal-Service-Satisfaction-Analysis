@@ -59,8 +59,8 @@ def test_staff_home_objects_keep_the_class_metaobject(engine, services):
     wait_until(lambda: not any(services.tasks.isBusy(key) for key in server_home_init.LAUNCH_KEYS))
     assert home.deviceFinder.saver is not None  # 第一次錄影才建立；先建好，連它接的 signal 一起檢查
     objects = app_objects(home, services.tasks, services.notifier, services.ui_prefs)
-    assert {"ServerHome", "DeviceFinder", "RecordingSaver", "ServiceModel", "AnalysisWatcher", "DockAttention",
-            "MediaModel", "ChartsModel"} <= {type(obj).__name__ for obj in objects}
+    assert {"ServerHome", "DeviceFinder", "RecordingSaver", "SavesModel", "ServiceModel", "AnalysisWatcher",
+            "DockAttention", "MediaModel", "ChartsModel"} <= {type(obj).__name__ for obj in objects}
     assert with_dynamic_slots(objects) == {}
 
 

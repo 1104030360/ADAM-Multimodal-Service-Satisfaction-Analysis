@@ -5,6 +5,7 @@
 - 鏡頭、麥克風出問題時在原地說明（UX-11）；錄影中是不閃的紅點、經過時間、每秒最多 4 次的音量（UX-12）
 - 關掉視窗、結束程式時先停止並存檔（UX-09）；⌘Q 由 QuitGuard 攔下來（UX-29）
 - 還沒存完的記在本機，重開 app 之後同一個帳號還能 Retry；檔案不見了就說明存不了（T26）
+- 錄影頁的 Saving 清單（SavesModel）：每一段的狀態、進度、原因；Retry、Analyze 和通知上的一樣（UD9、T29）
 真的 MySQL、moto 和 QML 外殼的整段流程在 tests/integration/test_upload_flow.py。
 """
 import gc
@@ -19,22 +20,23 @@ import botocore.exceptions
 import cv2
 import mysql.connector
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QObject
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt
 from PySide6.QtWidgets import QMessageBox
 
 import tests.fakes
 from myapp import storage
 from myapp.db_lane import DbLane
 from myapp.init import record_widget
-from myapp.init.record_widget import (FAILED, FINISHING, SAVED, SAVING, UPLOADING, QuitGuard, Recording,
-                                      RecordingSaver, RecordWidget, failure_detail, file_number, format_elapsed,
-                                      level_from_peak, reduce_motion, transfer_text)
+from myapp.init.record_widget import (FAILED, FINISHING, SAVE_ROLES, SAVED, SAVING, UPLOADING, QuitGuard, Recording,
+                                      RecordingSaver, RecordWidget, failure_detail, file_number,
+                                      format_elapsed, level_from_peak, reduce_motion, transfer_text)
+from myapp.init.server_home_init import SAVED_ROWS_KEPT, SavesModel
 from myapp.notifications import Notifier
 from myapp.pending_saves import PendingSave, PendingSaveStore
 from myapp.services import AppServices
 from myapp.tasks import TaskRunner
 from myapp.ui_prefs import MOTION_FULL, MOTION_REDUCE, UiPrefs
-from tests.fakes import FakeDatabase, ticking_clock
+from tests.fakes import FakeDatabase, FakeSaver, save_job, ticking_clock
 from tests.integration.helpers import toasts, wait_until
 
 REAL_VIDEO_CAPTURE = cv2.VideoCapture  # 讀錄好的 .avi 用真的；cameras fixture 會把 cv2.VideoCapture 換掉
@@ -196,8 +198,10 @@ def uploaded_urls(recording):
 
 def test_stopped_recording_is_uploaded_and_saved_in_the_background(widget, saver, services, uploads, database,
                                                                   saved):
-    assert status(widget) == ("Ready to record",
-                              "Customer camera: Camera 0 · Staff camera: Camera 1 · Microphone: MacBook 麥克風")
+    assert status(widget) == ("Ready to record", "")
+    # 三個裝置的名稱在最上面那一行的右邊（設計稿 StaffRecorder），預覽的標題列也有鏡頭的名稱
+    assert widget.device_names.text() == "Customer: Camera 0 · Staff: Camera 1 · Microphone: MacBook 麥克風"
+    assert widget.windowTitle() == "Recorder"
     recording = record(widget)
     sid = recording.service_id
     job = wait_for(saver, recording, SAVED)
@@ -339,6 +343,7 @@ def test_missing_file_is_not_offered_a_retry(widget, saver, uploads, services):
     toast = only_toast(services.notifier)
     assert toast["detail"] == "File not found on this computer. It may have been moved or deleted."
     assert toast["actionId"] == "" and not widget.status_bar.button.isVisibleTo(widget)
+    assert saver.retry(recording.service_id) is False  # 沒有 Retry 的，直接呼叫也不重試
     assert saver.retry("S19990101000000") is False  # 不認得的服務
     assert pending() == []  # 重開 app 之後也不會再問（T26）
 
@@ -478,13 +483,17 @@ def test_restart_drops_a_save_whose_files_are_gone(widget, saver, uploads, resta
     os.remove(recording.audio_file)  # 例如有人清掉了 ~/audio
 
     services, saver = restart()
-    assert saver.restore("acc-1") == [] and saver.job(sid) is None
+    assert saver.restore("acc-1") == []  # 沒有可以 Retry 的
     toast = only_toast(services.notifier)
     assert (toast["severity"], toast["title"], toast["detail"], toast["timeoutMs"]) == (
         "error", f"{sid} can't be saved", "The recording is no longer on this computer. It may have been moved or deleted.",
         0)
     assert (toast["actionId"], toast["actionLabel"]) == ("", "")  # 重試也一樣：不給 Retry
     assert pending() == []  # 紀錄刪掉了，下次登入不會再說一次
+    job = saver.job(sid)  # 錄影頁的 Saving 卡片留一列說明（T29），不能重試
+    assert (job.state, job.retryable, job.in_flight) == (FAILED, False, False) and saver.in_flight() == []
+    assert saver.retry(sid) is False
+    assert saver.restore("acc-1") == [] and len(toasts(services.notifier)) == 1  # 再登入一次也不會再說
 
 
 def test_only_this_accounts_saves_are_offered_and_only_once(restart):
@@ -533,6 +542,213 @@ def test_service_id_taken_by_someone_else_still_fails(widget, saver, services, u
     assert [item.stage for item in pending()] == ["database"]  # Retry 一樣只寫資料庫
 
 
+# ── 錄影頁的 Saving 清單（新版介面 UD9、T29）────────────────────────────────────
+
+@pytest.fixture
+def saves(saver):
+    model = SavesModel()
+    model.attach(saver)
+    return model
+
+
+def rows(model):
+    """像 QML 的 delegate 一樣，用角色名稱（roleNames）讀出每一列。"""
+    names = {bytes(name).decode(): role for role, name in model.roleNames().items()}
+    return [{name: model.data(model.index(row, 0), role) for name, role in names.items()}
+            for row in range(model.rowCount())]
+
+
+def saves_row(model, service_id):
+    return next(row for row in rows(model) if row["serviceId"] == service_id)
+
+
+def test_saves_list_follows_a_save_in_place_from_finishing_to_saved(widget, saver, saves, uploads, services,
+                                                                    monkeypatch):
+    assert [bytes(name).decode() for name in saves.roleNames().values()] == list(SAVE_ROLES)
+    assert saves.count == 0
+    inserted = []
+    saves.rowsInserted.connect(lambda parent, first, last: inserted.append((first, last)))
+    gate = threading.Event()
+    write_wav = Recording._write_wav
+
+    def slow_write(self, frames, sample_width):
+        gate.wait(5)  # 錄音檔還沒寫完
+        write_wav(self, frames, sample_width)
+
+    monkeypatch.setattr(Recording, "_write_wav", slow_write)
+    try:
+        recording = record(widget)
+        sid = recording.service_id
+        [row] = rows(saves)  # 停止之後馬上有一列（還在等檔案寫完）
+        assert row == {"serviceId": sid, "status": "finishing", "attempt": 1, "fileNumber": 1, "fileCount": 3,
+                       "bytesDone": 0.0, "bytesTotal": 0.0, "percent": 0, "reason": "", "canRetry": False,
+                       "canAnalyze": False, "analyzeRequested": False, "savedAt": ""}
+        uploads.hold(f"video/{sid}_cam1.avi")
+    finally:
+        gate.set()
+    job = saver.job(sid)
+    wait_until(lambda: job.file_number == 2 and job.done > job.sizes[0])
+    [row] = rows(saves)
+    assert (row["status"], row["fileNumber"], row["bytesDone"], row["bytesTotal"]) == ("uploading", 2, job.done,
+                                                                                      job.total)
+    assert row["percent"] == int(job.done / job.total * 100) and 0 < row["percent"] < 100
+
+    hold = threading.Event()
+    services.tasks.submit("db", "test:hold", lambda token, report: hold.wait(5))  # db lane 卡住：停在寫資料庫之前
+    try:
+        uploads.release()
+        wait_until(lambda: job.state == SAVING)
+        [row] = rows(saves)
+        assert (row["status"], row["fileNumber"], row["percent"], row["bytesDone"]) == ("saving", 3, 100, job.total)
+    finally:
+        hold.set()
+    wait_for(saver, recording, SAVED)
+    [row] = rows(saves)
+    assert (row["status"], row["percent"], row["canAnalyze"], row["canRetry"], row["reason"]) == (
+        "saved", 100, True, False, "")
+    assert row["savedAt"] == "12:00"  # 寫資料庫的時間（假時鐘：12:00:00 開始、:01 停止、:02 寫入）
+    assert inserted == [(0, 0)] and saves.count == 1  # 同一列就地更新，沒有換掉重插
+
+
+def test_saves_list_keeps_a_failed_save_after_its_toast_is_closed_and_retries_it(widget, saver, saves, uploads,
+                                                                                services):
+    uploads.errors = [S3_DOWN]
+    recording = record(widget)
+    sid = recording.service_id
+    wait_for(saver, recording, FAILED)
+    services.notifier.dismiss(only_toast(services.notifier)["toastId"])  # 通知關掉了：清單上還看得到（UD9）
+    [row] = rows(saves)
+    assert (row["status"], row["canRetry"], row["canAnalyze"]) == ("failed", True, False)
+    assert row["reason"] == "Can't reach cloud storage. The recording is still on this computer."  # 和通知同一句
+
+    uploads.hold(f"video/{sid}_cam0.avi")
+    assert saves.retry(sid) is True  # 和通知上的 Retry（retry-upload:<sid>）走同一條路
+    [row] = rows(saves)
+    assert (row["status"], row["attempt"], row["reason"], row["canRetry"]) == ("uploading", 2, "", False)
+    assert only_toast(services.notifier)["title"] == f"Uploading {sid} (attempt 2)"  # 進度一樣在通知上
+    assert saves.retry(sid) is False  # 已經在重試了
+    uploads.release()
+    wait_for(saver, recording, SAVED)
+    assert rows(saves)[0]["status"] == "saved"
+    assert saves.retry("S19990101000000") is False and saves.analyze("S19990101000000") is False  # 不認得的服務
+
+
+def test_saves_list_analyze_is_the_toasts_analyze(widget, saver, saves, services):
+    actions = []
+    services.notifier.actionTriggered.connect(lambda action, toast_id: actions.append(action))
+    recording = record(widget)
+    sid = recording.service_id
+    assert saves.analyze(sid) is False  # 還沒存好
+    wait_for(saver, recording, SAVED)
+    assert saves.analyze(sid) is True
+    assert actions == [f"analyze:{sid}"]  # 送出分析的流程（ServerHome._on_action）收的就是這個
+    assert toasts(services.notifier) == []  # 那則「Saved」也關掉了，和按通知上的 Analyze 一樣
+    [row] = rows(saves)
+    assert (row["status"], row["canAnalyze"], row["analyzeRequested"]) == ("saved", False, True)
+    assert not widget.status_bar.button.isEnabled()  # 錄影視窗的 Analyze 跟著停用
+    assert saves.analyze(sid) is False and actions == [f"analyze:{sid}"]  # 不會送兩次
+
+
+def test_analysis_sent_from_anywhere_turns_off_analyze(widget, saver, saves, services):
+    """通知上的 Analyze、分析頁的 Analyze 都由送出分析的流程（ServiceModel）在 io lane 跑 analyze:<sid>
+    （CONTRACTS §4）：Saving 清單和錄影視窗的 Analyze 跟著停用，不會再送一次。"""
+    first = record(widget)
+    wait_for(saver, first, SAVED)
+    second = record(widget)
+    wait_for(saver, second, SAVED)
+    assert [row["serviceId"] for row in rows(saves)] == [second.service_id, first.service_id]  # 新的在上面
+    hold = threading.Event()
+    try:
+        services.tasks.submit("db", f"analysis:mark:{second.service_id}", lambda token, report: hold.wait(5))
+        assert saves_row(saves, second.service_id)["canAnalyze"] is True  # 別的 key：不算
+        services.tasks.submit("io", f"analyze:{second.service_id}", lambda token, report: hold.wait(5))
+        row = saves_row(saves, second.service_id)
+        assert (row["canAnalyze"], row["analyzeRequested"]) == (False, True)
+        assert saves_row(saves, first.service_id)["canAnalyze"] is True  # 別的服務不受影響
+        assert not widget.status_bar.button.isEnabled()  # 錄影視窗跟著最後一段
+        assert saver.request_analyze(second.service_id) is False
+    finally:
+        hold.set()
+    wait_until(lambda: not services.tasks.isBusy(f"analyze:{second.service_id}"))
+    assert saves_row(saves, second.service_id)["analyzeRequested"] is True  # 送不出去時由通知的 Retry、分析頁重送
+
+
+def test_saves_list_shows_last_sessions_unfinished_saves(widget, saver, uploads, database, restart):
+    uploads.errors = [S3_DOWN]
+    upload_failed = record(widget)
+    wait_for(saver, upload_failed, FAILED)
+    database.fail_on = "sp_insert_audio_storage"
+    database_failed = record(widget)
+    wait_for(saver, database_failed, FAILED)
+    uploads.errors = [S3_DOWN]
+    gone = record(widget)
+    wait_for(saver, gone, FAILED)
+    os.remove(gone.video_files[0])  # 例如有人清掉了 ~/video
+    database.fail_on = None
+
+    services, saver = restart()  # 結束 app，同一個帳號再登入
+    saves = SavesModel()
+    saves.attach(saver)  # DeviceFinder 也是先建好 RecordingSaver、接上清單，再 restore()
+    saver.restore("acc-1")
+    assert [row["serviceId"] for row in rows(saves)] == [gone.service_id, database_failed.service_id,
+                                                        upload_failed.service_id]
+    gone_row, database_row, upload_row = rows(saves)
+    assert (gone_row["status"], gone_row["canRetry"], gone_row["reason"]) == (
+        "failed", False, "The recording is no longer on this computer. It may have been moved or deleted.")
+    assert (database_row["canRetry"], database_row["fileNumber"], database_row["percent"]) == (True, 3, 100)
+    assert database_row["reason"] == ("The files uploaded, but the database couldn't be updated. "
+                                      "Retry to finish saving.")
+    assert (upload_row["canRetry"], upload_row["fileNumber"], upload_row["percent"], upload_row["bytesTotal"]) == (
+        True, 1, 0, 0.0)
+    assert upload_row["reason"] == "The upload didn't finish. The recording is still on this computer."
+    later = SavesModel()
+    later.attach(saver)  # 之後才接上的清單也一樣
+    assert rows(later) == rows(saves)
+
+    assert saves.retry(gone.service_id) is False
+    assert saves.retry(database_failed.service_id) is True and saves.retry(upload_failed.service_id) is True
+    wait_until(lambda: [row["status"] for row in rows(saves)] == ["failed", "saved", "saved"])
+    assert [row["attempt"] for row in rows(saves)] == [1, 2, 2]
+    assert pending() == []
+
+
+def test_saves_list_keeps_only_the_newest_saved_rows():
+    saved = [save_job(f"S2026103012{minute:02d}00", SAVED) for minute in range(SAVED_ROWS_KEPT + 2)]
+    failed = save_job("S20261030110000", FAILED, error_detail="Can't reach cloud storage.")
+    uploading = save_job("S20261030130000", UPLOADING)
+    saver = FakeSaver([failed, *saved, uploading])
+    saves = SavesModel()
+    assert saves.retry(failed.service_id) is False and saves.analyze(saved[0].service_id) is False  # 還沒接上
+    saves.attach(saver)
+    newest_saved = [job.service_id for job in reversed(saved)][:SAVED_ROWS_KEPT]
+    assert [row["serviceId"] for row in rows(saves)] == [uploading.service_id, *newest_saved, failed.service_id]
+
+    removed = []
+    saves.rowsRemoved.connect(lambda parent, first, last: removed.append((first, last)))
+    uploading.state = SAVED  # 最新的一段也存好了：最舊的那一筆已存好的拿掉，沒存好的留著
+    saver.changed.emit(uploading.service_id)
+    assert [row["serviceId"] for row in rows(saves)] == [uploading.service_id, *newest_saved[:-1],
+                                                        failed.service_id]
+    assert removed == [(SAVED_ROWS_KEPT, SAVED_ROWS_KEPT)]
+
+    assert saves.retry(failed.service_id) is True and saves.analyze(uploading.service_id) is True
+    assert saver.calls == [("retry", failed.service_id), ("analyze", uploading.service_id)]
+
+
+def test_save_row_numbers_match_the_design():
+    job = save_job("S20261101142000", UPLOADING, done=58.6e6, total=124.0e6, sizes=[60e6, 60e6, 4e6])
+    row = job.row()
+    assert (row["fileNumber"], row["percent"]) == (1, 47)  # 「58.6 / 124.0 MB · 47%」（無條件捨去）
+    assert transfer_text(row["bytesDone"], row["bytesTotal"]) == "58.6 / 124.0 MB · 47%"
+    job.done = 61e6
+    assert job.row()["fileNumber"] == 2
+    job = save_job("S20261101140500", SAVED, done=124.0e6, total=124.0e6, urls=["s3://a", "s3://b", "s3://c"],
+                   saved_at=datetime(2026, 11, 1, 14, 12, 59))
+    assert (job.row()["savedAt"], job.row()["percent"], job.row()["fileNumber"]) == ("14:12", 100, 3)
+    job.state = FAILED
+    assert job.row()["savedAt"] == ""  # 只有存好的有時間
+
+
 # ── 裝置的問題（UX-11）────────────────────────────────────────────────────────
 
 def test_camera_that_does_not_open_is_explained_in_its_preview(open_window, cameras, monkeypatch):
@@ -553,7 +769,7 @@ def test_camera_without_frames_is_explained_until_frames_come_back(widget, monke
     wait_until(lambda: preview.problem == "Camera 0 has no picture")  # 假鏡頭給完 3 張就沒有畫面了
     widget.caps[0].frames_left = 1000  # 例如重新接好
     wait_until(lambda: preview.problem == "")
-    assert preview.image.pixmap().size().toTuple() == (480, 360)
+    assert preview.image.pixmap().size().toTuple() == preview.frame_size()  # 縮成預覽框的大小（4:3）
 
 
 def test_camera_that_stops_while_recording_is_explained(widget, cameras, monkeypatch):
@@ -602,8 +818,9 @@ def test_recording_shows_a_steady_dot_the_elapsed_time_and_the_level(widget, mon
     assert widget.poll_timer.interval() == 250  # 計時、音量每秒最多更新 4 次
     widget.start_recording()
     bar = widget.status_bar
-    assert status(widget) == ("Recording", widget.service_id)
+    assert status(widget) == ("Recording", "")  # 紅點、Recording、經過時間（設計稿沒有服務 ID）
     assert bar.elapsed.isVisibleTo(widget) and bar.elapsed.text() == "00:00:00"
+    assert widget.announced[-1] == (f"Recording {widget.service_id}", False)  # 服務 ID 在唸的內容裡
     dot = bar.icon.pixmap().cacheKey()
     level = widget.microphone_row.level
     wait_until(lambda: level.value() > 80)
@@ -614,6 +831,74 @@ def test_recording_shows_a_steady_dot_the_elapsed_time_and_the_level(widget, mon
     wait_until(lambda: bar.elapsed.text() == "01:02:05")
     widget.stop_recording()
     assert not level.isVisibleTo(widget) and not widget.poll_timer.isActive()
+
+
+def test_recorder_window_follows_the_design_layout(widget, monkeypatch):
+    """設計稿 StaffRecorder：兩個 4:3 的預覽並排；開始、停止在同一個位置；麥克風的音量只在錄影中出現。"""
+    widget.show()
+    QCoreApplication.processEvents()
+    assert widget.size().toTuple() == (1280, 820)
+    customer, staff = widget.previews
+    assert customer.width() / customer.height() == pytest.approx(4 / 3, abs=0.01)
+    assert (customer.y(), customer.size()) == (staff.y(), staff.size()) and customer.x() < staff.x()
+    assert customer.width() == pytest.approx(608, abs=2)  # (1280 - 2×24 - 16) / 2
+    assert [preview.accessibleName() for preview in widget.previews] == [
+        "Live preview from the customer camera", "Live preview from the staff camera"]
+    assert widget.label_customer.text() == "Customer camera" and widget.label_staff.text() == "Staff camera"
+
+    start, stop = widget.button_start_recording, widget.button_stop_recording
+    assert start.isVisibleTo(widget) and not stop.isVisibleTo(widget)  # 沒在錄：淺色的 Start Recording
+    assert not widget.microphone_row.isVisibleTo(widget)
+    assert widget.save_hint.text() == ("When you stop, the recording saves in the background. "
+                                       "You can close this window.")
+    start.setFocus()
+    widget.start_recording()
+    assert stop.isVisibleTo(widget) and not start.isVisibleTo(widget)  # 錄影中：同一個位置換成紅色的 Stop
+    assert stop.hasFocus()  # 用鍵盤的人可以直接再按一次
+    assert widget.microphone_row.isVisibleTo(widget) and widget.microphone_row.label.text() == "Microphone level"
+    widget.stop_recording()
+    assert start.isVisibleTo(widget) and start.hasFocus() and not widget.microphone_row.isVisibleTo(widget)
+
+    widget.resize(960, 640)  # 視窗小的時候預覽照高度縮小，一樣是 4:3
+    QCoreApplication.processEvents()
+    assert customer.width() / customer.height() == pytest.approx(4 / 3, abs=0.01)
+    assert customer.geometry().bottom() < widget.bottom_bar.geometry().top()
+
+
+def test_focus_ring_only_for_keyboard_focus_and_it_follows_start_and_stop(widget):
+    """DS-30：滑鼠點的、視窗打開時的焦點不畫焦點框；Tab 移過去的才畫，按下 Start 之後框移到 Stop。"""
+    widget.show()
+    widget.activateWindow()
+    wait_until(widget.isActiveWindow)
+    start, stop = widget.button_start_recording, widget.button_stop_recording
+    start.setFocus(Qt.FocusReason.MouseFocusReason)
+    assert start.hasFocus() and not start.keyboard_focus
+    start.clearFocus()
+    start.setFocus(Qt.FocusReason.TabFocusReason)  # 用 Tab 移過來
+    assert start.keyboard_focus
+    assert 'QPushButton[keyboardFocus="true"]' in start.styleSheet()  # 框只畫在這個屬性上
+    widget.start_recording()
+    assert stop.hasFocus() and stop.keyboard_focus and not start.keyboard_focus
+    widget.stop_recording()
+    assert start.hasFocus() and start.keyboard_focus
+
+
+def test_preview_frames_fit_the_box_at_4_to_3():
+    preview = record_widget.CameraPreview("Camera 0")
+    assert preview.frame_size() == (640, 480)  # 還沒排版：錄影的大小
+    preview.image.resize(800, 300)  # 比 4:3 寬：照高度
+    assert preview.frame_size() == (400, 300)
+    preview.image.resize(300, 600)  # 比 4:3 高：照寬度
+    assert preview.frame_size() == (300, 225)
+
+
+def test_level_meter_lights_bars_from_the_left():
+    meter = record_widget.LevelMeter()
+    assert meter.size().toTuple() == (93, 24) and meter.lit() == 0  # 12 格、每格 5 px、間隔 3 px
+    meter.setValue(58)
+    assert meter.lit() == 7  # 設計稿：12 格亮 7 格
+    meter.setValue(100)
+    assert meter.lit() == 12
 
 
 def test_each_recording_has_its_own_service_id_and_files(widget, saver, uploads):

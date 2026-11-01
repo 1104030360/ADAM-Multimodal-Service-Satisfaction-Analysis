@@ -266,3 +266,20 @@ def test_login_puts_back_the_staffs_unfinished_saves(staff):
     assert finder.uploadCount == 0 and changes == [0]  # 等著 Retry，不算「還在存」：結束時不必問
     assert not QuitGuard.instance().blocking(finder)
     assert [toast["actionId"] for toast in toasts(staff.services.notifier)] == ["retry-upload:S20261030120000"]
+
+
+def test_saves_list_is_there_before_the_saver_and_fills_in_when_saves_come_back(staff):
+    """錄影頁的 Saving 卡片讀 deviceFinder.saves（UD9、T29）：一開始就有（空的），讀它不會建立 RecordingSaver；
+    RecordingSaver 建立時接上，登入時放回來的沒存完的錄影也列在上面。"""
+    finder = DeviceFinder(staff)
+    saves = finder.saves
+    assert finder.property("saves") is saves  # QML 讀得到
+    assert saves.parent() is finder  # DeviceFinder 留著它（setContextProperty 不會留住 Python 物件）
+    assert saves.count == 0 and finder._saver is None  # 沒有錄影、沒有沒存完的：不為了清單建立 RecordingSaver
+    start = datetime(2026, 10, 30, 12, 0, 0)
+    PendingSaveStore().put(PendingSave("S20261030120000", "acc-1", ("/gone/a.avi", "/gone/b.avi", "/gone/c.wav"),
+                                       start, None, "database", ("s3://b/a.avi", "s3://b/b.avi", "s3://b/c.wav")))
+    finder.restore_saves()
+    assert [(row["serviceId"], row["status"], row["canRetry"]) for row in saves.rows()] == [
+        ("S20261030120000", "failed", True)]
+    assert finder.saves is saves and finder.saver.job("S20261030120000") is not None  # 同一個清單，接的是這個 saver

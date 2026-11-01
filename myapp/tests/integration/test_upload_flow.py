@@ -1,4 +1,4 @@
-"""錄影存檔的整段流程（前端重建 F3，CONTRACTS §4 的 C1）：服務人員端的外殼、錄影頁的 Activate、錄影視窗、
+"""錄影存檔的整段流程（前端重建 F3，CONTRACTS §4 的 C1）：服務人員端的外殼、錄影頁的 Open Recorder、錄影視窗、
 moto 的 S3、測試用的 MySQL。鏡頭和麥克風是假的。
 
 - 停止之後在背景上傳（io lane，upload:<sid>）、寫資料庫（db lane，record:save:<sid>）；GUI 執行緒 0 個往返
@@ -6,6 +6,7 @@ moto 的 S3、測試用的 MySQL。鏡頭和麥克風是假的。
 - 失敗時檔案留著，Retry 之後存好（UX-10）
 - 上傳中按 Quit、關掉主視窗、⌘Q 都先問（UX-29、DS-28）；錄影中關掉錄影視窗會停止並存檔（UX-09）
 - 沒存完的（失敗、或存到一半結束 app）重開之後同一個帳號登入還有 Retry；檔案不見了就說明存不了（T26）
+- 錄影頁的 Saving 清單（deviceFinder.saves）：通知關掉之後還看得到，Retry、Analyze 和通知上的一樣（UD9、T29）
 """
 import os
 import threading
@@ -28,6 +29,7 @@ from myapp.tasks import TaskRunner
 from myapp.ui_prefs import UiPrefs
 from tests.fakes import ticking_clock
 from tests.integration.helpers import STAFF_ID, qml, toasts, unused_port, wait_until
+from tests.integration.test_admin_feedback import click
 
 pytestmark = pytest.mark.integration
 
@@ -85,7 +87,7 @@ def gate(monkeypatch):
 
 @pytest.fixture
 def staff(engine, services, s3, gate, monkeypatch):
-    """登入後的外殼，打開錄影頁、按 Activate（預設是顧客鏡頭 0、員工鏡頭 1、第一支麥克風）。"""
+    """登入後的外殼，打開錄影頁、按 Open Recorder（預設是顧客鏡頭 0、員工鏡頭 1、第一支麥克風）。"""
     monkeypatch.setattr(record_widget, "datetime", ticking_clock())
     home = server_home_init.launch(engine, STAFF_ID, services)
     window = engine.rootObjects()[-1]
@@ -93,8 +95,7 @@ def staff(engine, services, s3, gate, monkeypatch):
     qml(window, "recordButton.click()")  # 側邊欄的 Record
     wait_until(lambda: qml(window, "mainContentLoader.status === Loader.Ready")
                and qml(window, "deviceFinder.status") == "ready")
-    activate = window.findChild(QObject, "activateButton")
-    qml(activate, "clicked()")
+    qml(window.findChild(QObject, "openRecorderButton"), "clicked()")
     finder = home.deviceFinder
     assert finder.recorder is not None and finder.recorder.isVisible()
     yield home, window, finder
@@ -284,6 +285,73 @@ def test_database_failure_is_retried_without_uploading_again(staff, services, db
     assert db.rows("SELECT service_status FROM tbl_service WHERE service_id = %s", (sid,)) == [(1,)]
 
 
+# ── 錄影頁的 Saving 清單（新版介面 UD9、T29）────────────────────────────────────
+
+def page_item(window, name):
+    """錄影頁畫面樹（childItems）裡 objectName 是 name 的項目：Repeater 建立的列沒有 QObject parent，findChild 找不到。"""
+    pending = [qml(window, "mainContentLoader.item")]
+    while pending:
+        item = pending.pop(0)
+        if item.objectName() == name and item.isVisible():
+            return item
+        pending.extend(item.childItems())
+    return None
+
+
+def close_toasts(window, services):
+    """關掉所有通知，等右下角的通知堆疊縮成 0（下一個畫格才縮，在那之前會擋住底下的點擊）。"""
+    for toast in toasts(services.notifier):
+        services.notifier.dismiss(toast["toastId"])
+    wait_until(lambda: qml(window.findChild(QObject, "toastHost"), "height") == 0)
+
+
+def test_saving_card_keeps_a_save_after_its_toast_is_closed_then_retries_and_analyzes_it(
+        staff, services, db, s3, gate, analysis_service, no_network_on_gui_thread):
+    """錄影頁的主要任務之二（PLAN 6-2）：通知關掉之後，在 Saving 卡片上看得到沒存好的那一段，按 Retry 存好、按 Analyze 送去分析。"""
+    home, window, finder = staff
+    assert not page_item(window, "savingCard")  # 還沒有任何存檔：不顯示這張卡片
+    gate.errors = [S3_DOWN]
+    recording = record(finder.recorder)
+    sid = recording.service_id
+    job = job_of(finder, recording)
+    wait_until(lambda: job.state == FAILED)
+    [toast] = toasts(services.notifier)
+    close_toasts(window, services)  # 通知關掉了：以前就再也看不到這一筆
+    assert qml(window, "deviceFinder.saves.count") == 1  # QML 讀得到（外殼的 context property，不用新註冊）
+    [row] = finder.saves.rows()
+    assert (row["serviceId"], row["status"], row["canRetry"]) == (sid, "failed", True)
+    wait_until(lambda: page_item(window, "saveRow") is not None)
+    assert page_item(window, "saveStatus").property("text") == "Wasn't saved"
+    assert page_item(window, "saveReason").property("text") == (
+        "Can't reach cloud storage. The recording is still on this computer.")  # 和通知同一句
+    assert qml(page_item(window, "saveRow"), "Accessible.name") == (  # 螢幕閱讀器唸一整列
+        f"{sid}. Wasn't saved. Can't reach cloud storage. The recording is still on this computer.")
+    assert not page_item(window, "saveAnalyze")
+
+    click(window, page_item(window, "saveRetry"))  # Saving 卡片的 Retry（和通知上的 Retry 同一條路）
+    wait_until(lambda: job.state == SAVED, describe=lambda: (job.state, job.error_detail))
+    [row] = finder.saves.rows()
+    assert (row["status"], row["attempt"], row["percent"], row["canAnalyze"]) == ("saved", 2, 100, True)
+    wait_until(lambda: page_item(window, "saveStatus").property("text")
+               == f"Saved at {job.saved_at:%H:%M} · not analyzed yet")
+    assert not page_item(window, "saveRetry")
+    assert db.rows("SELECT service_status FROM tbl_service WHERE service_id = %s", (sid,)) == [(1,)]
+    assert sorted(obj["Key"] for obj in s3.list_objects_v2(Bucket="adam-test")["Contents"]) == sorted(recording.keys)
+
+    # Saving 卡片的 Analyze：和通知上的一樣交給送出分析的流程（ServerHome → ServiceModel → 分析服務、狀態改成 2）
+    close_toasts(window, services)  # 「Saved」那則疊在右下角（測試的視窗很小）
+    click(window, page_item(window, "saveAnalyze"))
+    wait_until(lambda: [row["serviceId"] for row in home.serviceModel.analyzingModel.rows()] == [sid])
+    assert analysis_service.requests == [("/analyze", {"service_id": sid})]
+    assert db.rows("SELECT service_status FROM tbl_service WHERE service_id = %s", (sid,)) == [(2,)]
+    [row] = finder.saves.rows()
+    assert (row["status"], row["canAnalyze"], row["analyzeRequested"]) == ("saved", False, True)
+    assert page_item(window, "saveStatus").property("text") == f"Saved at {job.saved_at:%H:%M} · sent for analysis"
+    assert not page_item(window, "saveAnalyze")  # 送去分析之後就沒有這顆按鈕了，不會送兩次
+    assert qml(window, f"deviceFinder.saves.analyze('{sid}')") is False
+    assert not finder.recorder.status_bar.button.isEnabled()  # 錄影視窗的 Analyze 也停用了
+
+
 # ── 結束前先問（UX-29、DS-28）；錄影中關掉、結束會停止並存檔（UX-09）──────────
 
 def test_quit_while_uploading_asks_first_from_exit_close_and_cmd_q(engine, staff, services, db, gate,
@@ -384,17 +452,21 @@ def test_closing_the_recorder_while_recording_stops_and_saves(staff, services, d
     assert toasts(services.notifier)[0]["title"] == f"Saved {recording.service_id}"
 
 
-def test_activate_brings_the_recording_window_back_instead_of_opening_another(staff, no_network_on_gui_thread):
+def test_open_recorder_brings_the_recording_window_back_instead_of_opening_another(staff, no_network_on_gui_thread):
     home, window, finder = staff
     recorder = finder.recorder
-    activate = window.findChild(QObject, "activateButton")
-    assert activate.property("text") == "Activate"
+    button = window.findChild(QObject, "openRecorderButton")
+    hint = window.findChild(QObject, "openRecorderHint")
+    assert button.property("text") == "Open Recorder"
+    assert hint.property("text") == ("The recorder opens in its own window. "
+                                     "Recording starts when you press Start Recording there.")
     recorder.button_start_recording.click()
-    assert activate.property("text") == "Show Recording Window"  # 錄影中：按下去是帶回錄影視窗
-    qml(activate, "clicked()")
+    assert button.property("text") == "Show Recorder"  # 錄影中：按下去是帶回錄影視窗
+    assert hint.property("text") == "Recording is in progress in the recorder window."
+    qml(button, "clicked()")
     assert finder.recorder is recorder and recorder.recording  # 沒有開第二個，錄影也沒停
     recorder.button_stop_recording.click()
-    assert activate.property("text") == "Activate"
+    assert button.property("text") == "Open Recorder"
     wait_until(lambda: finder.uploadCount == 0)  # 存完才結束這個測試
 
 
@@ -491,7 +563,10 @@ def test_login_drops_saves_whose_files_are_gone_and_keeps_other_staffs(db, relau
         "The recording is no longer on this computer. It may have been moved or deleted.", "")
     wait_until(lambda: shown_toasts(window) and shown_toasts(window)[0]["title"] == "S20261030120000 can't be saved")
     assert shown_toasts(window)[0]["actionLabel"] == ""  # 沒有 Retry
-    assert home.deviceFinder.saver.job("S20261030120000") is None
+    # 錄影頁的 Saving 卡片留一列說明，一樣不能重試（T29）；不算「還在存」，結束時不必問
+    assert [(row["serviceId"], row["status"], row["canRetry"]) for row in home.deviceFinder.saves.rows()] == [
+        ("S20261030120000", "failed", False)]
+    assert home.deviceFinder.uploadCount == 0
     assert PendingSaveStore().load(STAFF_ID) == []  # 紀錄刪掉了，下次登入不會再說一次
     assert PendingSaveStore().load("another-staff") == [theirs]  # 別人的留著
     assert db.rows("SELECT COUNT(*) FROM tbl_service") == [(0,)]

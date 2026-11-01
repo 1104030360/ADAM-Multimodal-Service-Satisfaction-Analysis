@@ -10,8 +10,11 @@
      或 "<sid> wasn't saved"（動作 Retry，這裡自己處理）。失敗時本機的檔案留著（UX-10）。
   4. 還沒存完的記在本機（myapp/pending_saves.py，T26）：開始存檔、上傳完、失敗時寫入，存好就刪掉。
      下一次同一個帳號登入時 restore() 放回來，跳一樣的 "<sid> wasn't saved"＋Retry，從停下來的那一步繼續。
-- `RecordWidget`：錄影視窗。狀態列照 DS-34；鏡頭、麥克風出問題時在原地說明，不跳對話框（UX-11）；
-  錄影中是不閃的紅點、經過時間和音量（UX-12）。停止後馬上可以錄下一段，不必等上傳（DS-34）。
+  5. 每一筆的狀態也是錄影頁「Saving」卡片的一列（SaveJob.row()；清單模型是 server_home_init.py 的 SavesModel，
+     新版介面 UD9、T29）：通知關掉之後還看得到。
+- `RecordWidget`：錄影視窗，版面和顏色照設計稿 StaffRecorder（新版介面 U2，T29）：最上面一行是狀態和三個裝置，
+  中間兩個 4:3 的預覽，最下面一條是音量、說明和開始／停止。狀態照 DS-34；鏡頭、麥克風出問題時在原地說明，
+  不跳對話框（UX-11）；錄影中是不閃的紅點、經過時間和音量（UX-12）。停止後馬上可以錄下一段，不必等上傳（DS-34）。
 - `QuitGuard`：⌘Q 不會經過 QML 外殼的 onClosing（app 是 QApplication，結束時只問 QWidget 視窗；T20 實測），
   所以錄影中、存檔中時，DeviceFinder 在 app 上裝這個 filter 攔下 QEvent.Quit。
 
@@ -56,33 +59,48 @@ NO_PICTURE_AFTER_S = 1.0      # 鏡頭或麥克風超過這麼久沒有資料，
 FINISH_TIMEOUT_S = 30.0       # 停止後等錄影執行緒把檔案寫完，最多等這麼久（正常是幾十毫秒）
 QUIT_WAIT_S = 5.0             # 結束程式時等檔案寫完，最多等這麼久
 
-# 存檔的狀態：前三種還在進行（結束程式前要問，UX-29）
+# 存檔的狀態：前三種還在進行（結束程式前要問，UX-29）。finishing 是等錄影執行緒把檔案寫完，saving 是寫資料庫
 FINISHING, UPLOADING, SAVING, SAVED, FAILED = "finishing", "uploading", "saving", "saved", "failed"
 IN_FLIGHT = (FINISHING, UPLOADING, SAVING)
 
-# QSS 用的顏色：值都來自 myapp/theme.py（和 Theme.qml 同一組，tests/unit/test_ui_copy.py 比對兩邊），這裡不寫死
+# 錄影頁 Saving 卡片一列的角色（SaveJob.row()、SavesModel，T29）。status 是 SaveJob.state：QML 的 delegate 是 Item，
+# 角色叫 state 會和 Item.state 撞名
+SAVE_ROLES = ("serviceId", "status", "attempt", "fileNumber", "fileCount", "bytesDone", "bytesTotal", "percent",
+              "reason", "canRetry", "canAnalyze", "analyzeRequested", "savedAt")
+
+# QSS 用的顏色：值都來自 myapp/theme.py（和 Theme.qml 同一組，tests/unit/test_ui_copy.py 比對兩邊），這裡不寫死。
+# 版面和顏色照設計稿 StaffRecorder（新版介面 U2，T29）
 COLORS = {
-    "window": RECORD_WINDOW["windowBg"],               # 錄影視窗的底色（新版介面的深色，設計稿 StaffRecorder）
-    "surface": TOKENS["card"],                         # 狀態列、次要按鈕的底
-    "text": TOKENS["textPrimary"],
-    "secondary": TOKENS["textSecondary"],
+    "window": RECORD_WINDOW["windowBg"],               # 錄影視窗的底色
+    "surface": TOKENS["card"],                         # 下面那一條（音量、說明、開始／停止）
+    "border": TOKENS["cardBorder"],                    # 下面那一條、預覽框的框線
+    "title": TOKENS["textTitle"],                      # 狀態、經過時間、預覽的標題
+    "muted": TOKENS["textMuted"],                      # 說明、裝置名稱
+    "faint": TOKENS["textFaint"],                      # 預覽標題旁的裝置名稱
+    "icon": TOKENS["iconNeutral"],                     # 一般的圖示（UD2：中性灰，顏色留給狀態）
+    "secondary_bg": TOKENS["actionSecondaryBg"],       # 次要按鈕（Analyze）：深色底加框線，和 QML 的 BusyButton 一樣
     "secondary_border": TOKENS["actionSecondaryBorder"],
-    "secondary_hover": TOKENS["actionSecondaryHover"],  # 次要按鈕的 hover、按下：和 QML 的 BusyButton 一樣（DS-12）
+    "secondary_hover": TOKENS["actionSecondaryHover"],
     "secondary_pressed": TOKENS["actionSecondaryPressed"],
+    "secondary_text": TOKENS["actionSecondaryText"],
     "disabled_text": TOKENS["actionDisabledText"],
     "disabled_bg": TOKENS["actionDisabledBg"],
     "track": TOKENS["track"],                          # 進度條的軌道
-    "fill": TOKENS["progressFill"],
-    "primary": TOKENS["actionPrimary"],                # 淺色膠囊（UD3），深色字 15.5:1
+    "fill": TOKENS["progressFill"],                    # 進度條、音量條亮的格子
+    "meter_off": TOKENS["actionSecondaryBorder"],      # 音量條沒亮的格子
+    "primary": TOKENS["actionPrimary"],                # 淺色膠囊（UD3），深色字 15.5:1：Start Recording、Retry
     "primary_hover": TOKENS["actionPrimaryHover"],
     "primary_pressed": TOKENS["actionPrimaryPressed"],
     "primary_text": TOKENS["actionPrimaryText"],
+    "danger": TOKENS["actionDanger"],                  # Stop Recording：紅色實心、白字
+    "danger_hover": RECORD_WINDOW["stopHover"],
+    "danger_pressed": RECORD_WINDOW["stopPressed"],
+    "on_dark": TOKENS["textOnDark"],
     "recording": TOKENS["recording"],                  # 只用在實心的錄影圓點
     "success": TOKENS["successOnDark"],
     "error": TOKENS["errorOnDark"],
     "focus": TOKENS["focusOnDark"],
-    "preview": RECORD_WINDOW["previewBg"],             # 預覽框
-    "preview_border": RECORD_WINDOW["previewBorder"],
+    "preview": RECORD_WINDOW["previewBg"],             # 預覽的底（黑邊）
 }
 
 # Lucide 圖示的內容（ISC 授權，見 myapp/src/myapp/images/icons/LICENSE-lucide.txt），畫的時候才上色
@@ -98,7 +116,8 @@ _ICONS = {
     "mic-off": ('<line x1="2" x2="22" y1="2" y2="22"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/>'
                 '<path d="M5 10v2a7 7 0 0 0 12 5"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/>'
                 '<path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><line x1="12" x2="12" y1="19" y2="22"/>'),
-    "square": '<rect width="18" height="18" x="3" y="3" rx="2"/>',
+    "mic": '<path d="M12 19v3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><rect x="9" y="2" width="6" height="13" rx="3"/>',
+    "stop": '<rect width="18" height="18" x="3" y="3" rx="3" fill="{color}" stroke="none"/>',  # Stop Recording 的實心方塊
 }
 
 
@@ -216,7 +235,7 @@ def _label(name, pixel_size, color, *, bold=False, tabular=False, center=False, 
 
 
 def _progress_bar(name, width, accessible_name):
-    """DS-23 的進度條：高 6、圓角 3、軌道 #E0E0E0、填色 #333333。數值直接設定，不做補間。"""
+    """DS-23 的進度條：高 6、圓角 3、軌道 track、填色 progressFill。數值直接設定，不做補間。"""
     bar = QtWidgets.QProgressBar()
     bar.setObjectName(name)
     bar.setFixedSize(width, 6)
@@ -227,23 +246,60 @@ def _progress_bar(name, width, accessible_name):
     return bar
 
 
-def _button_style(primary, radius=10, pixel_size=18):
-    """DS-12 的按鈕：主要是石墨灰底白字，次要是白底、#596069 框線、#333333 字；hover、按下和 QML 的 BusyButton 一樣。"""
-    if primary:
-        normal, hover, pressed = (f"background: {COLORS['primary']}; color: {COLORS['primary_text']}; border: none;",
-                                  f"background: {COLORS['primary_hover']};", f"background: {COLORS['primary_pressed']};")
+def _button_style(primary=False, radius=22, pixel_size=14, *, danger=False):
+    """膠囊按鈕（設計稿 StaffRecorder、DS-12）：主要是淺色底深色字（Start Recording、Retry），danger 是紅色實心白字
+    （Stop Recording），其他是深色底加框線（Analyze）；hover、按下和 QML 的 BusyButton 一樣。
+
+    鍵盤焦點框（DS-30）：QSS 沒有往外畫的 outline，畫在按鈕裡面 2 px，顏色選在那個底色上看得清楚的；
+    只有鍵盤造成的焦點才畫（PillButton 的 keyboardFocus 屬性）。
+    """
+    if danger:
+        normal = f"background: {COLORS['danger']}; color: {COLORS['on_dark']}; border: none;"
+        hover, pressed, focus = COLORS["danger_hover"], COLORS["danger_pressed"], COLORS["on_dark"]
+    elif primary:
+        normal = f"background: {COLORS['primary']}; color: {COLORS['primary_text']}; border: none;"
+        hover, pressed, focus = COLORS["primary_hover"], COLORS["primary_pressed"], COLORS["primary_text"]
     else:
-        normal, hover, pressed = (f"background: {COLORS['surface']}; color: {COLORS['text']}; "
-                                  f"border: 1px solid {COLORS['secondary_border']};",
-                                  f"background: {COLORS['secondary_hover']};",
-                                  f"background: {COLORS['secondary_pressed']};")
-    return (f"QPushButton {{ {normal} border-radius: {radius}px; padding: 0 16px; font-size: {pixel_size}px; "
+        normal = (f"background: {COLORS['secondary_bg']}; color: {COLORS['secondary_text']}; "
+                  f"border: 1px solid {COLORS['secondary_border']};")
+        hover, pressed, focus = COLORS["secondary_hover"], COLORS["secondary_pressed"], COLORS["focus"]
+    return (f"QPushButton {{ {normal} border-radius: {radius}px; padding: 0 {radius}px; font-size: {pixel_size}px; "
             "font-weight: bold; }"
-            f"QPushButton:hover {{ {hover} }}"
-            f"QPushButton:pressed {{ {pressed} }}"
-            f"QPushButton:focus {{ border: 2px solid {COLORS['focus']}; }}"
+            f"QPushButton:hover {{ background: {hover}; }}"
+            f"QPushButton:pressed {{ background: {pressed}; }}"
+            f"QPushButton[keyboardFocus=\"true\"] {{ border: 2px solid {focus}; }}"
             f"QPushButton:disabled {{ background: {COLORS['disabled_bg']}; color: {COLORS['disabled_text']}; "
             "border: none; }")
+
+
+class PillButton(QtWidgets.QPushButton):
+    """錄影視窗的按鈕：焦點是鍵盤造成的（Tab、Shift+Tab）才畫焦點框（DS-30），滑鼠點的、視窗打開時的不畫。
+    QSS 沒有 :focus-visible，所以用動態屬性 keyboardFocus 給 _button_style() 的選擇器。"""
+
+    KEYBOARD_REASONS = (QtCore.Qt.FocusReason.TabFocusReason, QtCore.Qt.FocusReason.BacktabFocusReason,
+                        QtCore.Qt.FocusReason.ShortcutFocusReason)
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setProperty("keyboardFocus", False)
+
+    @property
+    def keyboard_focus(self):
+        return bool(self.property("keyboardFocus"))
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self._set_keyboard_focus(event.reason() in self.KEYBOARD_REASONS)
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self._set_keyboard_focus(False)
+
+    def _set_keyboard_focus(self, on):
+        if self.keyboard_focus != on:
+            self.setProperty("keyboardFocus", on)
+            self.style().unpolish(self)  # 動態屬性改了，QSS 要重新套用
+            self.style().polish(self)
 
 
 BUTTON_ICON_GAP = 10  # 按鈕圖示和文字的間距（設計稿）；QSS 沒有這個屬性，畫在圖示右邊的透明空白裡
@@ -473,7 +529,8 @@ class SaveJob:
     error_detail: str = ""
     retryable: bool = True
     toast_id: int = 0
-    analyze_requested: bool = False
+    analyze_requested: bool = False   # 已經送去分析了（從哪裡按的都算）：不再提供 Analyze
+    saved_at: datetime = None         # 寫進資料庫的時間（和檔案紀錄的上傳時間同一個值）
 
     @property
     def service_id(self):
@@ -497,6 +554,35 @@ class SaveJob:
     @property
     def file_name(self):
         return os.path.basename(self.recording.files[self.file_number - 1])
+
+    def row(self):
+        """錄影頁 Saving 卡片的一列（SavesModel，T29），鍵就是 SAVE_ROLES。
+
+        - bytesTotal 是 0：還不知道大小（檔案還在寫、或是重開 app 放回來的）。三個檔案都上傳了就是第 3 個、100%。
+        - reason：沒存好的原因，和通知的內文同一句（DS-52）；canRetry 為假時是「存不了」（檔案不見了）。
+        - savedAt：存好的時間「14:12」（本機時間，24 小時制）。
+        """
+        uploaded = bool(self.urls)
+        if self.total > 0:
+            percent = math.floor(min(self.done, self.total) / self.total * 100)
+        else:
+            percent = 100 if uploaded else 0
+        saved = self.state == SAVED
+        return {
+            "serviceId": self.service_id,
+            "status": self.state,
+            "attempt": self.attempt,
+            "fileNumber": FILE_COUNT if uploaded else self.file_number,
+            "fileCount": FILE_COUNT,
+            "bytesDone": float(self.done),
+            "bytesTotal": float(self.total),
+            "percent": percent,
+            "reason": self.error_detail if self.state == FAILED else "",
+            "canRetry": self.state == FAILED and self.retryable,
+            "canAnalyze": saved and not self.analyze_requested,
+            "analyzeRequested": saved and self.analyze_requested,
+            "savedAt": self.saved_at.strftime("%H:%M") if saved and self.saved_at is not None else "",
+        }
 
 
 def upload_recording(job, token, report):
@@ -569,6 +655,7 @@ class RecordingSaver(QtCore.QObject):
     屬於 app，不屬於錄影視窗：視窗關了、或已經在錄下一段，還是會做完。結果用同一個 key 的通知就地更新。
     services 是 AppServices；on_saved(service_id) 在寫好資料庫之後呼叫（DeviceFinder 用它重新整理分析頁）。
     還沒存完的記在本機（PendingSaveStore，T26），重開 app 之後由 restore() 放回來，一樣可以 Retry。
+    這次登入之後的每一筆都留在 jobs() 裡，錄影頁的 Saving 卡片（SavesModel）照 changed 更新。
     """
 
     changed = QtCore.Signal(str)        # service_id：這一筆的狀態或進度變了
@@ -581,11 +668,16 @@ class RecordingSaver(QtCore.QObject):
         self._jobs = {}  # service_id → SaveJob
         self._pending = PendingSaveStore()
         services.tasks.progressed.connect(self._on_progress)
+        services.tasks.busyChanged.connect(self._on_task_busy)
         services.notifier.actionTriggered.connect(self._on_action)
         QtCore.QCoreApplication.instance().aboutToQuit.connect(self._finish_files)
 
     def job(self, service_id):
         return self._jobs.get(service_id)
+
+    def jobs(self):
+        """這次登入之後的每一筆（含 restore() 放回來的），依加入的順序。"""
+        return list(self._jobs.values())
 
     def in_flight(self):
         """還在收尾、上傳或寫資料庫的，依加入的順序。"""
@@ -603,7 +695,8 @@ class RecordingSaver(QtCore.QObject):
         """登入時（launch()）：這個帳號上次沒存完的錄影放回來，每一筆跳一則和失敗時一樣的通知（Retry，T26）。
 
         Retry 從停下來的那一步繼續：還沒上傳完的重傳三個檔案，已經上傳的只寫資料庫。
-        還沒上傳、檔案又不在這台電腦上了：刪掉紀錄，說明存不了（沒有 Retry）。回傳放回來的 SaveJob。
+        還沒上傳、檔案又不在這台電腦上了：刪掉紀錄，說明存不了（沒有 Retry；Saving 卡片上也留一列說明）。
+        回傳放回來、可以 Retry 的 SaveJob。
         """
         restored = []
         for pending in self._pending.load(account_id):
@@ -615,30 +708,32 @@ class RecordingSaver(QtCore.QObject):
             if pending.stage == "upload" and missing:
                 logger.warning("%s can't be saved: %s no longer exist", service_id, missing)
                 self._pending.remove(service_id)
-                self.services.notifier.notify(
-                    "error", _tr("%1 can't be saved", service_id),
-                    _tr("The recording is no longer on this computer. It may have been moved or deleted."),
-                    UPLOAD_KEY.format(service_id))
-                continue
-            job = SaveJob(recording, state=FAILED, urls=list(pending.urls) if pending.urls else None,
-                          error_title=_tr("%1 wasn't saved", service_id), error_detail=restored_detail(pending.stage))
+                gone = _tr("The recording is no longer on this computer. It may have been moved or deleted.")
+                job = SaveJob(recording, state=FAILED, retryable=False,
+                              error_title=_tr("%1 can't be saved", service_id), error_detail=gone)
+            else:
+                job = SaveJob(recording, state=FAILED, urls=list(pending.urls) if pending.urls else None,
+                              error_title=_tr("%1 wasn't saved", service_id),
+                              error_detail=restored_detail(pending.stage))
+                restored.append(job)
             self._jobs[service_id] = job
             self._show_failure(job)
             self._emit(job)
-            restored.append(job)
         return restored
 
     def retry(self, service_id):
-        """失敗之後重試（通知或錄影視窗的 Retry）。檔案都上傳過了就只寫資料庫（DS-52「Retry to finish saving」）。"""
+        """失敗之後重試（通知、錄影視窗或 Saving 卡片的 Retry）。檔案都上傳過了就只寫資料庫
+        （DS-52「Retry to finish saving」）。檔案不見了的（沒有 Retry）不重試。"""
         job = self._jobs.get(service_id)
-        if job is None or job.state != FAILED:
+        if job is None or job.state != FAILED or not job.retryable:
             return False
         job.attempt += 1
         job.error_title = job.error_detail = ""
         return self._save(job) if job.urls else self._upload(job)
 
     def request_analyze(self, service_id):
-        """錄影視窗的 Analyze：和按通知上的 Analyze 一樣，發 analyze:<sid> 給送出分析的流程（CONTRACTS §4）。"""
+        """錄影視窗、Saving 卡片的 Analyze：和按通知上的 Analyze 一樣，發 analyze:<sid> 給送出分析的流程
+        （CONTRACTS §4）。已經送去分析的（不管是從哪裡按的，見 _on_task_busy）不再送。"""
         job = self._jobs.get(service_id)
         if job is None or job.state != SAVED or job.analyze_requested:
             return False
@@ -685,7 +780,7 @@ class RecordingSaver(QtCore.QObject):
         db, recording, urls, uploaded_at = self.services.db, job.recording, list(job.urls), datetime.now()
         if not self.services.tasks.submit("db", key,
                                           lambda token, report: save_recording(db, recording, urls, uploaded_at),
-                                          on_ok=lambda result: self._saved(job),
+                                          on_ok=lambda result: self._saved(job, uploaded_at),
                                           on_err=lambda error: self._failed(job, error, "database")):
             return self._not_submitted(job, key)
         job.state = SAVING
@@ -694,9 +789,10 @@ class RecordingSaver(QtCore.QObject):
         self._emit(job)
         return True
 
-    def _saved(self, job):
+    def _saved(self, job, saved_at):
         service_id = job.service_id
         job.state = SAVED
+        job.saved_at = saved_at
         self._pending.remove(service_id)
         job.toast_id = self.services.notifier.notify(
             "success", _tr("Saved %1", service_id), _tr("Video and audio uploaded."), UPLOAD_KEY.format(service_id),
@@ -747,6 +843,18 @@ class RecordingSaver(QtCore.QObject):
     def _on_action(self, action_id, toast_id):
         if action_id.startswith(RETRY_PREFIX):  # 其他前綴是別的流程的（CONTRACTS §4），不認得就不管
             self.retry(action_id[len(RETRY_PREFIX):])
+
+    @QtCore.Slot(str, bool)
+    def _on_task_busy(self, key, busy):
+        """送出分析開始了（io lane 的 analyze:<sid>，CONTRACTS §4）：不管是從通知、錄影視窗、Saving 卡片
+        還是分析頁按的，這一筆都不再提供 Analyze，不會連按送兩次。送不出去時由那一則通知的 Retry、分析頁重送（T29）。"""
+        prefix = ANALYZE_ACTION.format("")
+        if not busy or not key.startswith(prefix):
+            return
+        job = self._jobs.get(key[len(prefix):])
+        if job is not None and job.state == SAVED and not job.analyze_requested:
+            job.analyze_requested = True
+            self._emit(job)
 
     def _emit(self, job):
         self.changed.emit(job.service_id)
@@ -822,59 +930,76 @@ class QuitGuard(QtCore.QObject):
 
 # ---------------------------------------------------------------- 錄影視窗
 
+CONTROL_HEIGHT = 44  # 按鈕至少 44 高（PLAN 第 2 節、Theme.controlHeight）
+
+
 class StatusBar(QtWidgets.QFrame):
-    """錄影視窗的狀態列（DS-34）：56 px、白底、圓角 5。左邊圖示＋標題（16 粗）＋說明（14），
-    右邊依狀態是計時、進度條或一個動作按鈕。"""
+    """錄影視窗最上面那一行的左邊（設計稿 StaffRecorder、DS-34）：圖示、標題（20 粗），錄影中加上經過時間
+    （28 粗、等寬數字）；沒在錄的時候是最後停止的那一段的存檔：說明（13）、進度條、Analyze 或 Retry。
+    沒有底色：設計稿的這一行直接在視窗上。"""
 
     actionClicked = QtCore.Signal()
+
+    DETAIL_MAX = 440  # 說明最寬幾 px：比這個長的換行（QLabel 換行時預設排得比較窄，有空間也會換行）
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("statusBar")
-        self.setFixedHeight(56)
-        self.setStyleSheet(f"#statusBar {{ background: {COLORS['surface']}; border-radius: 5px; }}")
+        self.setMinimumHeight(CONTROL_HEIGHT)
+        self.setStyleSheet("#statusBar { background: transparent; }")
         layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(16, 0, 16, 0)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         self.icon = QtWidgets.QLabel()
         self.icon.setObjectName("statusIcon")
         self.icon.setFixedSize(20, 20)
         texts = QtWidgets.QVBoxLayout()
         texts.setContentsMargins(0, 0, 0, 0)
-        texts.setSpacing(0)
-        self.title = _label("statusTitle", 16, COLORS["text"], bold=True)
-        self.detail = _label("statusDetail", 14, COLORS["secondary"], tabular=True)
-        for label in (self.title, self.detail):
-            label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
-            texts.addWidget(label)
-        self.elapsed = _label("elapsed", 20, COLORS["text"], bold=True, tabular=True)
-        self.progress = _progress_bar("statusProgress", 240, "")
-        self.button = QtWidgets.QPushButton()
+        texts.setSpacing(2)
+        heading = QtWidgets.QHBoxLayout()
+        heading.setContentsMargins(0, 0, 0, 0)
+        heading.setSpacing(12)
+        self.title = _label("statusTitle", 20, COLORS["title"], bold=True)
+        self.elapsed = _label("elapsed", 28, COLORS["title"], bold=True, tabular=True)
+        heading.addWidget(self.title, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
+        heading.addWidget(self.elapsed, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
+        heading.addStretch(1)
+        self.detail = _label("statusDetail", 13, COLORS["muted"], tabular=True, wrap=True)  # 視窗窄的時候換行，不截掉
+        texts.addStretch(1)
+        texts.addLayout(heading)
+        texts.addWidget(self.detail)
+        texts.addStretch(1)
+        self.progress = _progress_bar("statusProgress", 200, "")
+        self.button = PillButton()
         self.button.setObjectName("statusAction")
-        self.button.setFixedHeight(40)
-        self.button.setStyleSheet(_button_style(primary=False, radius=5, pixel_size=16))
+        self.button.setFixedHeight(CONTROL_HEIGHT)
         self.button.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
         self.button.clicked.connect(self.actionClicked)
         layout.addWidget(self.icon)
-        layout.addLayout(texts, 1)
-        for widget in (self.elapsed, self.progress, self.button):
+        layout.addLayout(texts)
+        for widget in (self.elapsed, self.detail, self.progress, self.button):
             widget.hide()
-            layout.addWidget(widget)
+        layout.addWidget(self.progress)
+        layout.addWidget(self.button)
+        layout.addStretch(1)  # 按鈕緊接在說明後面，多的寬度留在右邊
         self.state = ""
         self._icon_key = None
+        self._button_primary = None
 
     def show_state(self, state, icon, color, title, detail="", *, elapsed=None, progress=None, action="",
-                   action_enabled=True, still=False):
-        """progress：(done, total) 是有總量的進度；"busy" 是不定進度（still 為真時是靜止的軌道，減少動態）。"""
+                   action_enabled=True, action_primary=False, still=False):
+        """progress：(done, total) 是有總量的進度；"busy" 是不定進度（still 為真時是靜止的軌道，減少動態）。
+        action_primary：Retry 是主要按鈕（淺色），Analyze 是次要按鈕，和錄影頁的 Saving 卡片一樣。"""
         self.state = state
         if self._icon_key != (icon, color):
             self._icon_key = (icon, color)
             self.icon.setPixmap(icon_pixmap(icon, color, 20))
         self.title.setText(title)
         self.detail.setText(detail)
+        self.detail.setMinimumWidth(min(self.detail.fontMetrics().horizontalAdvance(detail), self.DETAIL_MAX))
+        self.detail.setVisible(bool(detail))
         self.setAccessibleName(title)
         self.setAccessibleDescription(detail)
-        self.layout().setContentsMargins(16, 0, 8 if action else 16, 0)  # 有按鈕時右邊 8（設計稿）
         self.elapsed.setVisible(elapsed is not None)
         if elapsed is not None:
             self.elapsed.setText(elapsed)
@@ -887,6 +1012,9 @@ class StatusBar(QtWidgets.QFrame):
             self.progress.setRange(0, 1000)
             self.progress.setValue(round(1000 * min(done, total) / total) if total > 0 else 0)
         self.progress.setAccessibleName(title)
+        if action and self._button_primary != action_primary:
+            self._button_primary = action_primary
+            self.button.setStyleSheet(_button_style(primary=action_primary))
         self.button.setVisible(bool(action))
         self.button.setText(action)
         self.button.setEnabled(action_enabled)
@@ -895,33 +1023,64 @@ class StatusBar(QtWidgets.QFrame):
         self.elapsed.setText(text)
 
 
-class CameraPreview(QtWidgets.QFrame):
-    """一支鏡頭的預覽框（480×360）。打不開或沒有畫面時在框裡說明（DS-34、UX-11），不擋另一支鏡頭。"""
+class FrameView(QtWidgets.QWidget):
+    """畫鏡頭畫面的地方：照圓角裁掉四個角（預覽框的圓角 14），pixmap() 是目前的畫面。"""
 
-    SIZE = (480, 360)
+    RADIUS = 13  # 預覽框的圓角 14 減掉 1 px 框線
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("cameraImage")
+        self._pixmap = QtGui.QPixmap()
+
+    def pixmap(self):
+        return self._pixmap
+
+    def set_pixmap(self, pixmap):
+        self._pixmap = pixmap
+        self.update()
+
+    def paintEvent(self, event):
+        if self._pixmap.isNull():
+            return
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        path = QtGui.QPainterPath()
+        path.addRoundedRect(QtCore.QRectF(self.rect()), self.RADIUS, self.RADIUS)
+        painter.setClipPath(path)
+        size = self._pixmap.deviceIndependentSize()
+        painter.drawPixmap(QtCore.QPointF((self.width() - size.width()) / 2, (self.height() - size.height()) / 2),
+                           self._pixmap)
+        painter.end()
+
+
+class CameraPreview(QtWidgets.QFrame):
+    """一支鏡頭的預覽框（4:3，黑底、1 px 框線、圓角 14），大小由 PreviewArea 決定。
+    打不開或沒有畫面時在框裡說明（DS-34、UX-11），不擋另一支鏡頭。"""
+
+    ASPECT = 4 / 3
 
     def __init__(self, camera_name, parent=None):
         super().__init__(parent)
         self.camera_name = camera_name
         self.setObjectName("cameraPreview")
-        self.setFixedSize(*self.SIZE)
         self.setStyleSheet(f"#cameraPreview {{ background: {COLORS['preview']}; "
-                           f"border: 2px solid {COLORS['preview_border']}; border-radius: 10px; }}")
+                           f"border: 1px solid {COLORS['border']}; border-radius: 14px; }}")
         self._stack = QtWidgets.QStackedLayout(self)
-        self.image = QtWidgets.QLabel()
-        self.image.setObjectName("cameraImage")
-        self.image.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self._stack.setContentsMargins(1, 1, 1, 1)
+        self.image = FrameView()
         self.message = QtWidgets.QWidget()
         self.message.setObjectName("cameraProblem")
+        self.message.setStyleSheet("background: transparent;")
         box = QtWidgets.QVBoxLayout(self.message)
         box.setContentsMargins(32, 32, 32, 32)
         box.setSpacing(10)
         box.addStretch(1)
         self.problem_icon = QtWidgets.QLabel()
-        self.problem_icon.setPixmap(icon_pixmap("video-off", COLORS["text"], 32))
+        self.problem_icon.setPixmap(icon_pixmap("video-off", COLORS["icon"], 32))
         self.problem_icon.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.problem_title = _label("problemTitle", 16, COLORS["text"], bold=True, center=True, wrap=True)
-        self.problem_body = _label("problemBody", 14, COLORS["text"], center=True, wrap=True)
+        self.problem_title = _label("problemTitle", 16, COLORS["title"], bold=True, center=True, wrap=True)
+        self.problem_body = _label("problemBody", 14, COLORS["muted"], center=True, wrap=True)
         for widget in (self.problem_icon, self.problem_title, self.problem_body):
             box.addWidget(widget)
         box.addStretch(1)
@@ -929,8 +1088,22 @@ class CameraPreview(QtWidgets.QFrame):
         self._stack.addWidget(self.message)
         self.problem = ""  # 顯示中的問題（標題）；空字串＝有畫面
 
+    def frame_size(self):
+        """鏡頭畫面要縮成多大（裝置像素，4:3，剛好放進框裡）。還沒排版時是錄影的 640×480。"""
+        width, height = self.image.width(), self.image.height()
+        if width < 4 or height < 3:
+            return Recording.FRAME_SIZE
+        if width / height > self.ASPECT:
+            width = height * self.ASPECT
+        else:
+            height = width / self.ASPECT
+        ratio = self.devicePixelRatioF()
+        return max(1, round(width * ratio)), max(1, round(height * ratio))
+
     def show_frame(self, image):
-        self.image.setPixmap(QtGui.QPixmap.fromImage(image))
+        pixmap = QtGui.QPixmap.fromImage(image)
+        pixmap.setDevicePixelRatio(self.devicePixelRatioF())
+        self.image.set_pixmap(pixmap)
 
     def set_problem(self, problem):
         title = _tr("%1 has no picture", self.camera_name) if problem else ""
@@ -948,39 +1121,125 @@ class CameraPreview(QtWidgets.QFrame):
             self.setAccessibleDescription("")
 
 
+class PreviewArea(QtWidgets.QWidget):
+    """兩個預覽並排（設計稿 StaffRecorder）：每一欄是標題列（例如「Customer camera  Camera 0」）和 4:3 的預覽框。
+    寬度決定預覽的大小；視窗矮的時候照高度縮小、兩個一起置中；高度有多的留在下面（下面那一條貼在視窗底部）。"""
+
+    GAP = 16           # 兩欄之間
+    CAPTION_GAP = 10   # 標題列和預覽框之間
+
+    def __init__(self, columns, parent=None):
+        super().__init__(parent)
+        self.columns = columns  # [(標題列, CameraPreview)]
+        for caption, preview in columns:
+            caption.setParent(self)
+            preview.setParent(self)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+
+    def _caption_height(self):
+        return max(caption.sizeHint().height() for caption, _ in self.columns)
+
+    def minimumSizeHint(self):
+        return QtCore.QSize(2 * 320 + self.GAP, self._caption_height() + self.CAPTION_GAP + 240)
+
+    def sizeHint(self):
+        return QtCore.QSize(2 * 608 + self.GAP, self._caption_height() + self.CAPTION_GAP + 456)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        caption_height = self._caption_height()
+        column_width = (self.width() - self.GAP) / 2
+        box_height = max(0.0, min(column_width / CameraPreview.ASPECT,
+                                  self.height() - caption_height - self.CAPTION_GAP))
+        box_width = box_height * CameraPreview.ASPECT
+        left = (self.width() - (2 * box_width + self.GAP)) / 2
+        for index, (caption, preview) in enumerate(self.columns):
+            x = round(left + index * (box_width + self.GAP))
+            caption.setGeometry(x, 0, round(box_width), caption_height)
+            preview.setGeometry(x, caption_height + self.CAPTION_GAP, round(box_width), round(box_height))
+
+
+def _caption(name, title, device):
+    """預覽的標題列：「Customer camera」（15 粗）和裝置名稱（13、textFaint），底部對齊。回傳 (標題列, 標題)。"""
+    row = QtWidgets.QWidget()
+    row.setObjectName(name)
+    layout = QtWidgets.QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(10)
+    label = _label(f"{name}Title", 15, COLORS["title"], bold=True)
+    label.setText(title)
+    device_label = _label(f"{name}Device", 13, COLORS["faint"])
+    device_label.setText(device)
+    layout.addWidget(label, 0, QtCore.Qt.AlignmentFlag.AlignBottom)
+    layout.addWidget(device_label, 0, QtCore.Qt.AlignmentFlag.AlignBottom)
+    layout.addStretch(1)
+    return row, label
+
+
+class LevelMeter(QtWidgets.QProgressBar):
+    """麥克風音量（設計稿 StaffRecorder）：12 格由矮到高，亮的格子是 fill、其他是 meter_off。
+    是 QProgressBar（0～100），螢幕閱讀器唸得出數值；只換畫法。"""
+
+    BARS = (6, 8, 10, 12, 14, 16, 18, 20, 21, 22, 23, 24)
+    BAR_WIDTH, BAR_GAP = 5, 3
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("levelMeter")
+        self.setRange(0, 100)
+        self.setTextVisible(False)
+        self.setFixedSize(len(self.BARS) * (self.BAR_WIDTH + self.BAR_GAP) - self.BAR_GAP, max(self.BARS))
+
+    def lit(self):
+        """亮幾格。"""
+        span = max(1, self.maximum() - self.minimum())
+        return round(len(self.BARS) * (self.value() - self.minimum()) / span)
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        lit = self.lit()
+        for index, height in enumerate(self.BARS):
+            painter.setBrush(QtGui.QColor(COLORS["fill"] if index < lit else COLORS["meter_off"]))
+            x = index * (self.BAR_WIDTH + self.BAR_GAP)
+            painter.drawRoundedRect(QtCore.QRectF(x, self.height() - height, self.BAR_WIDTH, height), 2, 2)
+        painter.end()
+
+
 class MicrophoneRow(QtWidgets.QWidget):
-    """麥克風那一行：名稱，錄影中加上音量條（每秒最多更新 4 次）；出問題時在這裡說明（UX-11、UX-12）。"""
+    """下面那一條的左邊：麥克風圖示、音量（每秒最多更新 4 次）和「Microphone level」（UX-12）。
+    只在錄影中、或麥克風出了問題時出現；出問題時在這裡說明（UX-11），停止之後還看得到，直到下一段開始。"""
 
     def __init__(self, name, parent=None):
         super().__init__(parent)
         self.name = name
         self.setObjectName("microphoneRow")
-        self.setFixedHeight(24)
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(12)
         self.icon = QtWidgets.QLabel()
-        self.icon.setFixedSize(16, 16)
-        self.icon.setPixmap(icon_pixmap("mic-off", COLORS["error"], 16))
-        self.icon.hide()
-        self.label = _label("microphoneLabel", 14, COLORS["secondary"])
-        self.level = _progress_bar("levelMeter", 160, _tr("Microphone level"))
-        self.level.setRange(0, 100)
-        self.level.hide()
-        layout.addStretch(1)
-        for widget in (self.icon, self.label, self.level):
-            layout.addWidget(widget)
-        layout.addStretch(1)
+        self.icon.setFixedSize(20, 20)
+        self.level = LevelMeter()
+        self.level.setAccessibleName(_tr("Microphone level"))
+        self.label = _label("microphoneLabel", 13, COLORS["muted"], wrap=True)
+        layout.addWidget(self.icon)
+        layout.addWidget(self.level)
+        layout.addWidget(self.label, 1)
         self.problem = False
-        self._show_name()
+        self._recording = False
+        self._show_level()
+        self._update_visibility()
 
     def start(self):
+        self._recording = True
         self.level.setValue(0)
-        self.level.show()
         self.set_problem(False)
+        self._update_visibility()
 
     def stop(self):
-        self.level.hide()
+        self._recording = False
+        self._update_visibility()
 
     def set_level(self, level):
         self.level.setValue(round(100 * level))
@@ -990,17 +1249,22 @@ class MicrophoneRow(QtWidgets.QWidget):
             return
         self.problem = problem
         if problem:
-            self.icon.show()
+            self.icon.setPixmap(icon_pixmap("mic-off", COLORS["error"], 20))
             self.label.setText(_tr("%1 isn't working. Check the cable, or go back and choose another microphone.",
                                    self.name))
             self.label.setStyleSheet(f"color: {COLORS['error']}; background: transparent;")
         else:
-            self._show_name()
+            self._show_level()
+        self._update_visibility()
 
-    def _show_name(self):
-        self.icon.hide()
-        self.label.setText(_tr("Microphone: %1", self.name))
-        self.label.setStyleSheet(f"color: {COLORS['secondary']}; background: transparent;")
+    def _show_level(self):
+        self.icon.setPixmap(icon_pixmap("mic", COLORS["icon"], 20))
+        self.label.setText(_tr("Microphone level"))
+        self.label.setStyleSheet(f"color: {COLORS['muted']}; background: transparent;")
+
+    def _update_visibility(self):
+        self.level.setVisible(self._recording)
+        self.setVisible(self._recording or self.problem)
 
 
 class RecordWidget(QtWidgets.QWidget):
@@ -1010,6 +1274,7 @@ class RecordWidget(QtWidgets.QWidget):
       在背景收尾、上傳、寫資料庫，馬上可以錄下一段（UX-08、DS-34）。
     - 關掉視窗、結束程式時，錄影中的先停止並存檔，再關鏡頭（UX-09；以前鏡頭和麥克風會一直開著）。
     - 狀態列跟著「錄影中的那一段」，沒有在錄時跟著最後停止的那一段（DS-34）。
+    - 開始、停止在同一個位置（一次只出現一個）；按鈕的焦點框只在用鍵盤時畫（PillButton）。
     """
 
     closed = QtCore.Signal()
@@ -1052,61 +1317,84 @@ class RecordWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------ 畫面
 
     def set_ui(self):
-        self.setWindowTitle(_tr("Recording"))
-        self.setFixedSize(1024, 640)
+        """設計稿 StaffRecorder：最上面一行是狀態和三個裝置的名稱，中間是兩個預覽，最下面一條是麥克風的音量、
+        一句說明和開始／停止。預設 1280×820，可以縮小到 960×640（預覽保持 4:3）。"""
+        self.setWindowTitle(_tr("Recorder"))
+        self.resize(1280, 820)
+        self.setMinimumSize(960, 640)
         palette = self.palette()
         palette.setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor(COLORS["window"]))
         self.setPalette(palette)
         self.setAutoFillBackground(True)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(10)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(18)
 
+        top = QtWidgets.QHBoxLayout()
+        top.setSpacing(24)
         self.status_bar = StatusBar(self)
         self.status_bar.actionClicked.connect(self._on_status_action)
-        layout.addWidget(self.status_bar)
+        cam0, cam1 = self.camera_names
+        self.device_names = _label("deviceNames", 13, COLORS["muted"], wrap=True)  # 視窗窄的時候換行
+        self.device_names.setText(_tr("Customer: %1 · Staff: %2 · Microphone: %3", cam0, cam1, self.microphone_name))
+        self.device_names.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        top.addWidget(self.status_bar, 1)
+        top.addWidget(self.device_names, 1)  # 兩邊平分多的寬度：裝置名稱有空間時排成一行，窄的時候才換行
+        layout.addLayout(top)
 
-        cameras = QtWidgets.QGridLayout()
-        cameras.setSpacing(10)
-        self.label_customer = _label("customerCameraLabel", 14, COLORS["text"], center=True)
-        self.label_customer.setText(_tr("Customer Camera"))
-        self.label_staff = _label("staffCameraLabel", 14, COLORS["text"], center=True)
-        self.label_staff.setText(_tr("Staff Camera"))
+        customer_caption, self.label_customer = _caption("customerCamera", _tr("Customer camera"), cam0)
+        staff_caption, self.label_staff = _caption("staffCamera", _tr("Staff camera"), cam1)
         self.previews = [CameraPreview(name) for name in self.camera_names]
-        self.previews[0].setAccessibleName(_tr("Customer Camera"))
-        self.previews[1].setAccessibleName(_tr("Staff Camera"))
-        self.label_cameras = [preview.image for preview in self.previews]  # 預覽畫面的 QLabel（舊名稱）
-        cameras.addWidget(self.label_customer, 0, 0)
-        cameras.addWidget(self.label_staff, 0, 1)
-        cameras.addWidget(self.previews[0], 1, 0)
-        cameras.addWidget(self.previews[1], 1, 1)
-        layout.addLayout(cameras)
+        self.previews[0].setAccessibleName(_tr("Live preview from the customer camera"))
+        self.previews[1].setAccessibleName(_tr("Live preview from the staff camera"))
+        self.preview_area = PreviewArea([(customer_caption, self.previews[0]), (staff_caption, self.previews[1])])
+        layout.addWidget(self.preview_area, 1)
 
+        self.bottom_bar = QtWidgets.QFrame()
+        self.bottom_bar.setObjectName("bottomBar")
+        self.bottom_bar.setStyleSheet(f"#bottomBar {{ background: {COLORS['surface']}; "
+                                      f"border: 1px solid {COLORS['border']}; border-radius: 16px; }}")
+        bar = QtWidgets.QHBoxLayout(self.bottom_bar)
+        bar.setContentsMargins(20, 16, 20, 16)
+        bar.setSpacing(24)
         self.microphone_row = MicrophoneRow(self.microphone_name)
-        layout.addWidget(self.microphone_row)
-        layout.addStretch(1)
-
-        buttons = QtWidgets.QHBoxLayout()
-        buttons.setSpacing(10)
-        self.button_start_recording = QtWidgets.QPushButton(_tr("Start Recording"))
-        self.button_start_recording.setStyleSheet(_button_style(primary=True))
-        self.button_start_recording.setIcon(_button_icon("dot", COLORS["recording"], 12))
-        self.button_start_recording.setIconSize(QtCore.QSize(12 + BUTTON_ICON_GAP, 12))
-        self.button_stop_recording = QtWidgets.QPushButton(_tr("Stop Recording"))
-        self.button_stop_recording.setStyleSheet(_button_style(primary=False))
-        self.button_stop_recording.setIcon(_button_icon("square", COLORS["text"], 16))
+        self.save_hint = _label("saveHint", 13, COLORS["muted"], wrap=True)
+        self.save_hint.setText(_tr("When you stop, the recording saves in the background. You can close this window."))
+        self.button_start_recording = PillButton(_tr("Start Recording"))
+        self.button_start_recording.setStyleSheet(_button_style(primary=True, radius=24, pixel_size=16))
+        self.button_start_recording.setIcon(_button_icon("dot", COLORS["recording"], 14))
+        self.button_start_recording.setIconSize(QtCore.QSize(14 + BUTTON_ICON_GAP, 14))
+        self.button_stop_recording = PillButton(_tr("Stop Recording"))
+        self.button_stop_recording.setStyleSheet(_button_style(danger=True, radius=24, pixel_size=16))
+        self.button_stop_recording.setIcon(_button_icon("stop", COLORS["on_dark"], 16))
         self.button_stop_recording.setIconSize(QtCore.QSize(16 + BUTTON_ICON_GAP, 16))
+        bar.addWidget(self.microphone_row)
+        bar.addWidget(self.save_hint, 1)
         for button in (self.button_start_recording, self.button_stop_recording):
-            button.setMinimumHeight(50)
+            button.setFixedHeight(48)
             button.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
-            buttons.addWidget(button)
+            bar.addWidget(button)
         self.button_stop_recording.setEnabled(False)
-        layout.addLayout(buttons)
+        self.button_stop_recording.hide()  # 同一個位置：錄影中是紅色的 Stop Recording，沒在錄是淺色的 Start Recording
+        layout.addWidget(self.bottom_bar)
 
         self.poll_timer = QtCore.QTimer(self)
         self.poll_timer.setInterval(POLL_MS)
         self.poll_timer.timeout.connect(self._poll)
+
+    def _show_recording_buttons(self, recording):
+        """開始、停止在同一個位置，一次只出現一個；焦點跟著移過去（焦點框也是），用鍵盤的人可以直接再按一次。"""
+        start, stop = self.button_start_recording, self.button_stop_recording
+        focused = next((button for button in (start, stop) if button.hasFocus()), None)
+        keyboard = focused is not None and focused.keyboard_focus  # 先記下來：藏起來的時候焦點會先移走
+        start.setEnabled(not recording)
+        stop.setEnabled(recording)
+        start.setVisible(not recording)
+        stop.setVisible(recording)
+        if focused is not None:
+            reason = QtCore.Qt.FocusReason.TabFocusReason if keyboard else QtCore.Qt.FocusReason.OtherFocusReason
+            (stop if recording else start).setFocus(reason)
 
     def slot_init(self):
         self.button_start_recording.clicked.connect(self.start_recording)
@@ -1137,10 +1425,11 @@ class RecordWidget(QtWidgets.QWidget):
         now = time.monotonic()
         if flag:
             self._preview_last_frame[index] = now
+            preview = self.previews[index]
             image = cv2.flip(image, 1)  # 左右翻轉，像照鏡子
-            show = cv2.cvtColor(cv2.resize(image, CameraPreview.SIZE), cv2.COLOR_BGR2RGB)
-            self.previews[index].show_frame(QtGui.QImage(show.data, show.shape[1], show.shape[0], show.strides[0],
-                                                         QtGui.QImage.Format.Format_RGB888))
+            show = cv2.cvtColor(cv2.resize(image, preview.frame_size()), cv2.COLOR_BGR2RGB)  # 縮成預覽框的大小
+            preview.show_frame(QtGui.QImage(show.data, show.shape[1], show.shape[0], show.strides[0],
+                                            QtGui.QImage.Format.Format_RGB888))
         self._update_camera(index, now)
 
     def _update_camera(self, index, now):
@@ -1183,8 +1472,7 @@ class RecordWidget(QtWidgets.QWidget):
         recording.start()
         self.current = recording
         self.service_id, self.start_time, self.end_time = service_id, start_time, None
-        self.button_start_recording.setEnabled(False)
-        self.button_stop_recording.setEnabled(True)
+        self._show_recording_buttons(True)
         self.microphone_row.start()
         self.poll_timer.start()
         self._refresh_status()
@@ -1202,8 +1490,7 @@ class RecordWidget(QtWidgets.QWidget):
         self.last_recording = recording
         self.poll_timer.stop()
         self.microphone_row.stop()
-        self.button_start_recording.setEnabled(True)
-        self.button_stop_recording.setEnabled(False)
+        self._show_recording_buttons(False)
         self.saver.add(recording)
         self._refresh_status()
         self.recordingChanged.emit(False)
@@ -1242,28 +1529,25 @@ class RecordWidget(QtWidgets.QWidget):
         bar = self.status_bar
         recording = self.current
         if recording is not None:
-            bar.show_state("recording", "dot", COLORS["recording"], _tr("Recording"), recording.service_id,
+            bar.show_state("recording", "dot", COLORS["recording"], _tr("Recording"),
                            elapsed=format_elapsed(recording.elapsed()))
             self._announce(("recording", recording.service_id), _tr("Recording %1", recording.service_id))
             return
         job = self.saver.job(self.last_recording.service_id) if self.last_recording is not None else None
         if job is None:
-            cam0, cam1 = self.camera_names
-            bar.show_state("ready", "circle", COLORS["secondary"], _tr("Ready to record"),
-                           _tr("Customer camera: %1 · Staff camera: %2 · Microphone: %3", cam0, cam1,
-                               self.microphone_name))
+            bar.show_state("ready", "circle", COLORS["muted"], _tr("Ready to record"))  # 裝置名稱在同一行的右邊
         elif job.state == FINISHING:
-            bar.show_state("finishing", "loader", COLORS["secondary"], _tr("Saving recording…"), job.service_id,
+            bar.show_state("finishing", "loader", COLORS["icon"], _tr("Saving recording…"), job.service_id,
                            progress="busy", still=reduce_motion(self.saver.services.ui_prefs))
         elif job.state == UPLOADING:
             file_text = _tr("File %1 of %2: %3", job.file_number, FILE_COUNT, job.file_name)
             amount = transfer_text(job.done, job.total)
-            bar.show_state("uploading", "upload", COLORS["text"], job.title,
+            bar.show_state("uploading", "upload", COLORS["icon"], job.title,
                            f"{amount} · {file_text}" if amount else file_text, progress=(job.done, job.total))
         elif job.state == SAVING:
             amount = transfer_text(job.total, job.total)
             detail = _tr("Saving to the database…")
-            bar.show_state("saving", "upload", COLORS["text"], job.title, f"{amount} · {detail}" if amount else detail,
+            bar.show_state("saving", "upload", COLORS["icon"], job.title, f"{amount} · {detail}" if amount else detail,
                            progress=(job.total, job.total))
         elif job.state == SAVED:
             uploaded = _tr("%1 files uploaded", FILE_COUNT)
@@ -1272,7 +1556,7 @@ class RecordWidget(QtWidgets.QWidget):
             self._announce(("saved", job.service_id), f"{_tr('Saved %1', job.service_id)}. {uploaded}")
         else:
             bar.show_state("failed", "circle-x", COLORS["error"], job.error_title, job.error_detail,
-                           action=_tr("Retry") if job.retryable else "")
+                           action=_tr("Retry") if job.retryable else "", action_primary=True)
             self._announce(("failed", job.service_id, job.attempt), f"{job.error_title}. {job.error_detail}",
                            assertive=True)
 

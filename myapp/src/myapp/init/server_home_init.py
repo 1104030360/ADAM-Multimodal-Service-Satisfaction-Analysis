@@ -26,7 +26,7 @@ from myapp.services import AppServices
 from myapp.tasks import TaskRunner
 from myapp.ui_prefs import UiPrefs
 from myapp.watcher import POLL_KEY as WATCHER_KEY, AnalysisWatcher, DockAttention
-from .record_widget import QuitGuard, RecordingSaver, RecordWidget
+from .record_widget import SAVE_ROLES, SAVED, QuitGuard, RecordingSaver, RecordWidget
 import cv2
 from dotenv import load_dotenv
 load_dotenv()
@@ -332,6 +332,55 @@ def probe_microphones():
         audio.terminate()  # 以前沒有 terminate（ENG-06）；PortAudio 有參照計數，不影響錄影視窗自己的那一份
 
 
+SAVED_ROWS_KEPT = 5  # Saving 卡片上最多留幾筆已經存好的（最新的幾筆；還在存的、沒存好的全部留著）
+
+
+class SavesModel(RowListModel):
+    """錄影頁「Saving」卡片的清單（新版介面 UD9、T29）：deviceFinder.saves。
+
+    - 一列是一段錄影的存檔（RecordingSaver 的 SaveJob，角色見 record_widget.SAVE_ROLES 和 SaveJob.row()）：
+      這次登入之後停止的每一段，加上登入時放回來、上次沒存完的（T26）。新的在上面（service_id 由新到舊），
+      狀態變了那一列就地更新，不會換位置。
+    - 留多久：還在存的、沒存好的（包括存不了的）一直留到結束 app；已經存好的只留最新的 SAVED_ROWS_KEPT 筆，
+      更舊的到分析頁找（Not Analyzed）。
+    - retry()、analyze() 和通知上的 Retry、Analyze 走同一條路（RecordingSaver.retry()、request_analyze()）。
+    - DeviceFinder 一建立就有這個清單（QML 一打開錄影頁就讀得到），RecordingSaver 建立之後才 attach()：
+      沒有錄影、也沒有沒存完的錄影時，不為了這個清單建立 RecordingSaver（T26 第 6 節）。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(SAVE_ROLES, "serviceId", parent)
+        self._saver = None
+
+    def attach(self, saver):
+        """接上 RecordingSaver（只接一次，DeviceFinder 建立它的時候）：之後每一次 changed 都重排一次
+        （筆數很少，一次只差一列）。"""
+        self._saver = saver
+        saver.changed.connect(self._on_changed)
+        self._sync()
+
+    @Slot(str, result=bool)
+    def retry(self, service_id):
+        """Retry：和通知上的 Retry 一樣（retry-upload:<sid>）。回傳 False 表示這一筆現在不能重試。"""
+        return self._saver is not None and self._saver.retry(service_id)
+
+    @Slot(str, result=bool)
+    def analyze(self, service_id):
+        """Analyze：和通知上的 Analyze 一樣，發 analyze:<sid> 給送出分析的流程（ServerHome._on_action）。
+        回傳 False 表示還沒存好、或已經送去分析了。"""
+        return self._saver is not None and self._saver.request_analyze(service_id)
+
+    @Slot(str)
+    def _on_changed(self, service_id):
+        self._sync()
+
+    def _sync(self):
+        jobs = sorted(self._saver.jobs(), key=lambda job: job.service_id, reverse=True)  # 新的在上面
+        saved = [job for job in jobs if job.state == SAVED]
+        dropped = {id(job) for job in saved[SAVED_ROWS_KEPT:]}
+        self.replace([job.row() for job in jobs if id(job) not in dropped])
+
+
 class DeviceFinder(QObject):
     """錄影頁的鏡頭和麥克風清單，以及錄影視窗和錄好之後的存檔（F3）。
 
@@ -344,6 +393,7 @@ class DeviceFinder(QObject):
     - startRecording() 打開錄影視窗（同時只有一個）。停止錄影之後的上傳、寫資料庫由 RecordingSaver 在背景做，
       屬於這裡（和外殼活得一樣久），不屬於視窗：視窗關了也會做完（UX-08、ENG-03）。
     - 上次沒存完的錄影（T26）：launch() 時 restore_saves() 從本機讀回這個帳號的，交給 RecordingSaver，一樣可以 Retry。
+    - saves：錄影頁 Saving 卡片的清單（SavesModel，UD9、T29），列出每一段的存檔，通知關掉之後還看得到。
     - 結束程式前（UX-09、UX-29）：外殼的 Exit 按鈕和 onClosing 呼叫 stopRecording()，再看 uploadCount 決定要不要問。
       ⌘Q 不會經過 onClosing（T20），所以錄影中、存檔中時用 QuitGuard 在 app 上攔 QEvent.Quit，改發 quitRequested。
     """
@@ -368,6 +418,7 @@ class DeviceFinder(QObject):
         self._error_technical = ""
         self._recorder = None  # 開著的錄影視窗
         self._saver = None  # 要有 AppServices 才能建立：第一次錄影時，或登入時有沒存完的錄影（T26）
+        self._saves = SavesModel(self)  # 一開始就有（空的），RecordingSaver 建立時接上
         self._quit_allowed = False
 
     @Property(list, notify=camerasChanged)
@@ -425,11 +476,17 @@ class DeviceFinder(QObject):
 
     # ------------------------------------------------------------ 錄影視窗與存檔（F3）
 
+    @Property(QObject, constant=True)
+    def saves(self):
+        """錄影頁 Saving 卡片的清單（SavesModel）。"""
+        return self._saves
+
     @property
     def saver(self):
         if self._saver is None:
             self._saver = RecordingSaver(self.server_home.services, on_saved=self._saved, parent=self)
             self._saver.inFlightChanged.connect(self._uploads_changed)
+            self._saves.attach(self._saver)
         return self._saver
 
     @property

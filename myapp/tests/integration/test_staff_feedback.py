@@ -21,7 +21,7 @@ from types import SimpleNamespace
 import cv2
 import pytest
 import shiboken6
-from PySide6.QtCore import QObject, Qt, QUrl, qInstallMessageHandler
+from PySide6.QtCore import QObject, QPointF, Qt, QUrl, qInstallMessageHandler
 from PySide6.QtTest import QAbstractItemModelTester, QTest
 
 from myapp import main
@@ -31,6 +31,7 @@ from myapp.init.server_home_init import (ACCOUNT_NAME_KEY, ANALYSIS_KEY, HOME_SC
                                         RowListModel)
 from myapp.main import MainWindow
 from myapp.services import CLOSE_DB_KEY
+from tests.fakes import FakeSaver, every_save_status
 from tests.integration.helpers import STAFF_ID, STAFF_NAME, qml, toasts, unused_port, wait_until
 
 pytestmark = pytest.mark.integration
@@ -616,7 +617,9 @@ def test_devices_are_probed_only_when_the_record_page_opens(engine, services, db
     assert find(page, "deviceForm").isVisible() and not find(page, "scanningState").isVisible()
     assert (qml(page, "cam0ComboBox.currentIndex"), qml(page, "cam1ComboBox.currentIndex")) == (0, 1)  # 預設就合法
     assert find(page, "sameCameraError").property("text") == ""
-    assert find(page, "activateButton").isEnabled()
+    assert find(page, "openRecorderButton").isEnabled()
+    assert find_item(page, "devicesCard").property("visible")  # 卡片裡寫找到幾個裝置（PLAN 6-2）
+    assert qml(page, "foundText()") == "Found 2 cameras and 1 microphone."
     probes = len(camera_opens)
 
     show_page(window, "homeButton")
@@ -624,13 +627,71 @@ def test_devices_are_probed_only_when_the_record_page_opens(engine, services, db
     assert find(page, "deviceForm").isVisible() and len(camera_opens) == probes
 
 
-def test_same_cameras_disable_activate_with_a_field_error(engine, services, db, no_network_on_gui_thread):
+def test_same_cameras_disable_open_recorder_with_a_field_error(engine, services, db, no_network_on_gui_thread):
     home, window = launch_staff(engine, services)
     page = open_record_page(window)
+    assert not qml(page, "cam1ComboBox.invalid")
     qml(page, "cam1ComboBox.currentIndex = 0")
-    assert find(page, "sameCameraError").property("text") == (
-        "The staff and customer cameras are the same. Choose a different staff camera.")
-    assert not find(page, "activateButton").isEnabled()
+    error = find(page, "sameCameraError")
+    assert error.property("text") == "This is the customer camera too. Choose the other camera."  # 設計稿的句子
+    assert error.isVisible() and qml(page, "cam1ComboBox.invalid")  # 員工鏡頭的框變紅
+    assert qml(page, "cam1ComboBox.Accessible.description") == error.property("text")
+    assert not find(page, "openRecorderButton").isEnabled()
+    qml(page, "cam1ComboBox.currentIndex = 1")
+    assert error.property("text") == "" and find(page, "openRecorderButton").isEnabled()
+
+
+def save_rows(page):
+    """Saving 卡片已經建立的列，由上到下（Repeater 建立的項目沒有 QObject parent，從 childItems 找）。"""
+    rows, pending = [], [page]
+    while pending:
+        item = pending.pop(0)
+        if item.objectName() == "saveRow":
+            rows.append(item)
+        pending.extend(item.childItems())
+    return sorted(rows, key=lambda row: row.mapToScene(QPointF(0, 0)).y())
+
+
+def test_saving_card_shows_each_save_status_and_its_buttons(engine, services, db, no_network_on_gui_thread):
+    """UD9、T29：每一段存檔一列。上傳中有第幾個檔案、MB、百分比和進度條；存好的有 Analyze；沒存好的有原因和 Retry。"""
+    home, window = launch_staff(engine, services)
+    page = open_record_page(window)
+    card = find(page, "savingCard")
+    assert not card.isVisible()  # 還沒有任何存檔：不顯示這張卡片
+    saver = FakeSaver(every_save_status())
+    home.deviceFinder.saves.attach(saver)
+    assert card.isVisible()
+
+    def shown(row, name):
+        return find_item(row, name).isVisible()
+
+    rows = save_rows(page)
+    assert [(row.property("serviceId"), find_item(row, "saveStatus").property("text")) for row in rows] == [
+        ("S20261101150000", "Finishing the recording…"),
+        ("S20261101142000", "Uploading · file 2 of 3 · attempt 2"),
+        ("S20261101141000", "Saving to the database…"),
+        ("S20261101140500", "Saved at 14:12 · not analyzed yet"),
+        ("S20261101130000", "Saved at 13:07 · sent for analysis"),
+        ("S20261031170500", "Wasn't saved"),
+        ("S20261031160000", "Can't be saved"),
+    ]
+    finishing, uploading, writing, saved, sent, failed, lost = rows
+    assert [shown(row, "saveProgress") for row in rows] == [True, True, True, False, False, False, False]
+    assert find_item(finishing, "saveProgress").property("value") == 0
+    assert find_item(uploading, "saveProgress").property("value") == pytest.approx(58.6 / 124.0)
+    assert find_item(writing, "saveProgress").property("value") == 1
+    assert find_item(uploading, "saveAmount").property("text") == "58.6 / 124.0 MB · 47%"  # 設計稿的數字
+    assert [shown(row, "saveAmount") for row in rows] == [False, True, False, False, False, False, False]
+    assert [shown(row, "saveAnalyze") for row in rows] == [False, False, False, True, False, False, False]
+    assert [shown(row, "saveRetry") for row in rows] == [False, False, False, False, False, True, False]
+    assert find_item(failed, "saveReason").property("text") == (
+        "The upload didn't finish. The recording is still on this computer.")
+    assert shown(lost, "saveReason") and not shown(saved, "saveReason")
+    assert qml(find_item(saved, "saveAnalyze"), "Accessible.name") == "Analyze S20261101140500"
+
+    qml(find_item(saved, "saveAnalyze"), "clicked()")  # 按鈕交給 deviceFinder.saves，再到 RecordingSaver
+    qml(find_item(failed, "saveRetry"), "clicked()")
+    assert saver.calls == [("analyze", "S20261101140500"), ("retry", "S20261031170500")]
 
 
 @pytest.mark.parametrize("cameras_connected, microphones, title", [

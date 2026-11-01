@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 import mysql.connector
 import numpy as np
+from PySide6.QtCore import QObject, Signal
 
 
 class FakeCameras:
@@ -205,3 +206,58 @@ class _FakeCursor:
 
     def __exit__(self, *exc_info):
         self.close()
+
+
+class FakeSaver(QObject):
+    """錄影頁的 Saving 清單（SavesModel）會用到的 RecordingSaver 介面：changed、jobs()、retry()、request_analyze()。
+    jobs 是 save_job() 做的 SaveJob；改了之後 emit changed，清單就重排。"""
+
+    changed = Signal(str)
+
+    def __init__(self, jobs=()):
+        super().__init__()
+        self.job_list = list(jobs)
+        self.calls = []
+
+    def jobs(self):
+        return list(self.job_list)
+
+    def retry(self, service_id):
+        self.calls.append(("retry", service_id))
+        return True
+
+    def request_analyze(self, service_id):
+        self.calls.append(("analyze", service_id))
+        return True
+
+
+def save_job(service_id, state, **fields):
+    """一段錄影的存檔（SaveJob），狀態和欄位直接指定；檔案不必存在。"""
+    from myapp.init.record_widget import Recording, SaveJob  # 用到才 import：裡面有 cv2、PyAudio
+    from myapp.pending_saves import PendingSave
+
+    start = datetime(2026, 10, 30, 12, 0, 0)
+    files = ("/x/video/a.avi", "/x/video/b.avi", "/x/audio/c.wav")
+    return SaveJob(Recording.restored(PendingSave(service_id, "acc-1", files, start, None, "upload")), state=state,
+                   **fields)
+
+
+def every_save_status():
+    """錄影頁 Saving 卡片的每一種列（新的在前）：收尾中、上傳中（第 2 次）、寫資料庫、存好了、已送去分析、
+    沒存好（可以重試）、存不了（檔案不見了）。"""
+    from myapp.init.record_widget import FAILED, FINISHING, SAVED, SAVING, UPLOADING
+
+    uploaded = ["s3://adam-test/a", "s3://adam-test/b", "s3://adam-test/c"]
+    return [
+        save_job("S20261101150000", FINISHING),
+        save_job("S20261101142000", UPLOADING, attempt=2, done=58.6e6, total=124.0e6, sizes=[55e6, 55e6, 14e6]),
+        save_job("S20261101141000", SAVING, done=124.0e6, total=124.0e6, urls=uploaded),
+        save_job("S20261101140500", SAVED, done=124.0e6, total=124.0e6, urls=uploaded,
+                 saved_at=datetime(2026, 11, 1, 14, 12)),
+        save_job("S20261101130000", SAVED, urls=uploaded, saved_at=datetime(2026, 11, 1, 13, 7),
+                 analyze_requested=True),
+        save_job("S20261031170500", FAILED,
+                 error_detail="The upload didn't finish. The recording is still on this computer."),
+        save_job("S20261031160000", FAILED, retryable=False,
+                 error_detail="The recording is no longer on this computer. It may have been moved or deleted."),
+    ]
