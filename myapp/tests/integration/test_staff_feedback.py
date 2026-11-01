@@ -21,7 +21,7 @@ from types import SimpleNamespace
 import cv2
 import pytest
 import shiboken6
-from PySide6.QtCore import QMetaObject, QObject, Qt, QUrl, qInstallMessageHandler
+from PySide6.QtCore import QObject, Qt, QUrl, qInstallMessageHandler
 from PySide6.QtTest import QAbstractItemModelTester, QTest
 
 from myapp import main
@@ -280,7 +280,7 @@ def test_launch_shows_the_shell_at_once_and_loads_in_the_background(engine, serv
         page = qml(window, "mainContentLoader.item")
         assert ring_text(page, "customer", "total") == "—"
     wait_for_launch(services)
-    assert db_proxy.snapshot()["rt"] <= 5  # ENG-21 的預算；實際是 3（名字、分數、清單各 1）
+    assert db_proxy.snapshot()["rt"] <= 5  # ENG-21 的預算；實際是 4（名字、分數、清單、監看各 1）
     assert qml(window, "username.text") == STAFF_NAME == home.accountName
 
 

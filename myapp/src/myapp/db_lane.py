@@ -14,7 +14,7 @@ TaskRunner 的 db lane 只有一條執行緒，這條連線只屬於它：在 db
 - 連不上時，在 connect_timeout 秒內丟出 mysql.connector 的例外，交給 Notifier.fromException（ENG-02）。
   連線中斷就丟掉，下一次使用時再重連；不自動重試查詢（呼叫端才知道能不能重做）。
 - 已經連上、但網路不再回應（Wi-Fi 斷掉）時，查詢最多等 read_timeout 秒。
-- 轉換期間舊的 DatabaseConnector 單例照用，兩者不共用連線（F2 才把呼叫的地方搬過來）。
+- app 的資料庫工作都已經在 db lane 上（F2、F3）；舊的 DatabaseConnector 單例只剩沒拿到 services 的舊呼叫方式在用。
 """
 import logging
 import threading

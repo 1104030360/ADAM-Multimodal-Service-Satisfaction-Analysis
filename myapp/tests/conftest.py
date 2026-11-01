@@ -120,6 +120,7 @@ def no_network_on_gui_thread(monkeypatch):
         return call
 
     for module, attribute in ((mysql.connector, "connect"), (storage, "upload"), (storage, "download"),
+                              (storage, "upload_with_progress"), (storage, "download_with_progress"),
                               (requests, "post"), (fitz, "open")):
         name = f"{module.__name__}.{attribute}"
         monkeypatch.setattr(module, attribute, guarded(name, getattr(module, attribute)))

@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 
 import mysql.connector
 import numpy as np
-from PySide6.QtCore import QCoreApplication
 
 
 class FakeCameras:
@@ -205,24 +204,3 @@ class _FakeCursor:
 
     def __exit__(self, *exc_info):
         self.close()
-
-
-def wait_until(condition, timeout=5, message="等待逾時"):
-    """每 1 毫秒檢查一次 condition()，最多等 timeout 秒（用來等背景執行緒）。"""
-    deadline = time.monotonic() + timeout
-    while not condition():
-        assert time.monotonic() < deadline, message
-        time.sleep(0.001)
-
-
-def record(widget, cameras, microphone):
-    """用錄影視窗錄一段：開始 → 等假鏡頭、假麥克風把資料都給完 → 停止。回傳這段的 service_id。"""
-    frames = cameras.frames_read + 2 * cameras.frames
-    chunks = microphone.chunks_read + (0 if microphone.broken else microphone.chunks)
-    widget.start_recording()
-    try:
-        wait_until(lambda: cameras.frames_read == frames and microphone.chunks_read == chunks)
-    finally:
-        widget.stop_recording()  # 等不到也要停止，不然錄影執行緒會一直跑、測試結束不了
-    QCoreApplication.processEvents()  # 套用背景執行緒排隊中的狀態文字
-    return widget.service_id

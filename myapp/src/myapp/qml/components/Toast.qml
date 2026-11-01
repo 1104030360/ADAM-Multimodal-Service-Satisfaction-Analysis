@@ -177,7 +177,8 @@ Control {
             focusPolicy: Qt.TabFocus
             onClicked: root.dismissRequested(root.toastId)
 
-            Accessible.name: qsTr("Close notification")
+            Accessible.name: root.severity === "progress" ? qsTr("Hide notification (upload continues)")
+                                                          : qsTr("Close notification")
 
             contentItem: Item {
                 Image {

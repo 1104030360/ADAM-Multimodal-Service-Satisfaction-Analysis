@@ -169,6 +169,10 @@ def harness(tmp_path):
         assert engine.rootObjects(), warnings
         window = engine.rootObjects()[-1]
         wait_until(window.isExposed)
+        # toast 只在視窗作用中時計時（DS-21）。不明確要求的話，哪個視窗作用中要看前一個測試留下什麼，
+        # 單獨跑會過、整批跑偶爾不過：所以每個 harness 視窗都先變成作用中，和使用者看著的前景視窗一樣
+        window.requestActivate()
+        wait_until(window.isActive)
         return window
 
     yield SimpleNamespace(load=load, warnings=warnings)

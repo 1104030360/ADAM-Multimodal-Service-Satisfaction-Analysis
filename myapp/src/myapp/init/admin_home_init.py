@@ -961,7 +961,6 @@ class AdminHome(QObject):
         super().__init__(parent)
         self.account_id = account_id
         self.services = services
-        self._db_connector = None  # 只有明細頁（MediaService，第三波）還用舊的共用連線
         self._profile = AccountProfile(services, account_id, self)
         self.serviceScoreManager = ServiceScoreManager(services, self)
         self.rankingModel = RankingModel(services, self)
@@ -970,7 +969,7 @@ class AdminHome(QObject):
         self.accountManager = AccountManager(services, self)
         self.chartsModel = ChartsModel()
         self.mediaModel = MediaModel()
-        self.pdfmodel = PDFHandler()
+        self.pdfmodel = PDFHandler(services)
         self._profile.profileChanged.connect(self._sync_level)
 
     @Property(QObject, constant=True)
@@ -995,8 +994,6 @@ class AdminHome(QObject):
 
     def close(self, owns_services=False):
         """主畫面關掉時：關掉明細頁用過的舊連線；services 是 launch() 自己建的，就一起收掉。"""
-        if self._db_connector is not None:
-            self._db_connector.close_connection()
         if owns_services:
             self.services.tasks.shutdown()
 

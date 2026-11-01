@@ -5,20 +5,18 @@ F2（前端重建第二波）：資料庫的讀寫都搬到 db lane（ENG-01、E
 - 頁面的資料一律是屬性（Property＋notify），清單是增量模型（RowListModel），不再用一次性的 signal 推資料（ENG-08）。
   每個區塊都有 loading、error、ready 三種狀態；「沒有資料」由頁面依資料判斷（DS-25～27、DS-33）。
 - db lane 的工作都是 fn(token, report)，裡面用 services.db.cursor()；預存程序用 execute("CALL …")。
-- 還沒搬的（第三波）：明細頁的下載（MediaService）、送出分析的 POST、錄影視窗（RecordWidget）、報表（PDFHandler）。
+- F3、F4（第三波）：錄影存檔在背景（record_widget.py 的 RecordingSaver）、明細頁和報表在 media.py、
+  送出分析在 ServiceModel、分析完成的通知在 watcher.py。
 """
 import logging
 import sys
 import time
 import requests
 import os
-from mysql.connector import Error
-from PySide6.QtGui import QImage
 from PySide6.QtCore import QAbstractListModel, QModelIndex, QObject, Property, Qt, QTimer, QUrl, Signal, Slot
 from datetime import datetime, timedelta
 import pyaudio
 from pathlib import Path
-from myapp.database import DatabaseConnector
 from myapp.db_lane import DbLane
 from myapp.notifications import Notifier, user_message
 from myapp.services import AppServices
@@ -26,10 +24,7 @@ from myapp.tasks import TaskRunner
 from myapp.ui_prefs import UiPrefs
 from myapp.watcher import POLL_KEY as WATCHER_KEY, AnalysisWatcher, DockAttention
 from .record_widget import QuitGuard, RecordingSaver, RecordWidget
-from myapp import storage
-import shutil
 import cv2
-import fitz
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -1005,7 +1000,7 @@ class ServerHome(QObject):
         self.serviceManager = ServiceManager(services, account_id)
         self.chartsModel = ChartsModel()
         self.mediaModel = MediaModel()
-        self.pdfmodel = PDFHandler()
+        self.pdfmodel = PDFHandler(services)
 
     @Property(str, notify=accountNameChanged)
     def accountName(self):

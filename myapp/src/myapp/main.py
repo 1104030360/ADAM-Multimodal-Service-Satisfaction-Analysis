@@ -132,7 +132,7 @@ def main():
 
         def on_app_about_to_quit():
             main_window.tasks.shutdown()  # 先取消背景工作，不等它們結束（ENG-14）
-            DatabaseConnector.close_shared()  # 還沒搬到 db lane 的地方（明細頁、管理員端）用過的舊連線
+            DatabaseConnector.close_shared()  # 沒拿到 services 的舊呼叫方式（只剩測試）建過的舊連線；app 本身不會建立
 
         app.aboutToQuit.connect(on_app_about_to_quit)
 
