@@ -1,68 +1,459 @@
-"""管理員端不需要真的資料庫的規則：帳號等級、共用連線、排名的平均（步驟 2-4、4-2、4-3）。"""
-import gc
+"""管理員端不需要真的資料庫的規則：帳號等級與必填欄位、排名、趨勢的空白日子、日期格式、區塊的狀態。
+
+背景工作用真的 TaskRunner，db lane 換成假的 DbLane（FakeLane）：查詢的結果、例外都由測試決定。
+"""
+from contextlib import contextmanager
+from datetime import datetime
 from types import SimpleNamespace
 
-from myapp.init.admin_home_init import AccountManager, RankingModel, TrendDataManager
-from tests.fakes import FakeConnection, FakeDatabase
+import mysql.connector
+import pytest
+
+from myapp.init import admin_home_init
+from myapp.init.admin_home_init import (AccountManager, AccountProfile, RankingModel, ServiceManager,
+                                        ServiceScoreManager, TrendDataManager, as_runs, rank, trend_points)
+from myapp.notifications import Notifier
+from myapp.tasks import TaskRunner
+from tests.integration.helpers import toasts, wait_until
 
 
-def connector(rows=()):
-    """只有 .connection 的假 DatabaseConnector；查詢一律回傳 rows。"""
-    return SimpleNamespace(connection=FakeConnection(FakeDatabase(rows=rows)))
+class FakeCursor:
+    def __init__(self, lane):
+        self.lane = lane
+        self.rowcount = 1
+
+    def execute(self, sql, params=()):
+        self.lane.calls.append((" ".join(sql.split()), params))
+        if self.lane.error is not None:
+            raise self.lane.error
+
+    def fetchone(self):
+        return self.lane.rows[0] if self.lane.rows else None
+
+    def fetchall(self):
+        return list(self.lane.rows)
 
 
-def emitted_ranking(rows):
-    """回傳 updateRanking 送出的四個清單：顧客前 5、顧客後 5、服務人員前 5、服務人員後 5。"""
-    model = RankingModel(connector(rows))
-    lists = []
-    model.updateRanking.connect(lambda *ranking: lists.extend(ranking))
-    model.load_ranking()
-    return lists
+class FakeLane:
+    """取代 DbLane：記下每一句 SQL；rows 是查詢的結果，error 是要丟出的例外。"""
+
+    def __init__(self, rows=(), error=None):
+        self.rows = list(rows)
+        self.error = error
+        self.calls = []
+
+    @contextmanager
+    def cursor(self, dictionary=False):
+        yield FakeCursor(self)
 
 
-def test_cannot_add_or_update_account_above_own_level():
-    manager = AccountManager("3", db_connector=None)  # None：只要碰到資料庫就會出錯
-    results = []
-    manager.accountAdded.connect(lambda ok, message: results.append(ok))
-    manager.accountUpdated.connect(lambda ok, message: results.append(ok))
-    manager.add_account("new_admin", "pw", "新管理員", "4", "管理員")
-    manager.update_account("acc-9", "boss", "pw", "老闆", "5", "管理員")
-    assert results == [False, False]
+@pytest.fixture
+def services():
+    services = SimpleNamespace(tasks=TaskRunner(), notifier=Notifier(), db=FakeLane(), ui_prefs=None)
+    yield services
+    services.tasks.shutdown()
 
 
-def test_dropping_account_manager_keeps_shared_connection_open():
-    connection = FakeConnection()
-    shared = SimpleNamespace(connection=connection, close_connection=connection.close)
-    manager = AccountManager("5", shared)
-    del manager
-    gc.collect()
-    assert connection.is_connected()  # 整個 app 共用這條連線，不能跟著物件回收被關掉
+TASK_KEYS = ("account:add", "account:update", "admin:profile", "admin:scores", "admin:ranking", "admin:trends",
+             "admin:search", "admin:staff-names")
+
+
+def settle(services):
+    """等管理員端的背景工作都交回結果（on_ok、on_err 在 GUI 執行緒執行）。"""
+    wait_until(lambda: not any(services.tasks.isBusy(key) for key in TASK_KEYS))
+
+
+def mysql_error(errno, msg):
+    return mysql.connector.Error(msg=msg, errno=errno)
+
+
+# ---------------------------------------------------------------- 新增帳號：欄位與等級（D9、DS-52）
+
+
+@pytest.fixture
+def accounts(services):
+    """等級 3 的管理員的 AccountManager，以及它發出的 (成功與否, 訊息) 和焦點要求。"""
+    manager = AccountManager(services)
+    manager.currentLevel = 3
+    events = SimpleNamespace(added=[], updated=[], focus=[])
+    manager.accountAdded.connect(lambda ok, message: events.added.append((ok, message)))
+    manager.accountUpdated.connect(lambda ok, message: events.updated.append((ok, message)))
+    manager.focusRequested.connect(events.focus.append)
+    return manager, events
+
+
+def errors(manager):
+    return (manager.usernameError, manager.passwordError, manager.nameError, manager.levelError)
+
+
+def test_assignable_levels_go_up_to_own_level(services):
+    manager = AccountManager(services)
+    assert manager.assignableLevels == []  # 還不知道自己的等級：選單是空的
+    manager.currentLevel = 3
+    assert manager.assignableLevels == [1, 2, 3]
+
+
+def test_empty_required_fields_are_reported_and_nothing_is_saved(services, accounts):
+    manager, events = accounts
+    assert not manager.addAccount("  ", "", " ", "1", "")
+    assert errors(manager) == ("Enter a username.", "Enter a password.", "Enter a name.", "")
+    assert events.focus == ["username"]  # 焦點移到第一個有錯的欄位
+    assert events.added == [(False, "Enter a username.")]
+    assert services.db.calls == []
+
+    manager.clearFieldError("username")  # 使用者改了這個欄位：它的錯誤先拿掉
+    assert errors(manager) == ("", "Enter a password.", "Enter a name.", "")
+
+
+def test_level_above_own_level_is_rejected_before_saving(services, accounts):
+    manager, events = accounts
+    assert not manager.addAccount("boss", "pw", "老闆", "5", "")
+    assert manager.levelError == "Level 5 is above your level (3). Choose level 3 or lower."
+    assert events.focus == ["level"]
+    assert not manager.updateAccount("acc-9", "boss", "pw", "老闆", "4", "")  # 修改也一樣擋
+    assert events.updated == [(False, "Level 4 is above your level (3). Choose level 3 or lower.")]
+    assert services.db.calls == []
+
+
+@pytest.mark.parametrize("level, message", [
+    ("", "Choose a level."),
+    ("0", "Choose a level."),
+    ("abc", "Choose a level."),
+])
+def test_missing_or_invalid_level_is_a_field_error(accounts, level, message):
+    manager, _ = accounts
+    assert not manager.addAccount("x", "pw", "X", level, "")
+    assert manager.levelError == message
+
+
+def test_level_is_unknown_until_the_profile_loads(services):
+    manager = AccountManager(services)
+    assert not manager.addAccount("x", "pw", "X", "1", "")
+    assert manager.levelError == "Your account level hasn't loaded yet. Try again in a moment."
+
+
+def test_added_account_is_hashed_and_announced(services, accounts):
+    manager, events = accounts
+    assert manager.addAccount(" new_staff ", "S3cret-pass", "新同事", "1", "  ")
+    assert manager.busy
+    assert not manager.addAccount("other", "pw", "Other", "1", "")  # 還在新增：不重複送出
+    settle(services)
+    sql, params = services.db.calls[0]
+    assert sql.startswith("INSERT INTO tbl_account")
+    assert params[0] == "new_staff" and params[1].startswith("pbkdf2_sha256$") and params[2:] == ("新同事", "1", None)
+    assert events.added == [(True, "Account added")]
+    [toast] = toasts(services.notifier)
+    assert (toast["severity"], toast["title"], toast["detail"]) == ("success", "Account added",
+                                                                    "new_staff · 新同事 · Level 1")
+    assert not manager.busy
+
+
+def test_messages_keep_user_text_that_looks_like_a_placeholder(services, accounts):
+    manager, _ = accounts
+    manager.addAccount("100%2off", "pw", "50%1", "1", "")
+    settle(services)
+    [toast] = toasts(services.notifier)
+    assert toast["detail"] == "100%2off · 50%1 · Level 1"  # 名字裡的「%2」「%1」不會被當成要替換的位置
+
+
+def test_duplicate_username_becomes_a_field_error(services, accounts):
+    manager, events = accounts
+    services.db.error = mysql_error(1062, "Duplicate entry 'staff07' for key 'tbl_account.uk_account_username'")
+    manager.addAccount("staff07", "pw", "王小明", "1", "")
+    settle(services)
+    assert manager.usernameError == "Username staff07 is already taken. Choose another one."
+    assert events.focus == ["username"] and events.added[-1][0] is False
+    assert toasts(services.notifier) == []  # 欄位錯誤就夠了，不另外跳通知
+
+
+def test_level_rejected_by_the_database_becomes_a_field_error(services, accounts):
+    manager, events = accounts
+    services.db.error = mysql_error(3819, "Check constraint 'chk_account_level' is violated.")
+    manager.addAccount("x", "pw", "X", "2", "")
+    settle(services)
+    assert manager.levelError == "Choose a level."
+    assert events.focus == ["level"]
+
+
+def test_offline_add_offers_retry_that_reuses_the_hash(services, accounts):
+    manager, events = accounts
+    services.db.error = mysql_error(2003, "Can't connect to MySQL server on '127.0.0.1:1' (61)")
+    manager.addAccount("new_staff", "S3cret-pass", "新同事", "1", "")
+    settle(services)
+    [toast] = toasts(services.notifier)
+    assert (toast["severity"], toast["title"], toast["actionLabel"], toast["timeoutMs"]) == (
+        "error", "Account wasn't saved", "Retry", 0)  # 常駐，直到重試或關掉
+    assert toast["detail"] == "Can't reach the database. Your entries are still here, so you can retry."
+    first_hash = services.db.calls[0][1][1]
+
+    services.db.error = None
+    services.notifier.trigger(toast["toastId"])  # 按通知上的 Retry
+    settle(services)
+    assert services.db.calls[1][1][1] == first_hash  # 明碼已經丟掉了，重試用同一個雜湊
+    assert [(t["severity"], t["title"]) for t in toasts(services.notifier)] == [("success", "Account added")]
+    assert events.added == [(False, toast["detail"]), (True, "Account added")]
+
+
+def test_retry_that_hits_a_duplicate_clears_the_stale_offline_toast(services, accounts):
+    manager, events = accounts
+    services.db.error = mysql_error(2013, "Lost connection to MySQL server during query")
+    manager.addAccount("staff07", "pw", "王小明", "1", "")
+    settle(services)
+    assert [t["title"] for t in toasts(services.notifier)] == ["Account wasn't saved"]
+
+    # 斷線前其實已經有人用了這個帳號名稱：改按表單上的 Add Account，這次得到 1062
+    services.db.error = mysql_error(1062, "Duplicate entry 'staff07' for key 'tbl_account.uk_account_username'")
+    manager.addAccount("staff07", "pw", "王小明", "1", "")
+    settle(services)
+    assert toasts(services.notifier) == []  # 「沒有存到」的通知不留著，問題寫在欄位上
+    assert manager.usernameError == "Username staff07 is already taken. Choose another one."
+    services.notifier.actionTriggered.emit(AccountManager.RETRY_ACTION, 0)  # 舊通知的 Retry 也不會再送一次
+    assert not manager.busy
+
+
+def test_other_database_errors_are_reported_without_retry(services, accounts):
+    manager, events = accounts
+    services.db.error = mysql_error(1146, "Table 'adam.tbl_account' doesn't exist")
+    manager.addAccount("x", "pw", "X", "1", "")
+    settle(services)
+    [toast] = toasts(services.notifier)
+    assert (toast["title"], toast["actionLabel"]) == ("Account wasn't saved", "")
+    assert toast["detail"] == "Database request failed. If this keeps happening, contact your administrator."
+
+
+def test_update_account_reports_success_and_failure(services, accounts):
+    manager, events = accounts
+    assert manager.updateAccount("acc-2", "staff02", "New-pass", "員工", "1", "")
+    settle(services)
+    sql, params = services.db.calls[0]
+    assert sql.startswith("UPDATE tbl_account") and params[-1] == "acc-2" and params[1].startswith("pbkdf2_sha256$")
+    assert events.updated == [(True, "Account updated")]
+    services.db.error = mysql_error(1062, "Duplicate entry 'staff01' for key 'tbl_account.uk_account_username'")
+    manager.updateAccount("acc-2", "staff01", "pw", "員工", "1", "")
+    settle(services)
+    assert manager.usernameError == "Username staff01 is already taken. Choose another one."
+    services.db.error = mysql_error(2013, "Lost connection to MySQL server during query")
+    manager.updateAccount("acc-2", "staff02", "pw", "員工", "1", "")
+    settle(services)
+    assert toasts(services.notifier)[0]["title"] == "Account wasn't updated"
+    assert [ok for ok, _ in events.updated] == [True, False, False]
+
+
+# ---------------------------------------------------------------- 帳號資料（側邊欄的名字、等級上限）
+
+
+def test_profile_loads_name_and_level_in_the_background(services):
+    services.db.rows = [{"account_name": "系統管理員（佔位）", "account_level": "5"}]
+    profile = AccountProfile(services, "acc-1")
+    assert profile.state == "loading" and profile.name == ""
+    profile.load()
+    settle(services)
+    assert (profile.state, profile.name, profile.level) == ("ready", "系統管理員（佔位）", 5)
+
+
+def test_profile_failure_offers_retry_and_clears_the_toast_once_loaded(services):
+    services.db.error = mysql_error(2003, "Can't connect to MySQL server")
+    profile = AccountProfile(services, "acc-1")
+    profile.load()
+    settle(services)
+    assert profile.state == "error"
+    assert profile.errorDetail == "Can't reach the database. Check your network and try again."
+    [toast] = toasts(services.notifier)
+    assert toast["actionLabel"] == "Retry"
+
+    services.db.error = None
+    services.db.rows = [{"account_name": "管理員", "account_level": "3"}]
+    services.notifier.trigger(toast["toastId"])
+    settle(services)
+    assert (profile.state, profile.level) == ("ready", 3)
+    assert toasts(services.notifier) == []
+
+
+def test_missing_account_is_an_error_not_level_zero(services):
+    profile = AccountProfile(services, "gone")
+    profile.load()
+    settle(services)
+    assert (profile.state, profile.level) == ("error", 0)
+
+
+# ---------------------------------------------------------------- 排名（UX-31）：平均在 SQL 裡算，-1 不算
 
 
 def test_ranking_ignores_missing_scores():
-    top_customers, _, top_servers, _ = emitted_ranking([
-        ("小明", 80.0, -1.0),  # -1 代表那一項沒有資料
-        ("小明", -1.0, 60.0),
-        ("小華", -1.0, -1.0),  # 全部沒有資料的人不排名（也不能除以 0）
+    top_customers, _, top_staff, _ = rank([
+        ("小明", 80.0, None),  # SQL 的 AVG(NULLIF(…, -1))：全部是 -1 時是 NULL
+        ("小華", None, 60.0),
+        ("小美", -1, -1),       # 萬一沒有先排除 -1，這裡也不排名
     ])
     assert top_customers == [{"name": "小明", "score": 80.0}]
-    assert top_servers == [{"name": "小明", "score": 60.0}]
+    assert top_staff == [{"name": "小華", "score": 60.0}]
 
 
 def test_ranking_keeps_best_and_worst_five():
-    rows = [("員工1", 10.0, 90.0), ("員工1", 10.0, 90.0), ("員工1", 11.0, 90.0)]
-    rows += [(f"員工{n}", n * 10.0, 100 - n * 10.0) for n in range(2, 8)]
-    top_customers, bottom_customers, top_servers, bottom_servers = emitted_ranking(rows)
+    rows = [("員工1", 31 / 3, 90.0)] + [(f"員工{n}", n * 10.0, 100 - n * 10.0) for n in range(2, 8)]
+    top_customers, bottom_customers, top_staff, bottom_staff = rank(rows)
     assert [p["name"] for p in top_customers] == ["員工7", "員工6", "員工5", "員工4", "員工3"]
     assert [p["name"] for p in bottom_customers] == ["員工1", "員工2", "員工3", "員工4", "員工5"]
-    assert bottom_customers[0]["score"] == 10.33  # (10 + 10 + 11) / 3，取到小數第 2 位
-    assert [p["name"] for p in top_servers] == ["員工1", "員工2", "員工3", "員工4", "員工5"]
-    assert [p["name"] for p in bottom_servers] == ["員工7", "員工6", "員工5", "員工4", "員工3"]
+    assert bottom_customers[0]["score"] == 10.33  # 取到小數第 2 位
+    assert [p["name"] for p in top_staff] == ["員工1", "員工2", "員工3", "員工4", "員工5"]
+    assert [p["name"] for p in bottom_staff] == ["員工7", "員工6", "員工5", "員工4", "員工3"]
 
 
-def test_trends_with_invalid_year_emit_nothing():
-    manager = TrendDataManager(connector())
-    points = []
-    manager.serverPointAdded.connect(lambda day, score: points.append(day))
-    manager.load_trends_for_month(10, 0)  # 年份選單還沒準備好時，QML 會傳 Number("") = 0
-    assert points == []
+def test_ranking_section_states(services):
+    model = RankingModel(services)
+    assert model.state == "loading"
+    services.db.rows = [("小華", None, None)]  # 有服務但沒有任何分數：沒有人可以排名
+    assert model.refresh()
+    assert not model.refresh()  # 還在載入：不重複送，結果回來時一樣會更新
+    settle(services)
+    assert len(services.db.calls) == 1
+    assert (model.state, model.rankedCount) == ("empty", 0)
+
+    services.db.rows = [("小明", 80.0, 70.0)]
+    model.refresh()
+    assert model.refreshing and model.state == "empty"  # 重新整理時舊的畫面留著
+    settle(services)
+    assert (model.state, model.refreshing, model.rankedCount) == ("ready", False, 1)
+
+    services.db.error = mysql_error(2013, "Lost connection to MySQL server during query")
+    model.refresh()
+    settle(services)
+    assert (model.state, model.failureCount) == ("error", 1)
+    assert model.errorTechnical.startswith("Error: 2013")
+    model.refresh()
+    settle(services)
+    assert model.failureCount == 2  # 連續失敗的次數，InlineError ≥ 3 時多一行建議
+
+
+# ---------------------------------------------------------------- 趨勢（UX-30）：沒有資料的日子是空白
+
+
+def test_trend_days_without_scores_are_gaps_not_zero():
+    staff, customer = trend_points([(1, 70.0, 80.0), (2, None, 75.0), (5, 90.0, None)])
+    assert staff == {1: 70.0, 5: 90.0}
+    assert customer == {1: 80.0, 2: 75.0}
+    assert as_runs({1: 1.0, 2: 2.0, 4: 4.0, 6: 6.0, 7: 7.0}) == [
+        [{"x": 1, "y": 1.0}, {"x": 2, "y": 2.0}], [{"x": 4, "y": 4.0}], [{"x": 6, "y": 6.0}, {"x": 7, "y": 7.0}]]
+
+
+def test_trends_with_invalid_year_query_nothing(services):
+    manager = TrendDataManager(services)
+    assert not manager.load(10, 0)  # 年份選單還沒準備好時，QML 會傳 Number("") = 0
+    assert not manager.load(13, 2026)
+    assert services.db.calls == [] and manager.state == "loading"
+
+
+def test_trends_cover_the_selected_month(services):
+    manager = TrendDataManager(services)
+    services.db.rows = [(3, 70.0, None)]
+    manager.load(2, 2028)  # 閏年的 2 月
+    settle(services)
+    _, (start, end) = services.db.calls[0]
+    assert (start.isoformat(), end.isoformat()) == ("2028-02-01T00:00:00", "2028-03-01T00:00:00")
+    assert (manager.month, manager.year, manager.daysInMonth) == (2, 2028, 29)
+    assert manager.staffPoints == [{"x": 3, "y": 70.0}] and manager.customerPoints == []
+    assert manager.state == "ready"
+    services.db.rows = []
+    assert manager.retry()
+    settle(services)
+    assert manager.state == "empty"
+
+
+def test_fill_series_rejects_objects_that_are_not_series(services):
+    with pytest.raises(TypeError):
+        TrendDataManager(services).fillSeries(services.notifier, [])
+
+
+# ---------------------------------------------------------------- 首頁分數：一個查詢算每日和每週
+
+
+def score_row(daily_count, weekly_count, daily=None, weekly=None):
+    row = {"daily_count": daily_count, "weekly_count": weekly_count}
+    for period, value in (("daily", daily), ("weekly", weekly)):
+        for who in ("customer", "server"):
+            for key in admin_home_init.SCORE_KEYS:
+                row[f"{period}_{who}_{key}"] = value
+    return row
+
+
+def test_scores_without_data_today_are_empty_not_zero(services):
+    manager = ServiceScoreManager(services)
+    assert (manager.dailyState, manager.weeklyState) == ("loading", "loading")
+    services.db.rows = [score_row(0, 2, weekly=75.0)]
+    manager.refresh()
+    settle(services)
+    assert (manager.state, manager.dailyState, manager.weeklyState) == ("ready", "empty", "ready")
+    assert manager.dailyCustomerScores == {"total": -1.0, "text": -1.0, "audio": -1.0, "facial": -1.0}
+    assert manager.weeklyStaffScores["total"] == 75.0 and manager.weeklyCount == 2
+    assert len(services.db.calls) == 1  # 每日和每週是同一個查詢
+
+    services.db.rows = [score_row(3, 3)]  # 有服務，但分數全是 -1（AVG 是 NULL）
+    manager.refresh()
+    settle(services)
+    assert (manager.state, manager.dailyState, manager.weeklyState) == ("empty", "empty", "empty")
+
+
+def test_scores_error_state_reaches_both_periods(services):
+    manager = ServiceScoreManager(services)
+    services.db.error = mysql_error(2003, "Can't connect to MySQL server")
+    manager.refresh()
+    settle(services)
+    assert (manager.dailyState, manager.weeklyState) == ("error", "error")
+
+
+# ---------------------------------------------------------------- 服務查詢：日期格式、條件
+
+
+def test_search_rejects_bad_dates_without_querying(services):
+    manager = ServiceManager(services)
+    assert manager.state == "idle"
+    assert not manager.search("", "2026/10/01", "2026-10-31")
+    assert manager.startDateError == "Enter the date as YYYY-MM-DD, for example 2026-10-31."
+    assert manager.endDateError == ""
+    assert services.db.calls == [] and manager.state == "idle"
+    manager.clearDateError("start")
+    assert manager.startDateError == ""
+
+
+def test_search_covers_the_whole_end_day_and_remembers_the_query(services):
+    manager = ServiceManager(services)
+    assert manager.search("王小明", " 2026-10-01 ", "2026-10-31")
+    settle(services)
+    sql, params = services.db.calls[0]
+    assert "a.account_name = %s" in sql and params[0] == "王小明"
+    assert [p.isoformat() for p in params[1:]] == ["2026-10-01T00:00:00", "2026-11-01T00:00:00"]
+    assert manager.state == "empty"
+    assert manager.lastQuery == {"name": "王小明", "start": "2026-10-01", "end": "2026-10-31"}
+
+    services.db.error = mysql_error(2013, "Lost connection to MySQL server during query")
+    manager.retrySearch()  # 區塊錯誤的 Retry 用同一組條件
+    settle(services)
+    assert manager.state == "error" and services.db.calls[1] == services.db.calls[0]
+
+
+def test_search_with_only_an_end_date(services):
+    manager = ServiceManager(services)
+    services.db.rows = [{"service_id": "S20261030090000", "name": "王小明", "start_datetime": datetime(2026, 10, 30, 9)}]
+    assert manager.search("", "", "2026-10-31")
+    settle(services)
+    sql, params = services.db.calls[0]
+    assert "s.service_start >= %s" not in sql and [p.isoformat() for p in params] == ["2026-11-01T00:00:00"]
+    assert manager.state == "ready" and manager.lastQuery == {"name": "", "start": "", "end": "2026-10-31"}
+    assert manager.resultsModel.rowCount() == 1
+
+
+def test_staff_names_load_in_the_background(services):
+    manager = ServiceManager(services)
+    services.db.rows = [("王小明",), ("服務人員（佔位）",)]
+    assert manager.loadNames()
+    settle(services)
+    assert (manager.namesState, manager.names) == ("ready", ["王小明", "服務人員（佔位）"])
+    services.db.error = mysql_error(2003, "Can't connect to MySQL server")
+    manager.loadNames()
+    assert manager.namesState == "loading"
+    settle(services)
+    assert manager.namesState == "error" and manager.names == ["王小明", "服務人員（佔位）"]  # 舊的名單留著
+    services.db.error, services.db.rows = None, []
+    manager.loadNames()
+    settle(services)
+    assert manager.namesState == "empty"

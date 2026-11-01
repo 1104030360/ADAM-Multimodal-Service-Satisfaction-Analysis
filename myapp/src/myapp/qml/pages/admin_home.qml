@@ -2,6 +2,7 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import QtQuick.Window 2.15
+import "../components"
 
 Window {
     id: window
@@ -47,7 +48,8 @@ Window {
 
             Text {
                 id: username
-                text: adminHome ? adminHome.getAccountName() : ""
+                // 帳號名稱在背景載入（ENG-06）：載入前是空的，不在 binding 裡同步查資料庫
+                text: adminHome ? adminHome.profile.name : ""
                 font.pixelSize: 24
                 color: "#ffffff"
                 horizontalAlignment: Text.AlignHCenter
@@ -234,8 +236,8 @@ Window {
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
                         console.log("Add Page clicked")
+                        // 不再順便載入首頁的資料：新增帳號頁用不到（UX-32）
                         mainContentLoader.source = "../../qml/pages/admin_add_page.qml"
-                        adminHome.onLoadHome()
                     }
                 }
             }
@@ -620,5 +622,30 @@ Window {
                 item.setWindow(window)
             }
         }
+    }
+
+    // 減少動態效果（ENG-18、DS-43）：設定頁的選項、系統設定、測試的 animationScale 都經由 Theme 生效。
+    // uiPrefs 由 MainWindow（或 launch()）註冊；是 null 時不寫，Theme 用自己的預設值
+    Binding {
+        target: Theme
+        property: "motionMode"
+        when: !!uiPrefs
+        value: uiPrefs ? uiPrefs.motionMode : 0
+    }
+
+    Binding {
+        target: Theme
+        property: "animationScale"
+        when: !!uiPrefs
+        value: uiPrefs ? uiPrefs.animationScale : 1
+    }
+
+    // 通知堆疊（DS-21）：內容區的右下角、距邊 24，蓋在頁面和對話框上面。
+    // 延伸到內容區底部的清單要設 bottomMargin: toastHost.occupiedHeight，最後一列才捲得出來
+    ToastHost {
+        id: toastHost
+        center: notifier
+        x: window.width - width - Theme.spaceXL
+        y: window.height - height - Theme.spaceXL
     }
 }
