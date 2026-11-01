@@ -228,6 +228,14 @@ Window {
         userName: adminHome ? adminHome.profile.name : ""
         userRole: adminHome && adminHome.profile.level > 0 ? qsTr("Admin · level %1").arg(adminHome.profile.level)
                                                            : qsTr("Admin")
+        // 搜尋服務 ID（UD5、T32）：放在標題和主要動作之間；明細頁沒有（設計稿的明細頁頁首是「‹ Services」和服務 ID）
+        ServiceSearchField {
+            objectName: "serviceSearchField"
+            search: serviceSearch
+            wide: header.wordmark
+            visible: window.currentPage !== "admin_service_detail_page.qml"
+            onChosen: (serviceId, startTime) => window.openServiceDetail(serviceId, startTime)
+        }
     }
 
     Loader {

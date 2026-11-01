@@ -966,7 +966,8 @@ def test_qmldir_declares_theme_as_singleton_and_the_thirteen_components():
     assert lines == ["singleton Theme 1.0 Theme.qml"] + [
         f"{name} 1.0 {name}.qml" for name in ("Toast", "ToastHost", "StatusChip", "TransferProgress", "BusyButton",
                                                "EmptyState", "InlineError", "FieldError", "ConfirmDialog",
-                                               "SidebarButton", "SettingsView", "Card", "PageHeader")]
+                                               "SidebarButton", "SettingsView", "Card", "PageHeader",
+                                               "ServiceSearchField")]
 
 
 def test_component_qml_files_use_crlf():

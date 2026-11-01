@@ -296,6 +296,14 @@ Window {
         onActionClicked: window.activateNav(recordButton)
         userName: serverHome ? serverHome.accountName : ""  // 在 db lane 載入，到了就更新
         userRole: qsTr("Staff")
+        // 搜尋服務 ID（UD5、T32）：放在標題和主要動作之間；明細頁沒有（設計稿的明細頁頁首是「‹ Services」和服務 ID）
+        ServiceSearchField {
+            objectName: "serviceSearchField"
+            search: serviceSearch
+            wide: header.wordmark
+            visible: window.currentPage !== "server_service_detail_page.qml"
+            onChosen: (serviceId, startTime) => window.openServiceDetail(serviceId, startTime)
+        }
     }
 
     Loader {

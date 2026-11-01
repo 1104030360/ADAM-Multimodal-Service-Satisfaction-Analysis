@@ -12,3 +12,4 @@ SidebarButton 1.0 SidebarButton.qml
 SettingsView 1.0 SettingsView.qml
 Card 1.0 Card.qml
 PageHeader 1.0 PageHeader.qml
+ServiceSearchField 1.0 ServiceSearchField.qml

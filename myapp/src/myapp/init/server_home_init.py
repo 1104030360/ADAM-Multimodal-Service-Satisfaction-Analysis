@@ -22,6 +22,7 @@ from pathlib import Path
 from myapp.db_lane import DbLane
 from myapp.notifications import Notifier, user_message
 from myapp.pending_saves import PendingSaveStore
+from myapp.search import ServiceSearch
 from myapp.services import AppServices
 from myapp.tasks import TaskRunner
 from myapp.ui_prefs import UiPrefs, open_settings
@@ -1447,6 +1448,7 @@ class ServerHome(QObject):
         self.chartsModel = ChartsModel()
         self.mediaModel = MediaModel()
         self.pdfmodel = PDFHandler(services)
+        self.serviceSearch = ServiceSearch.for_staff(services, account_id, parent=self)  # 頁首的搜尋（只查自己的）
 
     @Property(str, notify=accountNameChanged)
     def accountName(self):
@@ -1601,6 +1603,7 @@ def launch(engine, account_id, services=None):
     context.setContextProperty("chartsModel", home.chartsModel)
     context.setContextProperty("mediaModel", home.mediaModel)
     context.setContextProperty("pdfHandler", home.pdfmodel)
+    context.setContextProperty("serviceSearch", home.serviceSearch)
 
     opened = len(engine.rootObjects())
     qml_file = Path(__file__).resolve().parent.parent / "qml/pages/server_home.qml"

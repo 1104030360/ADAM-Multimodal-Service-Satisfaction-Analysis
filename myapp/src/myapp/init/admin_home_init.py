@@ -22,6 +22,7 @@ from PySide6.QtGui import QStandardItem, QStandardItemModel
 from myapp.db_lane import DbLane
 from myapp.notifications import Notifier, user_message
 from myapp.passwords import hash_password
+from myapp.search import ServiceSearch
 from myapp.services import AppServices
 from myapp.tasks import TaskRunner
 from myapp.ui_prefs import UiPrefs
@@ -979,6 +980,7 @@ class AdminHome(QObject):
         self.chartsModel = ChartsModel()
         self.mediaModel = MediaModel()
         self.pdfmodel = PDFHandler(services)
+        self.serviceSearch = ServiceSearch.for_admin(services, parent=self)  # 頁首的搜尋（全部＋員工名字）
         self._profile.profileChanged.connect(self._sync_level)
 
     @Property(QObject, constant=True)
@@ -1036,6 +1038,7 @@ def launch(engine, account_id, services=None):
         "chartsModel": home.chartsModel,
         "mediaModel": home.mediaModel,
         "pdfHandler": home.pdfmodel,
+        "serviceSearch": home.serviceSearch,
     }.items():
         context.setContextProperty(name, obj)
     # 外殼的 ToastHost、Theme 的 Binding 用這幾個；MainWindow 已經註冊同一份時不必重設（重設會讓綁定重新計算）
