@@ -7,7 +7,7 @@ Window {
     width: 1920
     height: 1080
     title: qsTr("Admin Home")
-    visibility: "FullScreen"
+    // 視窗模式（全螢幕或視窗）由 launch() 照這個帳號上次的模式決定（new-feature PLAN 13.2 S1）
     color: Theme.contentBg  // 換頁時新頁面還沒建好的那幾個畫格，內容區是內容頁的底色
 
     // 減少動態效果（ENG-18、DS-43）：設定頁的選項、系統設定、測試的 animationScale 都經由 Theme 生效。

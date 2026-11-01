@@ -48,7 +48,7 @@
 
 ## 介面的圖示（`qml/components/icons/`）
 
-共用元件、頁面和側邊欄的 62 個 SVG 圖示。它們放在 `myapp/src/myapp/qml/components/icons/`（側邊欄的在 `nav/`），不在這個資料夾，但來源和授權一起記在這裡。
+共用元件、頁面和側邊欄的 63 個 SVG 圖示。它們放在 `myapp/src/myapp/qml/components/icons/`（側邊欄的在 `nav/`），不在這個資料夾，但來源和授權一起記在這裡。
 
 - **來源**：[Lucide](https://lucide.dev)（https://github.com/lucide-icons/lucide）的 npm 套件 `lucide-static` 1.58.0，官方 tarball `lucide-static-1.58.0.tgz`（integrity `sha512-VFE2ZEq3yEwjBH0El9CA9lHgDWKKXPKgKxFzX+/JN1FPa4maQbtl/pT4B62aJkUEpODT5octDsyGy7tPVE2svQ==`，SHA-1 `838a9ef1c25275491cae326439c576ba0b930ef4`，和 npm registry 記錄的相同）。
   - 2026-11-01 新版介面（`docs/rebuild/new-UIUX/`）把 tarball 裡的 2159 個圖示放在本機的 `docs/rebuild/assets/sources/lucide-all/`，用 `docs/rebuild/assets/scripts/make_icon.py` 上色，兩個都被 git 忽略。
@@ -108,6 +108,7 @@
 | `video_actionPrimaryText.svg` | `actionPrimaryText` `#0E1013` | `OverviewCard.qml`、`record_widget.qml`、`server_home.qml` |  |
 | `video_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `record_widget.qml` |  |
 | `volume-2_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `ServiceDetailView.qml` |  |
+| `volume-x_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `ServiceDetailView.qml` |  |
 | `x_chromeIcon.svg` | `chromeIcon` `#E6E8EB` | `Toast.qml` | Feather |
 | `nav/brain-circuit_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | 側邊欄（`SidebarButton.qml`） |  |
 | `nav/brain-circuit_navItemCurrentText.svg` | `navItemCurrentText` `#0E1013` | 側邊欄（`SidebarButton.qml`） |  |
@@ -169,5 +170,6 @@ d764efc7d23340a615d7cec56ca0a6e7fb10ba2474559a2267535d21b66e0672  pause.svg
 fc3d8f3566fbce5eeb689eff876627c3c8dc242ff2e5516e3dc0783c3bb56a60  user-round-plus.svg
 898a1b8b815739f79aa95031428c2c11a35dd4b0492029ae407a8881250d489a  video.svg
 9b629a707fe10ea4f8da68359b3a6ca63cf48ce4e97bfcdb5820cbd70e3c1bf1  volume-2.svg
+a18b12a652ddfa64c87bccafe0425f1065eb20d56fe9709e97593e87c0eaa740  volume-x.svg
 4ab0e1e5031230da80a2ddaf9c8639bde234a974a1bc94b7dfbac7af14f55a25  x.svg
 ```

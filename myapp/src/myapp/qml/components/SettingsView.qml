@@ -8,6 +8,7 @@ Item {
 
     property var window: null       // 外殼的視窗（頁面的 setWindow）
     property var prefs: null        // UiPrefs（context property uiPrefs）；程式結束時可能先變成 null
+    property bool notificationsAvailable: false // 服務人員端：General 顯示分析完成通知、Dock 跳動的選項（S2）
 
     Flickable {
         anchors.fill: parent
@@ -33,6 +34,7 @@ Item {
                 width: parent.width
                 window: root.window
                 prefs: root.prefs
+                showNotifications: root.notificationsAvailable
             }
 
             SettingsDevices {

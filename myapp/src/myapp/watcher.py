@@ -11,6 +11,7 @@ AnalysisWatcher（服務人員端，server_home_init.launch() 建立）：
   由 ServiceModel 決定要不要跳，和清單的重新整理共用同一則。
 
 DockAttention：app 不在前景時，Dock 圖示跳動、加上徽章（ENG-17、D6），切回 app 時清掉徽章。不用系統通知的橫幅。
+帳號的偏好「Bounce Dock Icon」關掉時只是不跳，徽章照舊（new-feature PLAN 13.3 S2，T39）。
 """
 import logging
 import math
@@ -175,25 +176,32 @@ class AnalysisWatcher(QObject):
 class DockAttention(QObject):
     """app 不在前景時，讓使用者知道分析完成或失敗了（ENG-17、D6）。
 
-    - Dock 圖示跳動：外殼視窗的 alert(0)，會一直跳到使用者切回 app。
-    - Dock 圖示的徽章：這段期間收到幾則（完成＋失敗）。切回 app 時清掉。
+    - Dock 圖示跳動：外殼視窗的 alert(0)，會一直跳到使用者切回 app。prefs（UiPrefs）的 bounceDockIcon 是 False 時不跳
+      （S2）；每次提醒時才讀，設定頁改了馬上生效。沒有 prefs 時照舊會跳。
+    - Dock 圖示的徽章：這段期間收到幾則（完成＋失敗）。切回 app 時清掉。不受 bounceDockIcon 影響。
     - app 在前景時什麼都不做：toast 就夠了。不用系統通知中心的橫幅（要打包、要授權，PLAN F6）。
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, prefs=None):
         super().__init__(parent)
         self._unread = 0
+        self._prefs = prefs
         QGuiApplication.instance().applicationStateChanged.connect(self._state_changed)
 
     @property
     def unread(self):
         return self._unread
 
+    @property
+    def bounces(self):
+        """不在前景時要不要讓 Dock 圖示跳動（帳號的偏好，S2）。"""
+        return self._prefs is None or self._prefs.bounceDockIcon
+
     def request(self, window):
         """分析完成或失敗時呼叫。回傳是否真的提醒了（app 不在前景）。"""
         if QGuiApplication.applicationState() == Qt.ApplicationState.ApplicationActive:
             return False
-        if window is not None and shiboken6.isValid(window):
+        if self.bounces and window is not None and shiboken6.isValid(window):
             window.alert(0)
         self._unread += 1
         QGuiApplication.instance().setBadgeNumber(self._unread)

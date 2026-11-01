@@ -19,6 +19,9 @@ import "../components"
 // - 按 Details 立刻換到這頁（UX-22、ENG-04）；離開這一頁時取消還沒下載完的檔案，已經下載好的留在快取（T21）。
 // - 兩個分頁用 StackLayout 都留著：切到圖表再切回來，影片不會從頭開始（UX-25）。
 // - 等待不到 300 ms 不顯示文字（DS-25）。整頁一起捲動；在 1440×900 時影片的高度會縮到控制列也看得到。
+// - 音量和靜音（new-feature PLAN 13.2 S1，T39）：音量是帳號的偏好（uiPrefs.playbackVolume），調了自動記住，
+//   下次打開服務或 app 照它；每次打開一筆服務時照「Start Playback Muted」決定要不要先靜音。
+//   靜音只是播放器的狀態，不改音量（不會存成 0），取消靜音就回到原本的音量；拖音量也會取消靜音。都不會開始播放。
 Item {
     id: detail
 
@@ -29,6 +32,9 @@ Item {
     readonly property string pageState: media ? media.state : "idle"
     readonly property bool canPlay: media !== null && media.canPlay
     property int chartIndex: 0
+    readonly property var prefs: typeof uiPrefs !== "undefined" ? uiPrefs : null  // 帳號的播放偏好（S1）
+    property bool muted: false                      // 播放器現在是不是靜音（不保存）
+    readonly property string openedService: media ? media.serviceId : ""
 
     // 外殼的頁首（PageHeader）讀這三個；按「‹ Services」呼叫 goBack()
     readonly property string headerTitle: media && media.serviceId !== "" ? media.serviceId : qsTr("Service Details")
@@ -45,6 +51,24 @@ Item {
     Component.onDestruction: {
         if (detail.media)
             detail.media.close()
+    }
+
+    // 每次打開一筆服務（換到這一頁，或這一頁換了一筆）：照帳號的「Start Playback Muted」。只決定靜音，不會開始播放
+    Component.onCompleted: applyStartMuted()
+    onOpenedServiceChanged: {
+        if (openedService !== "")
+            applyStartMuted()
+    }
+
+    function applyStartMuted() {
+        muted = prefs !== null && prefs.startPlaybackMuted
+    }
+
+    // 拖動或用方向鍵調音量：記住（uiPrefs 等停下來才寫入磁碟），靜音中就順便取消靜音
+    function setVolume(value) {
+        muted = false
+        if (prefs)
+            prefs.playbackVolume = value
     }
 
     // 回到 Services（同步換頁，和以前的 Back 一樣：換頁的當下就取消還沒下載完的檔案）
@@ -165,9 +189,11 @@ Item {
         }
     }
 
-    // 淺色的滑桿：軌道 track、已經走過的 actionPrimary（UX-25：以前是 Material 預設的粉紅）
+    // 淺色的滑桿：軌道 track、已經走過的 actionPrimary（UX-25：以前是 Material 預設的粉紅）。
+    // dimmed（靜音中的音量）：還能拖，填色和把手變成 textMuted，看得出現在聽不到、也看得出取消靜音後的音量
     component GraphiteSlider: Slider {
         id: slider
+        property bool dimmed: false
         focusPolicy: Qt.StrongFocus
         implicitHeight: Theme.controlHeight
 
@@ -185,7 +211,7 @@ Item {
                 width: slider.visualPosition * parent.width
                 height: parent.height
                 radius: 2
-                color: slider.enabled ? Theme.actionPrimary : Theme.textDisabled
+                color: !slider.enabled ? Theme.textDisabled : slider.dimmed ? Theme.textMuted : Theme.actionPrimary
             }
         }
 
@@ -195,7 +221,8 @@ Item {
             implicitWidth: 16
             implicitHeight: 16
             radius: 8
-            color: !slider.enabled ? Theme.textDisabled : slider.pressed ? Theme.actionPrimaryPressed : Theme.actionPrimary
+            color: !slider.enabled ? Theme.textDisabled : slider.pressed ? Theme.actionPrimaryPressed
+                 : slider.dimmed ? Theme.textMuted : Theme.actionPrimary
 
             Rectangle {     // 鍵盤焦點框（DS-30）
                 visible: slider.visualFocus
@@ -714,12 +741,45 @@ Item {
                                         when: !positionSlider.pressed
                                     }
 
-                                    Image {
-                                        width: 18
-                                        height: 18
-                                        sourceSize: Qt.size(18, 18)
-                                        source: "../components/icons/volume-2_iconNeutral.svg"
-                                        Accessible.ignored: true
+                                    // 靜音（S1）：圖示是喇叭（有聲音）或喇叭加叉（靜音）
+                                    Button {
+                                        id: muteButton
+                                        objectName: "muteButton"
+                                        implicitWidth: Theme.controlHeight
+                                        implicitHeight: Theme.controlHeight
+                                        focusPolicy: Qt.StrongFocus
+                                        text: detail.muted ? qsTr("Unmute") : qsTr("Mute")
+                                        Accessible.name: text
+                                        onActiveFocusChanged: if (activeFocus) detail.reveal(this)
+                                        onClicked: detail.muted = !detail.muted
+
+                                        contentItem: Item {
+                                            Image {
+                                                anchors.centerIn: parent
+                                                width: 18
+                                                height: 18
+                                                sourceSize: Qt.size(18, 18)
+                                                source: detail.muted ? "../components/icons/volume-x_iconNeutral.svg"
+                                                                     : "../components/icons/volume-2_iconNeutral.svg"
+                                                Accessible.ignored: true
+                                            }
+                                        }
+
+                                        background: Rectangle {
+                                            radius: width / 2
+                                            color: muteButton.down ? Theme.actionSecondaryPressed
+                                                 : muteButton.hovered ? Theme.actionSecondaryHover : "transparent"
+
+                                            Rectangle {     // 鍵盤焦點框（DS-30）
+                                                visible: muteButton.visualFocus
+                                                anchors.fill: parent
+                                                anchors.margins: -4
+                                                radius: width / 2
+                                                color: "transparent"
+                                                border.color: Theme.focusOnDark
+                                                border.width: 2
+                                            }
+                                        }
                                     }
                                     GraphiteSlider {
                                         id: volumeSlider
@@ -727,8 +787,11 @@ Item {
                                         Layout.preferredWidth: 96
                                         from: 0
                                         to: 1
-                                        value: 0.5      // 和 AudioOutput 的音量是同一個值（UX-25：以前顯示 0.5、實際是 1）
+                                        // 和 AudioOutput 的音量是同一個值（UX-25：以前顯示 0.5、實際是 1）；靜音時不變
+                                        value: detail.prefs ? detail.prefs.playbackVolume : 0.5
+                                        dimmed: detail.muted
                                         Accessible.name: qsTr("Volume")
+                                        onMoved: detail.setVolume(value)
                                     }
                                 }
                             }
@@ -788,7 +851,11 @@ Item {
                             MediaPlayer {
                                 id: audioPlayer
                                 source: detail.media ? detail.media.audio.source : ""
-                                audioOutput: AudioOutput { volume: volumeSlider.value }
+                                audioOutput: AudioOutput {
+                                    objectName: "playbackOutput"
+                                    volume: volumeSlider.value
+                                    muted: detail.muted
+                                }
                             }
                         }
 

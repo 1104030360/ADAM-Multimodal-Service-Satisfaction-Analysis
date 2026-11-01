@@ -17,5 +17,6 @@ Item {
         anchors.fill: parent
         window: page.window
         prefs: uiPrefs
+        notificationsAvailable: true    // 服務人員端才有分析完成的通知（S2）
     }
 }

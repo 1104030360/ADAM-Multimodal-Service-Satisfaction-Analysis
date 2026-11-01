@@ -1256,11 +1256,22 @@ class ServiceModel(QObject):
     # ------------------------------------------------------------ 監看發現狀態變了（ENG-16、UX-17）
 
     def analysis_finished(self, service_id):
-        """2 → 3：成功 toast＋View Results，清單在背景重新整理（不管在哪一頁都會更新）。"""
+        """2 → 3：成功 toast＋View Results，清單在背景重新整理（不管在哪一頁都會更新）。
+
+        帳號的偏好「Show Analysis Completion Alerts」關掉時不跳這一則（S2，T39）：清單照樣重新整理，
+        之前同一筆的通知（例如分析失敗）收掉，免得畫面上留著過期的失敗。失敗的通知（analysis_failed）不受影響。
+        """
         self._sent.forget(service_id)
-        self._show_toast("success", _tr("Analysis complete"), _tr("Scores and charts for %1 are ready.", service_id),
-                         outcome_key(service_id), f"open-analysis:{service_id}", _tr("View Results"))
+        if self._completion_alerts():
+            self._show_toast("success", _tr("Analysis complete"), _tr("Scores and charts for %1 are ready.", service_id),
+                             outcome_key(service_id), f"open-analysis:{service_id}", _tr("View Results"))
+        else:
+            self._close_toast(outcome_key(service_id))
         self.refresh()
+
+    def _completion_alerts(self):
+        prefs = getattr(self.services, "ui_prefs", None)
+        return prefs is None or prefs.showCompletionAlerts
 
     def analysis_failed(self, service_id):
         """2 → 1（分析服務失敗時把狀態改回 1，D4）：那一列標成 Failed、按鈕變成 Retry，跳常駐的錯誤＋Retry。"""
@@ -1314,7 +1325,7 @@ class ServerHome(QObject):
         self.homeDashboard = HomeDashboard(services, account_id, HOME_KEY_PREFIX, self)  # 新版首頁（U1，T28）
         self.serviceModel = ServiceModel(services, account_id)
         self.shell_window = None  # 外殼視窗（launch() 設定）：app 不在前景時讓 Dock 圖示跳動
-        self.attention = DockAttention(self)
+        self.attention = DockAttention(self, prefs=getattr(services, "ui_prefs", None))  # Bounce Dock Icon（S2）
         self.watcher = None if services is None else self._watch(services)
         self.serviceManager = ServiceManager(services, account_id)
         self.chartsModel = ChartsModel()
@@ -1473,6 +1484,7 @@ def launch(engine, account_id, services=None):
     if standalone:
         services = AppServices(TaskRunner(), Notifier(), DbLane(), UiPrefs())
     _register_services(engine, services)
+    services.ui_prefs.useAccount(account_id)  # 這個帳號的視窗、播放、通知偏好（S1、S2，T39），QML 一載入就讀得到
     home = ServerHome(account_id, services)
     context = engine.rootContext()
     context.setContextProperty("serverHome", home)
@@ -1491,9 +1503,9 @@ def launch(engine, account_id, services=None):
     if len(engine.rootObjects()) == opened:
         sys.exit(-1)
 
-    # 剛載入的外殼（第 0 個是登入視窗，UX-04）。外殼自己也設了 FullScreen
+    # 剛載入的外殼（第 0 個是登入視窗，UX-04）。照這個帳號上次的視窗模式打開，第一次是全螢幕（S1）
     window = engine.rootObjects()[-1]
-    window.showFullScreen()
+    services.ui_prefs.restoreWindow(window)
     home.shell_window = window
 
     # setContextProperty 不會留住 Python 物件（PySide6 6.12 實測）：home 和各頁的模型只被自己的循環參照留著，

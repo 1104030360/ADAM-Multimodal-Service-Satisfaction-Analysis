@@ -308,3 +308,22 @@ def test_dock_badge_stays_until_the_app_is_active_again(dock):
     assert (dock.badges, attention.unread) == ([1], 1)  # 還沒切回來：徽章留著
     attention.clear()
     assert dock.badges == [1, 0]
+
+
+# ── 帳號的偏好「Bounce Dock Icon」（new-feature PLAN 13.3 S2，T39）──────────────
+
+def test_dock_bounce_can_be_turned_off_but_the_badge_still_counts(dock):
+    prefs = SimpleNamespace(bounceDockIcon=False)
+    attention, window = DockAttention(prefs=prefs), FakeWindow()
+    assert attention.request(window)  # 還是有提醒：徽章
+    assert (window.alerts, dock.badges, attention.unread) == ([], [1], 1)
+    prefs.bounceDockIcon = True  # 每次提醒時才讀：設定頁改了馬上生效
+    assert attention.request(window)
+    assert (window.alerts, dock.badges) == ([0], [1, 2])
+
+
+def test_dock_bounce_option_does_nothing_while_the_app_is_in_front(dock):
+    dock.value = Qt.ApplicationState.ApplicationActive
+    attention, window = DockAttention(prefs=SimpleNamespace(bounceDockIcon=True)), FakeWindow()
+    assert attention.request(window) is False
+    assert (window.alerts, dock.badges) == ([], [])

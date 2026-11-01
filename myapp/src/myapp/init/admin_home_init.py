@@ -742,6 +742,7 @@ def launch(engine, account_id, services=None):
     owns_services = services is None
     if owns_services:
         services = AppServices(TaskRunner(), Notifier(), DbLane(), UiPrefs())
+    services.ui_prefs.useAccount(account_id)  # 這個帳號的視窗、播放、通知偏好（S1、S2，T39），QML 一載入就讀得到
     home = AdminHome(account_id, services)
     context = engine.rootContext()
     for name, obj in {
@@ -770,7 +771,7 @@ def launch(engine, account_id, services=None):
         sys.exit(-1)
 
     window = roots[-1]  # 剛載入的主畫面（從登入視窗進來時，第 0 個是登入視窗）
-    window.showFullScreen()
+    services.ui_prefs.restoreWindow(window)  # 這個帳號上次的視窗模式，第一次是全螢幕（S1）
     # lambda 也讓 home 活得和視窗一樣久：QML 透過 context property 用它
     window.destroyed.connect(lambda *args: home.close(owns_services))
     return home
