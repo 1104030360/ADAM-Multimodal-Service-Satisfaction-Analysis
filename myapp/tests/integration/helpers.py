@@ -72,6 +72,14 @@ def wait_until(condition, timeout=5.0):
         time.sleep(0.01)
 
 
+def toasts(notifier):
+    """像 QML 的 ToastHost 一樣，用角色名稱讀出 notifier.model 的每一列（第 0 列最新）。"""
+    model = notifier.model
+    names = {role: bytes(name).decode() for role, name in model.roleNames().items()}
+    return [{name: model.data(model.index(row, 0), role) for role, name in names.items()}
+            for row in range(model.rowCount())]
+
+
 def table_row(model, row):
     """像 QML 的表格一樣，用角色名稱（roleNames）讀出一列：{"service_id": ..., ...}。"""
     names = {bytes(name).decode(): role for role, name in model.roleNames().items()}

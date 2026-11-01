@@ -1,21 +1,30 @@
-"""單元測試與整合測試共用的 fixture：隔離環境、Qt 應用程式、假裝置、moto 的 S3。"""
+"""單元測試與整合測試共用的 fixture：隔離環境、Qt 應用程式、假裝置、moto 的 S3、GUI 執行緒不碰網路。"""
 import os
 
-# 這三行要在 import myapp 之前執行（record_widget.py 等模組一 import 就會呼叫 load_dotenv()）
+# 這幾行要在 import myapp 之前執行（record_widget.py 等模組一 import 就會呼叫 load_dotenv()）
 os.environ["PYTHON_DOTENV_DISABLED"] = "1"  # 不讀開發者的 .env
 os.environ["QT_QPA_PLATFORM"] = "offscreen"  # Qt 不開真的視窗
 os.environ["OPENCV_AVFOUNDATION_SKIP_AUTH"] = "1"  # 萬一碰到真的鏡頭，也不跳出授權視窗
+os.environ["ADAM_ANIMATION_SCALE"] = "0"  # 動畫時間全部變 0（UiPrefs.animationScale → Theme），測試不必等動畫
+
+import threading
 
 import boto3
 import cv2
+import mysql.connector
 import pyaudio
 import pytest
+import requests
 from moto import mock_aws
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 from myapp import storage
 from myapp.database import DatabaseConnector
 from tests.fakes import FakeCameras, FakeMicrophone
+
+# UiPrefs 的設定改存成 INI 檔，路徑由 isolated_app 指到每個測試的暫存資料夾：不碰使用者真的偏好設定
+QSettings.setDefaultFormat(QSettings.Format.IniFormat)
 
 # app 會讀的環境變數：每個測試開始前全部清掉，需要的測試自己設定
 APP_ENV_VARS = [
@@ -45,6 +54,7 @@ def isolated_app(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCAL_MEDIA_DIR", str(tmp_path / "media"))  # 下載的影片與圖表
     monkeypatch.setenv("LOCAL_CHARTS_DIR", str(tmp_path / "charts"))
     monkeypatch.chdir(tmp_path)  # 錄影檔寫在「目前目錄」的 video/、audio/
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / "settings"))
 
     # 共用的資料庫連線和 S3 client 都會被記住；每個測試前後都清掉
     DatabaseConnector._instance = None
@@ -83,3 +93,35 @@ def s3(monkeypatch):
         client = boto3.client("s3", region_name="us-east-1")
         client.create_bucket(Bucket="adam-test")
         yield client
+
+
+class GuiThreadNetworkError(AssertionError):
+    """在 GUI 執行緒（主執行緒）連資料庫、傳 S3、送 HTTP、開 PDF。"""
+
+
+@pytest.fixture
+def no_network_on_gui_thread(monkeypatch):
+    """不是 autouse，需要的測試自己開（F2 之後逐步開啟）。
+
+    在主執行緒呼叫 mysql.connector.connect、storage.upload、storage.download、requests.post、fitz.open
+    就丟 GuiThreadNetworkError；在背景執行緒照常執行。app 的程式就算把例外吞掉，測試結束時也會失敗。
+    回傳違規清單；故意觸發的測試要自己清掉。
+    """
+    import fitz  # PyMuPDF；只有用到這個 fixture 才 import
+
+    violations = []
+
+    def guarded(name, original):
+        def call(*args, **kwargs):
+            if threading.current_thread() is threading.main_thread():
+                violations.append(name)
+                raise GuiThreadNetworkError(f"{name}() called on the GUI thread")
+            return original(*args, **kwargs)
+        return call
+
+    for module, attribute in ((mysql.connector, "connect"), (storage, "upload"), (storage, "download"),
+                              (requests, "post"), (fitz, "open")):
+        name = f"{module.__name__}.{attribute}"
+        monkeypatch.setattr(module, attribute, guarded(name, getattr(module, attribute)))
+    yield violations
+    assert violations == [], f"GUI 執行緒碰了網路：{violations}"

@@ -10,6 +10,9 @@ from pathlib import Path
 from PySide6.QtCore import QUrl, QObject, Slot
 from myapp.database import DatabaseConnector
 from myapp.init import server_home_init, admin_home_init
+from myapp.notifications import Notifier
+from myapp.tasks import TaskRunner
+from myapp.ui_prefs import UiPrefs
 
 
 class DatabaseConnectorWrapper(QObject):
@@ -32,9 +35,22 @@ class MainWindow(QObject):
     def __init__(self, engine):
         super().__init__()
         self.engine = engine
+        # 背景工作、通知、動態設定（F0）。登入視窗和兩個外殼用同一個 engine，
+        # 所以在載入 login.qml 之前註冊，之後每個畫面都看得到；參照留在這裡，不會被回收
+        self.tasks = TaskRunner(self)
+        self.notifier = Notifier(self)
+        self.ui_prefs = UiPrefs(self)
+        self.tasks.failed.connect(self._on_task_failed)  # 沒給 on_err 的工作失敗時，跳一則通知
         self.db_connector_wrapper = DatabaseConnectorWrapper()
-        self.engine.rootContext().setContextProperty("mainWindow", self)
-        self.engine.rootContext().setContextProperty("DatabaseConnector", self.db_connector_wrapper)
+        context = self.engine.rootContext()
+        context.setContextProperty("mainWindow", self)
+        context.setContextProperty("DatabaseConnector", self.db_connector_wrapper)
+        context.setContextProperty("tasks", self.tasks)
+        context.setContextProperty("notifier", self.notifier)
+        context.setContextProperty("uiPrefs", self.ui_prefs)
+
+    def _on_task_failed(self, key, error):
+        self.notifier.fromException(error)
 
     @Slot(str, str, result='QVariantMap')
     def checkLogin(self, username, password):
@@ -87,6 +103,7 @@ def main():
         print("Main window positioned")
 
         def on_app_about_to_quit():
+            main_window.tasks.shutdown()  # 先取消背景工作，不等它們結束（ENG-14）
             main_window.db_connector_wrapper.db_connector.close_connection()
 
         app.aboutToQuit.connect(on_app_about_to_quit)

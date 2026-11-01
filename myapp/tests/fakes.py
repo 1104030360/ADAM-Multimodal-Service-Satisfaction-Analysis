@@ -146,8 +146,11 @@ class FakeConnection:
         self.database = database or FakeDatabase()
         self.ping_error = ping_error
         self.committed = self.rolled_back = self.closed = False
+        self.in_transaction = False  # 真的連線在 START TRANSACTION 之後是 True
+        self.cursors_opened = 0
 
-    def cursor(self, dictionary=False):
+    def cursor(self, dictionary=False, buffered=None):
+        self.cursors_opened += 1
         return _FakeCursor(self.database)
 
     def ping(self, **kwargs):
@@ -184,6 +187,9 @@ class _FakeCursor:
 
     def stored_results(self):  # 預存程序的結果集
         return [self]
+
+    def nextset(self):  # 沒有下一個結果集
+        return None
 
     def fetchone(self):
         return self.database.rows[0] if self.database.rows else None

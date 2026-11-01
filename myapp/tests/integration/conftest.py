@@ -15,6 +15,7 @@ from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtQml import QQmlApplicationEngine
 
 from tests.integration.helpers import Database
+from tests.integration.latency_proxy import db_proxy  # noqa: F401  fixture：app 的 DB_* 改走計算往返次數的 proxy
 
 SCHEMA = Path(__file__).resolve().parents[3] / "docs" / "rebuild" / "db_schema.sql"
 MYSQL_IMAGE = "mysql:8.4"

@@ -1,4 +1,5 @@
 """啟動與登入（main.py、login.qml）：密碼比對雜湊，依帳號等級開服務人員端或管理員端。"""
+import errno
 import importlib.metadata
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ from PySide6.QtGui import QGuiApplication
 from myapp import main
 from myapp.database import DatabaseConnector
 from myapp.main import MainWindow
-from tests.integration.helpers import STAFF_NAME, qml
+from tests.integration.helpers import STAFF_NAME, qml, toasts
 
 pytestmark = pytest.mark.integration
 
@@ -79,14 +80,38 @@ class FakeApplication:
         return 0
 
 
-def test_main_opens_login_window_and_closes_database_on_quit(engine, db, monkeypatch, capsys):
+def test_main_opens_login_window_and_cleans_up_on_quit(engine, db, monkeypatch, capsys):
     # main() 讀套件資訊；用 briefcase dev 執行時才會有，這裡直接給
     monkeypatch.setattr(importlib.metadata, "metadata", lambda name: {"Formal-Name": "myapp"})
     monkeypatch.setattr(main, "QtWidgets", SimpleNamespace(QApplication=FakeApplication))
     monkeypatch.setattr(main, "QtQml", SimpleNamespace(QQmlApplicationEngine=lambda: engine))  # 測試結束時一起刪掉
+    windows, at_load = [], {}
+
+    class RecordingMainWindow(MainWindow):  # 留住 main() 建立的物件，測試才看得到
+        def __init__(self, engine):
+            super().__init__(engine)
+            windows.append(self)
+
+    load = engine.load
+
+    def load_and_record(url):  # 載入 login.qml 的那一刻，背景工作、通知、動態設定已經註冊好了
+        at_load.update({name: engine.rootContext().contextProperty(name) for name in ("tasks", "notifier", "uiPrefs")})
+        load(url)
+
+    monkeypatch.setattr(main, "MainWindow", RecordingMainWindow)
+    monkeypatch.setattr(engine, "load", load_and_record)
     with pytest.raises(SystemExit) as exited:
         main.main()
     assert exited.value.code == 0, capsys.readouterr().out
     login_window = engine.rootObjects()[0]
     assert login_window.title() == "Welcome to ADAM" and login_window.isVisible()
     assert not DatabaseConnector()._connection.is_connected()  # 用 _connection：.connection 會重新連線
+
+    [window] = windows
+    assert at_load["tasks"] is window.tasks and at_load["notifier"] is window.notifier
+    assert at_load["uiPrefs"] is window.ui_prefs
+    assert qml(login_window, "uiPrefs.animationScale") == 0  # QML 讀得到；測試時動畫關掉
+    assert window.tasks.submit("io", "after-quit", lambda token, report: 1) is False  # 結束時 shutdown() 了
+    # 沒給 on_err 的背景工作失敗時，跳出一則通知
+    window.tasks.failed.emit("export", OSError(errno.ENOSPC, "No space left on device"))
+    assert [toast["title"] for toast in toasts(window.notifier)] == ["Not enough disk space"]
