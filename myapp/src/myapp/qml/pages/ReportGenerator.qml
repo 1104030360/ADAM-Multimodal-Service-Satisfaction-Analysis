@@ -228,6 +228,7 @@ Dialog {
             HomeSelect {
                 id: staffSelect
                 objectName: "staffSelect"
+                popupZ: Theme.zDialogOverlay   // 選單疊在對話框上面，不然點不到
                 Layout.fillWidth: root.kind !== "service"
                 Layout.preferredWidth: root.kind === "service" ? subjectGrid.half : -1
                 enabled: root.vm !== null && root.vm.staffState === "ready"
@@ -250,6 +251,7 @@ Dialog {
             HomeSelect {
                 id: serviceSelect
                 objectName: "serviceSelect"
+                popupZ: Theme.zDialogOverlay
                 Layout.preferredWidth: subjectGrid.half
                 visible: root.kind === "service"
                 enabled: root.servicesHere && root.vm.servicesState === "ready"

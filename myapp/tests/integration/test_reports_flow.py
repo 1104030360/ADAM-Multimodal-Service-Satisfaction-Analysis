@@ -529,3 +529,56 @@ def test_the_report_period_is_picked_on_the_calendar_above_the_dialog(ui, servic
     wait_until(lambda: not end.property("calendarOpen"))
     assert (start.property("text"), end.property("text")) == ("2026-11-01", "2026-11-12")  # 1 號到今天
     qml(dialog, "close()")
+
+
+# ── 表單用滑鼠填（New Report 是 modal 對話框，裡面的選單都要疊在它上面）──────────────────
+
+def test_the_form_is_filled_in_with_the_mouse_above_the_dialog(ui, services, db, s3, analysis_service):
+    """員工、服務的選單和月曆的 Month 清單用滑鼠點得到（HomeSelect 的 popupZ）。
+
+    選單的 z 比對話框低時，開在對話框後面、被暗幕蓋住，點了沒反應：員工選不到、報表產生不了。
+    其他測試直接呼叫 picked()，所以這裡全程用滑鼠，和使用者一樣。
+    """
+    from tests.integration.test_date_picker import calendar, child, click, drawn, items, open_calendar
+    from types import SimpleNamespace
+
+    seed_staff(db)
+    db.add_service(SID, START)
+    db.add_scores(SID, customer=80, server=84)
+    home, window = launch(admin_home_init, ui, ADMIN_ID, services)
+    page = show(window, "admin_reports_page.qml")
+    wait_until(lambda: home.reportsModel.listState == "empty")
+    qml(page, "openGenerator()")
+    dialog = qml(page, "generator")
+    wait_until(lambda: qml(dialog, "opened") and home.reportsModel.staffState == "ready")
+
+    def choose(select, text):
+        click(window, select)
+        wait_until(lambda: qml(select, "popup.opened"))
+        drawn(window)  # 清單的列畫之前才排好
+        assert qml(select, "popup.z") > qml(dialog, "z")
+        [option] = [item for item in items(qml(select, "popup.contentItem"))
+                    if item.inherits("QQuickItemDelegate") and item.property("text") == text]
+        click(window, option)
+        wait_until(lambda: not qml(select, "popup.visible"))
+
+    choose(qml(dialog, "staffField"), "Mia Chen (placeholder_staff)")
+    assert qml(dialog, "staffId") == STAFF_ID
+    wait_until(lambda: home.reportsModel.servicesState == "ready")
+    choose(qml(dialog, "serviceField"), f"{SID} · Oct 30, 12:00")
+    assert qml(dialog, "serviceId") == SID
+    click(window, qml(dialog, "generateButton"))
+    wait_until(lambda: not qml(dialog, "opened"))  # 新增成功就關掉
+    wait_until(lambda: analysis_service.requests != [])
+    assert [path for path, body in analysis_service.requests] == ["/reports"]
+
+    # 月曆在對話框上面，月曆的 Month 清單又在月曆上面
+    qml(page, "openGenerator()")
+    wait_until(lambda: qml(dialog, "opened"))
+    qml(dialog, 'chooseKind("company")')
+    start = qml(dialog, "startDateField")
+    start.setProperty("today", "2026-11-12")
+    open_calendar(SimpleNamespace(window=window), start)
+    choose(child(calendar(start), "monthSelect"), "September")
+    assert qml(child(calendar(start), "monthGrid"), "month") == 8 and start.property("calendarOpen")
+    qml(dialog, "close()")

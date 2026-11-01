@@ -403,6 +403,7 @@ TextField {
                         id: monthSelect
                         objectName: "monthSelect"
                         Layout.fillWidth: true
+                        popupZ: field.popupZ + 1          // 清單疊在月曆上面（月曆在對話框裡時也是）
                         leftPadding: 12
                         font.weight: Font.Normal
                         Accessible.name: qsTr("Month")
@@ -419,6 +420,7 @@ TextField {
                         id: yearSelect
                         objectName: "yearSelect"
                         Layout.preferredWidth: 92
+                        popupZ: field.popupZ + 1
                         leftPadding: 12
                         font.weight: Font.Normal
                         font.features: { "tnum": 1 }

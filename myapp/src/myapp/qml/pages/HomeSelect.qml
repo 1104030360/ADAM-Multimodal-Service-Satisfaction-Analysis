@@ -10,6 +10,8 @@ import "../components"
 // - 高 44 以上；框線預設是 fieldBorder（和卡片 3.1:1，WCAG 1.4.11）；鍵盤焦點時換成 2 px 的焦點框（DS-30）。
 // - 趨勢卡在藍底上，顏色改用 trendControl、trendControlBorder（fill、borderColor、textColor、chevron 都可以換）。
 // - 日期欄的月曆（DateField.qml，N2）也用它選月、年：清單最高 320、放不下時推回視窗裡，打開時捲到選到的那一個。
+// - 選單疊在 popupZ 這一層。放在 modal 對話框（報表的 New Report）或它裡面的月曆時，要比它們高，
+//   不然選單開在對話框後面、被暗幕蓋住，點不到（和 DateField 的 popupZ 同一個道理，T43 第 5 節）。
 ComboBox {
     id: select
 
@@ -21,6 +23,7 @@ ComboBox {
     property url leadingIcon: ""                         // 文字前面的圖示（期間的日曆）
     property url chevron: "../components/icons/chevron-down_iconNeutral.svg"
     property int popupMaxHeight: 320                     // 選單最高多少：選項很多時（月曆的月、年，報表表單的員工、服務）在選單裡捲動
+    property int popupZ: 0                               // 選單疊在哪一層；在對話框裡用 Theme.zDialogOverlay
 
     signal picked(string value)
 
@@ -103,6 +106,7 @@ ComboBox {
 
     popup: Popup {
         y: select.height + 4
+        z: select.popupZ
         width: Math.max(select.width, 180)
         padding: 4
         margins: Theme.spaceS
