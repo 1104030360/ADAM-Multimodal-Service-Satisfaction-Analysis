@@ -1130,6 +1130,9 @@ def test_theme_transfer_text(harness):
     ("errorOnLight", "#C62828"), ("errorTint", "#351A1D"), ("errorOnDark", "#FF9A90"),
     ("recording", "#E53935"), ("focusOnDark", "#E6E8EB"), ("compareBar", "#60666F"), ("guide", "#3A3F46"),
     ("trendPanel", "#17305C"), ("trendPanelText", "#A9C1E8"), ("trendStaffLine", "#8FB8F5"),
+    # new-feature PLAN 7.4：報表 PDF 的白紙用色（分析服務的 report_pdf.py 用同名、同值）
+    ("paperTextMuted", "#4F555D"), ("paperWarmTint", "#FCE3C7"), ("paperGreenTint", "#DCF2D3"),
+    ("paperMintTint", "#CFEFE6"),
 ])
 def test_theme_colors_match_the_design_system(harness, token, expected):
     window = harness.load("")

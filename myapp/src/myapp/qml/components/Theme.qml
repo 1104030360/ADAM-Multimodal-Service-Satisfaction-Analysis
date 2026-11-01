@@ -88,6 +88,12 @@ QtObject {
     readonly property color recording: "#E53935"
     readonly property color focusOnDark: "#E6E8EB"         // 鍵盤焦點框，全部的頁面都用這個
     readonly property color paper: "#E6E8EB"               // 新增：白底的圖表、PDF 頁面墊的淺灰「紙」（UD8）
+    // ── 報表 PDF（分析服務畫的白底頁面，new-feature PLAN 7.4）。桌面端不用，放在這裡是為了只有一份顏色：
+    // 分析服務的 report_pdf.py 用同名、同值的 token（analysis_service/tools/check_report_copies.py 比對）。字都是 chromeOnLight
+    readonly property color paperTextMuted: "#4F555D"      // 新增：白紙上的次要文字、刻度、No data（白底 7.5:1，下面三種色卡上 6.1:1 以上）
+    readonly property color paperWarmTint: "#FCE3C7"       // 新增：Audio 分數卡的底（warningTint 是深色介面用的，白紙上太暗）；chromeOnLight 15.4:1
+    readonly property color paperGreenTint: "#DCF2D3"      // 新增：Text 分數卡的底（successTint 同上）；chromeOnLight 16.0:1
+    readonly property color paperMintTint: "#CFEFE6"       // 新增：Facial 分數卡的底，和 Text 不同的綠（PLAN 7.4）；chromeOnLight 15.6:1
 
     // ── 圖表（PLAN 第 3、5 節）
     readonly property color compareBar: "#60666F"          // 新增：長條圖裡用來比較的灰色長條，和卡片 3.1:1

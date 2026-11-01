@@ -32,6 +32,12 @@ TOKENS = {
     "errorOnDark": "#FF9A90",
     "recording": "#E53935",               # 只用在實心的錄影圓點，不用在按鈕和文字（DS-13）
     "focusOnDark": "#E6E8EB",
+    # 報表 PDF 的白紙用色（new-feature PLAN 7.4）：錄影視窗不用，列在這裡讓 test_ui_copy.py 和 Theme.qml 比對，
+    # 分析服務的 report_pdf.py 用同名、同值的 token
+    "paperTextMuted": "#4F555D",
+    "paperWarmTint": "#FCE3C7",           # Audio 分數卡
+    "paperGreenTint": "#DCF2D3",          # Text 分數卡
+    "paperMintTint": "#CFEFE6",           # Facial 分數卡：和 Text 不同的綠
 }
 
 # 只有錄影視窗用、Theme.qml 沒有的值（設計稿 StaffRecorder）
