@@ -1,8 +1,9 @@
 """啟動與登入（main.py、login.qml）：在背景比對雜湊，依帳號等級開服務人員端或管理員端（F2）。
 
-忙碌、焦點、連不上資料庫這些回饋的細節在 test_staff_feedback.py。
+忙碌、焦點、連不上資料庫這些回饋的細節在 test_staff_feedback.py；開場圖（D3）在 test_navigation_a11y.py。
 """
 import errno
+import gc
 import importlib.metadata
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,12 +25,19 @@ LOGIN_QML = Path(main.__file__).parent / "qml" / "pages" / "login.qml"
 
 @pytest.fixture
 def login_form(engine, db):
-    """打開登入視窗、跳過 2.5 秒的開場動畫，回傳登入表單。"""
+    """打開登入視窗，回傳登入表單。
+
+    測試的動畫時間是 0（tests/conftest.py 的 ADAM_ANIMATION_SCALE），和減少動態一樣：開場圖整段不出現，
+    第一個畫面就是表單，不必再等或手動換頁（D3、DS-43）。
+    """
+    # 登入後會建主畫面：前面測試留下的先收掉、清掉沒人用的 QML property cache（見 test_navigation_a11y.launch()、T23）
+    gc.collect()
+    engine.clearComponentCache()
     controller = MainWindow(engine)  # QML 裡的 mainWindow；yield 讓它活到測試結束
     engine.load(QUrl.fromLocalFile(str(LOGIN_QML)))
     window = engine.rootObjects()[0]
-    qml(window, "stackView.replace(loginComponent)")
-    wait_until(lambda: not qml(window, "stackView.busy"))
+    assert not qml(window, "splashShown")
+    assert qml(window, "stackView.currentItem.objectName") == "loginForm" and qml(window, "stackView.depth") == 1
     yield qml(window, "stackView.currentItem")
     if controller.services.close_db():  # db lane 的連線只能在 db lane 上關
         wait_until(lambda: not controller.tasks.isBusy(CLOSE_DB_KEY))
@@ -53,6 +61,19 @@ def test_login_opens_home_for_account_level(engine, login_form, username, passwo
     assert not login_window.isVisible()
     assert home.title() == title
     wait_until(lambda: qml(home, "username.text") == name)  # 側邊欄顯示登入者的名字
+
+
+def test_a_replaced_login_form_ignores_login_results(engine, login_form):
+    """被換掉、還沒真的刪掉的表單不處理登入結果：只開一個主畫面（其他測試會把一開始的表單再換成新的一份）。"""
+    window = engine.rootObjects()[0]
+    qml(window, "stackView.replace(loginComponent)")
+    form = qml(window, "stackView.currentItem")
+    assert qml(login_form, "StackView.status === StackView.Inactive")  # 舊的還活著，只是不在 StackView 裡
+    wait_until(lambda: qml(form, "username_textfield.activeFocus"))  # 新的表單一樣一進來就能打帳號
+    submit(form, "placeholder_staff", "CHANGE-ME-staff-0000")
+    # 兩份表單都接的話，同一個 signal 會一次開兩個主畫面（1 → 3），不會停在 2
+    wait_until(lambda: len(engine.rootObjects()) == 2)
+    assert engine.rootObjects()[1].title() == "Server Home"
 
 
 @pytest.mark.parametrize("username, password", [

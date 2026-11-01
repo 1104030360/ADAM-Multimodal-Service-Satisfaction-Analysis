@@ -10,44 +10,96 @@ Window {
     visible: true
     width: 1024
     height: 768
-    title: "Welcome to ADAM"
+    title: qsTr("Welcome to ADAM")
     color: Theme.chromeWindow // 和開場畫面的底色一樣，淡入時不會先閃白
+
+    // 動態設定寫進 Theme 單例（ENG-18）：開場圖要照使用者的 Reduce Motion，測試的 animationScale 0 也要生效。
+    // 外殼載入後也寫同一組值；context property 在程式結束時會先被刪掉，要先判斷是否為 null
+    Binding { target: Theme; property: "motionMode"; value: uiPrefs ? uiPrefs.motionMode : 0 }
+    Binding { target: Theme; property: "animationScale"; value: uiPrefs ? uiPrefs.animationScale : 1 }
+
+    // 開場圖的總長（D3、DS-72／M-10）：淡入 durSplash＋停 durSplash＋換成表單 durBase = 950 ms，最多 1 s。
+    // 要改長短就改 Theme.durSplash
+    readonly property int splashTotal: 2 * Theme.durSplash + Theme.durBase
+    property bool splashShown: false    // 這次啟動有沒有出現開場圖（減少動態時整段不出現）
+
+    // 開場圖結束（時間到、點一下、按任意鍵）：換成登入表單。已經換過（例如測試直接換頁）就不再換，表單不會被重建
+    function showLoginForm() {
+        if (stackView.currentItem && stackView.currentItem.objectName === "splash")
+            stackView.replace(loginComponent)
+    }
+
+    // 第一個畫面在這裡才決定：這時 Binding 已經把 uiPrefs 寫進 Theme。
+    // 減少動態（或 animationScale 0）時 durSplash 是 0，開場圖整段不出現，直接是登入表單（DS-43）
+    Component.onCompleted: {
+        splashShown = Theme.durSplash > 0
+        stackView.push(splashShown ? splashComponent : loginComponent, {}, StackView.Immediate)
+    }
 
     StackView {
         id: stackView
         anchors.fill: parent
+        focus: true     // 開場圖拿得到按鍵（按任意鍵跳過）
+
+        // 開場圖換成登入表單：表單在上面淡入 durBase，開場圖留在下面不動，不滑動（DS-42）。
+        // 時間是 0 時不套用：Animator 的時間是 0 會停在起點（第二波的教訓）
+        replaceEnter: Transition {
+            enabled: Theme.durBase > 0
+            OpacityAnimator { id: formFadeIn; from: 0; to: 1; duration: Theme.durBase; easing.type: Theme.easeEnter }
+        }
+        replaceExit: Transition {
+            enabled: Theme.durBase > 0
+            PauseAnimation { duration: Theme.durBase }
+        }
 
         // StackView 會自己把頁面調整成和它一樣大，頁面不要再綁 parent 的大小或設 anchors
-        initialItem: Item {
-            id: splash
+        Component {
+            id: splashComponent
 
-            Image {
-                id: logo
-                source: "../../images/logo.jpg"
-                anchors.fill: parent
-                fillMode: Image.PreserveAspectCrop
-                opacity: 0 // 初始透明度为 0
+            // 開場圖：OpacityAnimator 在 render thread 上淡入（ENG-19），GUI 執行緒在忙也不會卡；
+            // 以前是 2 s 的 NumberAnimation＋2.5 s 的 Timer，要等 2.5 s 才能登入（UX-04）
+            Item {
+                id: splash
+                objectName: "splash"
+                focus: true
 
-                Behavior on opacity {
-                    NumberAnimation {
-                        duration: 2000 // 淡入时间为 2000 毫秒
-                    }
+                Image {
+                    id: logo
+                    objectName: "splashLogo"
+                    anchors.fill: parent
+                    source: "../../images/logo.jpg"
+                    fillMode: Image.PreserveAspectCrop
+                    opacity: 0
+                    Accessible.ignored: true
                 }
 
-                Component.onCompleted: {
-                    console.log("Logo image loaded")
-                    logo.opacity = 1 // 触发淡入动画
+                OpacityAnimator {
+                    id: fadeIn
+                    objectName: "splashFade"
+                    target: logo
+                    from: 0
+                    to: 1
+                    duration: Theme.durSplash
+                    easing.type: Theme.easeEnter
+                    running: true
                 }
-            }
 
-            Timer {
-                interval: 2500 // 比动画稍长，确保动画完全展示
-                running: true
-                repeat: false
-                onTriggered: {
-                    console.log("Timer triggered")
-                    if (stackView.currentItem === splash) // 已經換過（例如測試直接換頁）就不再換，表單不會被重建
-                        stackView.replace(loginComponent) // 动画结束后切换页面
+                Timer {
+                    id: holdTimer
+                    objectName: "splashTimer"
+                    interval: 2 * Theme.durSplash   // 淡入之後再停一樣久
+                    running: true
+                    onTriggered: login_window.showLoginForm()
+                }
+
+                // 點一下或按任意鍵就跳過（D3）
+                MouseArea {
+                    anchors.fill: parent
+                    onPressed: login_window.showLoginForm()
+                }
+                Keys.onPressed: (event) => {
+                    event.accepted = true
+                    login_window.showLoginForm()
                 }
             }
         }
@@ -58,9 +110,11 @@ Window {
             // 登入表單（DS-31、UX-01～03）：按 Log In 或在任一欄按 Enter 送出，在背景驗證（mainWindow.logIn）。
             // 驗證中按鈕忙碌、欄位唯讀；結果由 mainWindow 的三個 signal 帶回來：
             // 成功就開主畫面；帳號或密碼不正確、連不上資料庫，各有自己的說明和焦點位置。
-            Rectangle {
+            // FocusScope：StackView 換頁時會把焦點交給整個表單（setFocus），焦點落在設了 focus 的帳號欄。
+            // 沒有轉場（減少動態、測試）時 StackView 在 onActivated 之後才交焦點，表單要是普通的 Item，焦點會停在表單本身
+            FocusScope {
                 id: loginForm
-                color: "transparent" // 背景透明以显示背景图片
+                objectName: "loginForm"
 
                 function submit() {
                     if (loginButton.busy)
@@ -73,6 +127,10 @@ Window {
 
                 Connections {
                     target: mainWindow
+                    // 只有在 StackView 裡（正在顯示、或正要顯示）的表單處理結果：被換掉的表單在真的刪掉之前還活著，
+                    // 不能讓它再開一次主畫面（例如測試把一開始的表單再換成新的一份）
+                    enabled: loginForm.StackView.status === StackView.Active
+                             || loginForm.StackView.status === StackView.Activating
 
                     function onLoginSucceeded(accountId, accountLevel) {
                         if (accountLevel === "1") {
@@ -138,6 +196,7 @@ Window {
 
                 TextField {
                     id: username_textfield
+                    focus: true     // 表單（FocusScope）拿到焦點時就在這裡：一進來就能打帳號（UX-03）
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: logo_text.y + logo_text.height + 60
                     width: 300
@@ -236,9 +295,10 @@ Window {
                             lineHeight: 20
                             lineHeightMode: Text.FixedHeight
                             wrapMode: Text.Wrap
+                            // 用 id 取 text：直接寫 text 會用到 textChanged 注入的參數（Qt 6 已經不建議，會印警告）
                             onTextChanged: {
-                                if (text !== "")
-                                    Accessible.announce(text, Accessible.Assertive) // 不搖晃，用唸的
+                                if (error_message.text !== "")
+                                    Accessible.announce(error_message.text, Accessible.Assertive) // 不搖晃，用唸的
                             }
                         }
                     }

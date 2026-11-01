@@ -1,7 +1,4 @@
-import QtQuick 2.15
-import QtQuick.Controls 2.15
-import QtQuick.Layouts 1.15
-import QtQuick.Window 2.15
+import QtQuick
 import "../components"
 
 Window {
@@ -9,10 +6,12 @@ Window {
     visible: true
     width: 1920
     height: 1080
-    title: "Server Home"
+    // DS-51 不用 Server：要改成 Staff 時，test_staff_feedback.py、test_login_window.py 比對標題的地方一起改（T23）
+    title: qsTr("Server Home")
     visibility: "FullScreen"
+    color: Theme.contentBg  // 換頁時新頁面還沒建好的那幾個畫格，內容區是內容頁的底色
 
-    // 關掉主視窗（紅色按鈕、⌘W）和按 Exit 一樣：錄影中先停止並存檔，還有錄影在存時先問（UX-29、DS-28）。
+    // 關掉主視窗（紅色按鈕、⌘W）和按 Quit 一樣：錄影中先停止並存檔，還有錄影在存時先問（UX-29、DS-28）。
     // ⌘Q 不會經過這裡（app 是 QApplication，結束時只問 QWidget 視窗；T20）：錄影中、存檔中時 deviceFinder 向
     // QuitGuard 登記，攔下來之後從 deviceFinder.quitRequested 走同一條路
     onClosing: (close) => { if (!exitButton.requestQuit()) close.accepted = false }
@@ -21,35 +20,82 @@ Window {
     Binding { target: Theme; property: "motionMode"; value: uiPrefs ? uiPrefs.motionMode : 0 }
     Binding { target: Theme; property: "animationScale"; value: uiPrefs ? uiPrefs.animationScale : 1 }
 
+    // ── 換頁（DS-29、ENG-19、T23）
+    // 內容區現在的頁面（檔名）：側邊欄的「目前頁面」照它畫。側邊欄、⌘1～⌘6 在要求換頁的當下就改；
+    // 頁面自己換頁（Details、Back）、通知的 View Results 則跟著 Loader 的 source 改
+    property string currentPage: ""
+    property bool shellCompleted: false     // 第一頁和外殼一起建好之後才算「換頁」：淡入、唸頁名
+    property var announced: []              // 唸過的頁名（Accessible.announce 在測試裡看不到，T17 的做法）
+
+    function fileName(url) {
+        const path = url.toString()
+        return path.slice(path.lastIndexOf("/") + 1)
+    }
+
+    // 側邊欄、⌘1～⌘6：在背景載入、分好幾個畫格建立（Loader.asynchronous，ENG-19），GUI 執行緒不會卡住。
+    // 舊頁面馬上拿掉；同一頁再按一次不重新載入。頁面自己換頁和 View Results 照舊同步（T23）
+    function showPage(file) {
+        if (currentPage === file)
+            return
+        currentPage = file
+        pageFade.stop()     // 舊頁面還在的時候停：淡入的對象等一下就會被刪掉
+        mainContentLoader.asynchronous = true
+        mainContentLoader.source = Qt.resolvedUrl(file)
+    }
+
+    // 要馬上拿到新頁面時（View Results 要標出那一列）：同步載入。側邊欄的換頁如果還在背景載入，
+    // 先讓它立刻完成（Loader.asynchronous 改成 false 就會，Qt 文件寫的用法），再換
+    function showPageNow(file) {
+        pageFade.stop()
+        mainContentLoader.asynchronous = false
+        mainContentLoader.source = Qt.resolvedUrl(file)
+        return mainContentLoader.item
+    }
+
+    // ⌘1～⌘6：和按側邊欄的按鈕一樣，焦點也移到那個按鈕上（DS-29：換頁後焦點在側邊欄）
+    function activateNav(button) {
+        button.forceActiveFocus(Qt.ShortcutFocusReason)
+        button.click()
+    }
+
+    // 換頁時唸出的頁名（DS-29、DS-51）。明細頁在側邊欄算 Services
+    function pageName(file) {
+        switch (file) {
+        case "server_home_button.qml": return homeButton.text
+        case "record_widget.qml": return recordButton.text
+        case "analysis.qml": return analysisButton.text
+        case "server_service_page.qml": return servicesButton.text
+        case "server_service_detail_page.qml": return qsTr("Service Details")
+        case "server_reports_page.qml": return reportsButton.text
+        case "server_setting_button.qml": return settingsButton.text
+        }
+        return ""
+    }
+
     Rectangle {
         id: sidebar
-        y: 0
         width: 288
         height: parent.height
-        color: "#333333"
-        anchors.left: parent.left
-        anchors.leftMargin: 0
+        color: Theme.sidebarBg
 
+        // 側邊欄的按鈕是真的 Button（SidebarButton）：Tab 照這個順序停，Space、Return 按下（UX-41、DS-32）。
+        // 左右各留 spaceS，鍵盤焦點框（往外 4 px）才不會被視窗邊緣或內容區切掉
         Column {
             id: sidebarContent
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            spacing: 20
-            anchors.margins: 20
-            anchors.leftMargin: 0
-            anchors.rightMargin: 0
-            anchors.topMargin: 50
-            anchors.bottomMargin: 588
+            anchors.fill: parent
+            anchors.topMargin: Theme.space4XL
+            anchors.leftMargin: Theme.spaceS
+            anchors.rightMargin: Theme.spaceS
+            spacing: Theme.spaceL
 
             Image {
                 id: avatar
-                source: "../../images/icons/user.png" 
+                source: "../../images/icons/user.png"
                 width: 100
                 height: 100
                 anchors.horizontalCenter: parent.horizontalCenter
                 fillMode: Image.PreserveAspectFit
+                Accessible.ignored: true
             }
 
             Text {
@@ -59,574 +105,93 @@ Window {
                 width: parent.width
                 height: 30
                 elide: Text.ElideRight
-                verticalAlignment: Text.AlignVCenter
-                font.pixelSize: 24
-                color: "#ffffff"
                 horizontalAlignment: Text.AlignHCenter
-                anchors.horizontalCenter: parent.horizontalCenter
-                font.weight: Font.Bold
+                verticalAlignment: Text.AlignVCenter
+                color: Theme.textOnDark
+                font.pixelSize: Theme.fontHeadline
                 font.bold: true
-                font.family: "Arial"
             }
 
-            // Home Button
-            Rectangle {
+            SidebarButton {
+                id: homeButton
+                objectName: "homeButton"
                 width: parent.width
-                height: 50
-                color: "#444444"
-                radius: 10
-
-                states: [
-                    State {
-                        name: "hovered"
-                        when: mouseArea.containsMouse
-                        PropertyChanges {
-                            target: buttonBackground
-                            color: "#555555"
-                        }
-                    },
-                    State {
-                        name: "pressed"
-                        when: mouseArea.pressed
-                        PropertyChanges {
-                            target: buttonBackground
-                            color: "#666666"
-                        }
-                    }
-                ]
-
-                transitions: [
-                    Transition {
-                        from: "*"
-                        to: "*"
-                        ColorAnimation {
-                            target: buttonBackground
-                            property: "color"
-                            duration: 200
-                        }
-                    }
-                ]
-
-                Rectangle {
-                    id: buttonBackground
-                    anchors.fill: parent
-                    color: "#444444"
-                    radius: 10
-                }
-
-                Rectangle {
-                    id: rectangle
-                    width: parent.width
-                    height: parent.height
-                    color: "transparent"
-                    anchors {
-                        left: parent.left
-                        right: parent.right
-                        top: parent.top
-                        bottom: parent.bottom
-                        margins: 10
-                    }
-
-                    Image {
-                        id: homeImage
-                        width: 30
-                        height: 30
-                        source: "../../images/icons/home.png"
-                        anchors.left: parent.left
-                        anchors.leftMargin: 0
-                    }
-
-                    Text {
-                        text: "Home"
-                        font.pixelSize: 20
-                        color: "#ffffff"
-                        font.bold: true
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.left: homeImage.right
-                        anchors.right: parent.right
-                        anchors.leftMargin: 10
-                        anchors.rightMargin: 110
-                    }
-                }
-
-                MouseArea {
-                    id: mouseArea
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        console.log("Home clicked")
-                        mainContentLoader.source = "../../qml/pages/server_home_button.qml"
-                        serverHome.onLoadHome()  // 在背景重新載入；舊的分數留著、變淡
-                    }
+                text: qsTr("Home")
+                iconName: "house"
+                current: window.currentPage === "server_home_button.qml"
+                onClicked: {
+                    window.showPage("server_home_button.qml")
+                    serverHome.onLoadHome()  // 在背景重新載入；舊的分數留著、變淡
                 }
             }
 
-            // Record Button
-            Rectangle {
+            SidebarButton {
+                id: recordButton
+                objectName: "recordButton"
                 width: parent.width
-                height: 50
-                color: "#444444"
-                radius: 10
+                text: qsTr("Record")
+                iconName: "video"
+                current: window.currentPage === "record_widget.qml"
+                onClicked: window.showPage("record_widget.qml")
+            }
 
-                states: [
-                    State {
-                        name: "hovered"
-                        when: mouseArea2.containsMouse
-                        PropertyChanges {
-                            target: buttonBackground2
-                            color: "#555555"
-                        }
-                    },
-                    State {
-                        name: "pressed"
-                        when: mouseArea2.pressed
-                        PropertyChanges {
-                            target: buttonBackground2
-                            color: "#666666"
-                        }
-                    }
-                ]
-
-                transitions: [
-                    Transition {
-                        from: "*"
-                        to: "*"
-                        ColorAnimation {
-                            target: buttonBackground2
-                            property: "color"
-                            duration: 200
-                        }
-                    }
-                ]
-
-                Rectangle {
-                    id: buttonBackground2
-                    anchors.fill: parent
-                    color: "#444444"
-                    radius: 10
-                }
-
-                Rectangle {
-                    id: rectangle1
-                    width: parent.width
-                    height: parent.height
-                    color: "transparent"
-                    anchors {
-                        left: parent.left
-                        right: parent.right
-                        top: parent.top
-                        bottom: parent.bottom
-                        margins: 10
-                    }
-
-                    Image {
-                        id: recordImage
-                        source: "../../images/icons/record.png"
-                        width: 30
-                        height: 30
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.left: parent.left
-                    }
-
-                    Text {
-                        text: "Record"
-                        font.pixelSize: 20
-                        color: "#ffffff"
-                        font.bold: true
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.left: recordImage.right
-                        anchors.right: parent.right
-                        anchors.leftMargin: 10
-                        anchors.rightMargin: 110
-                    }
-                }
-
-                MouseArea {
-                    id: mouseArea2
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        console.log("Record clicked")
-                        mainContentLoader.source = "../../qml/pages/record_widget.qml"
-                    }
+            SidebarButton {
+                id: analysisButton
+                objectName: "analysisButton"
+                width: parent.width
+                text: qsTr("Analysis")
+                iconName: "brain-circuit"
+                current: window.currentPage === "analysis.qml"
+                onClicked: {
+                    window.showPage("analysis.qml")  // 先換頁
+                    serverHome.onLoadAnalysis()  // 清單在背景重新整理（1 個往返）
                 }
             }
 
-            // Analysis Button
-            Rectangle {
+            SidebarButton {
+                id: servicesButton
+                objectName: "servicesButton"
                 width: parent.width
-                height: 50
-                color: "#444444"
-                radius: 10
-
-                states: [
-                    State {
-                        name: "hovered"
-                        when: mouseArea5.containsMouse
-                        PropertyChanges {
-                            target: buttonBackground5
-                            color: "#555555"
-                        }
-                    },
-                    State {
-                        name: "pressed"
-                        when: mouseArea5.pressed
-                        PropertyChanges {
-                            target: buttonBackground5
-                            color: "#666666"
-                        }
-                    }
-                ]
-
-                transitions: [
-                    Transition {
-                        from: "*"
-                        to: "*"
-                        ColorAnimation {
-                            target: buttonBackground5
-                            property: "color"
-                            duration: 200
-                        }
-                    }
-                ]
-
-                Rectangle {
-                    id: buttonBackground5
-                    anchors.fill: parent
-                    color: "#444444"
-                    radius: 10
-                }
-
-                Rectangle {
-                    id: rectangle5
-                    width: parent.width
-                    height: parent.height
-                    color: "transparent"
-                    anchors {
-                        left: parent.left
-                        right: parent.right
-                        top: parent.top
-                        bottom: parent.bottom
-                        margins: 10
-                    }
-
-                    Image {
-                        id: analysisImage
-                        source: "../../images/icons/analysis.png" 
-                        width: 30
-                        height: 30
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.left: parent.left
-                    }
-
-                    Text {
-                        text: "Analysis"
-                        font.pixelSize: 20
-                        color: "#ffffff"
-                        font.bold: true
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.left: analysisImage.right
-                        anchors.right: parent.right
-                        anchors.leftMargin: 10
-                        anchors.rightMargin: 110
-                    }
-                }
-
-                MouseArea {
-                    id: mouseArea5
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        console.log("Analysis clicked")
-                        mainContentLoader.source = "../../qml/pages/analysis.qml"  // 先換頁
-                        serverHome.onLoadAnalysis()  // 清單在背景重新整理（1 個往返）
-                    }
-                }
+                text: qsTr("Services")
+                iconName: "history"
+                current: window.currentPage === "server_service_page.qml"
+                         || window.currentPage === "server_service_detail_page.qml"
+                onClicked: window.showPage("server_service_page.qml")
             }
 
-            //service
-            Rectangle {
+            SidebarButton {
+                id: reportsButton
+                objectName: "reportsButton"
                 width: parent.width
-                height: 50
-                color: "#444444"
-                radius: 10
-
-                states: [
-                    State {
-                        name: "hovered"
-                        when: mouseArea6.containsMouse
-                        PropertyChanges {
-                            target: buttonBackground6
-                            color: "#555555"
-                        }
-                    },
-                    State {
-                        name: "pressed"
-                        when: mouseArea6.pressed
-                        PropertyChanges {
-                            target: buttonBackground6
-                            color: "#666666"
-                        }
-                    }
-                ]
-
-                transitions: [
-                    Transition {
-                        from: "*"
-                        to: "*"
-                        ColorAnimation {
-                            target: buttonBackground6
-                            property: "color"
-                            duration: 200
-                        }
-                    }
-                ]
-
-                Rectangle {
-                    id: buttonBackground6
-                    anchors.fill: parent
-                    color: "#444444"
-                    radius: 10
-                }
-
-                Rectangle {
-                    id: rectangle6
-                    width: parent.width
-                    height: parent.height
-                    color: "transparent"
-                    anchors {
-                        left: parent.left
-                        right: parent.right
-                        top: parent.top
-                        bottom: parent.bottom
-                        margins: 10
-                    }
-
-                    Image {
-                        id: serviceImage
-                        source: "../../images/icons/service.png"
-                        width: 30
-                        height: 30
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.left: parent.left
-                    }
-
-                    Text {
-                        text: "Service"
-                        font.pixelSize: 20
-                        color: "#ffffff"
-                        font.bold: true
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.left: serviceImage.right
-                        anchors.right: parent.right
-                        anchors.leftMargin: 10
-                        anchors.rightMargin: 110
-                    }
-                }
-
-                MouseArea {
-                    id: mouseArea6
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        console.log("Service clicked")
-                        mainContentLoader.source = "../../qml/pages/server_service_page.qml"
-                    }
-                }
+                text: qsTr("Reports")
+                iconName: "file-chart-column"
+                current: window.currentPage === "server_reports_page.qml"
+                onClicked: window.showPage("server_reports_page.qml")
             }
-            // Reports Page Button
-            Rectangle {
+
+            SidebarButton {
+                id: settingsButton
+                objectName: "settingsButton"
                 width: parent.width
-                height: 50
-                color: "#444444"
-                radius: 10
-
-                states: [
-                    State {
-                        name: "hovered"
-                        when: mouseArea7.containsMouse
-                        PropertyChanges {
-                            target: buttonBackground7
-                            color: "#555555"
-                        }
-                    },
-                    State {
-                        name: "pressed"
-                        when: mouseArea7.pressed
-                        PropertyChanges {
-                            target: buttonBackground7
-                            color: "#666666"
-                        }
-                    }
-                ]
-
-                transitions: [
-                    Transition {
-                        from: "*"
-                        to: "*"
-                        ColorAnimation {
-                            target: buttonBackground7
-                            property: "color"
-                            duration: 200
-                        }
-                    }
-                ]
-
-                Rectangle {
-                    id: buttonBackground7
-                    anchors.fill: parent
-                    color: "#444444"
-                    radius: 10
-                }
-
-                Rectangle {
-                    id: rectangle7
-                    width: parent.width
-                    height: parent.height
-                    color: "transparent"
-                    anchors {
-                        left: parent.left
-                        right: parent.right
-                        top: parent.top
-                        bottom: parent.bottom
-                        margins: 10
-                    }
-
-                    Image {
-                        id: reportsImage
-                        source: "../../images/icons/reports.png"
-                        width: 30
-                        height: 30
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.left: parent.left
-                    }
-
-                    Text {
-                        text: "Reports"
-                        font.pixelSize: 20
-                        color: "#ffffff"
-                        font.bold: true
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.left: reportsImage.right
-                        anchors.right: parent.right
-                        anchors.leftMargin: 10
-                        anchors.rightMargin: 110
-                    }
-                }
-
-                MouseArea {
-                    id: mouseArea7
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        console.log("Reports Page clicked")
-                        mainContentLoader.source = "../../qml/pages/server_reports_page.qml"
-                    }
-                }
+                text: qsTr("Settings")
+                iconName: "settings"
+                current: window.currentPage === "server_setting_button.qml"
+                onClicked: window.showPage("server_setting_button.qml")
             }
-            // Setting Button
-            Rectangle {
-                width: parent.width
-                height: 50
-                color: "#444444"
-                radius: 10
 
-                states: [
-                    State {
-                        name: "hovered"
-                        when: mouseArea3.containsMouse
-                        PropertyChanges {
-                            target: buttonBackground3
-                            color: "#555555"
-                        }
-                    },
-                    State {
-                        name: "pressed"
-                        when: mouseArea3.pressed
-                        PropertyChanges {
-                            target: buttonBackground3
-                            color: "#666666"
-                        }
-                    }
-                ]
-
-                transitions: [
-                    Transition {
-                        from: "*"
-                        to: "*"
-                        ColorAnimation {
-                            target: buttonBackground3
-                            property: "color"
-                            duration: 200
-                        }
-                    }
-                ]
-
-                Rectangle {
-                    id: buttonBackground3
-                    anchors.fill: parent
-                    color: "#444444"
-                    radius: 10
-                }
-
-                Rectangle {
-                    id: rectangle2
-                    width: parent.width
-                    height: parent.height
-                    color: "transparent"
-                    anchors {
-                        left: parent.left
-                        right: parent.right
-                        top: parent.top
-                        bottom: parent.bottom
-                        margins: 10
-                    }
-
-                    Image {
-                        id: settingImage
-                        source: "../../images/icons/setting.png"
-                        width: 30
-                        height: 30
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.left: parent.left
-                    }
-
-                    Text {
-                        text: "Setting"
-                        font.pixelSize: 20
-                        color: "#ffffff"
-                        font.bold: true
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.left: settingImage.right
-                        anchors.right: parent.right
-                        anchors.leftMargin: 10
-                        anchors.rightMargin: 110
-                    }
-                }
-
-                MouseArea {
-                    id: mouseArea3
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        console.log("Setting clicked")
-                        mainContentLoader.source = "../../qml/pages/server_setting_button.qml"
-                    }
-                }
-            }           
-
-            // Exit Button：結束前先問（UX-29、DS-28）。錄影中先停止並存檔（UX-09）；還有錄影在收尾、上傳或寫資料庫時
+            // Quit：結束前先問（UX-29、DS-28）。錄影中先停止並存檔（UX-09）；還有錄影在收尾、上傳或寫資料庫時
             // 跳確認，預設是 Keep Uploading；沒有就直接結束（和以前一樣）。視窗的 onClosing、⌘Q（quitRequested）也走這裡
-            Rectangle {
+            SidebarButton {
                 id: exitButton
                 objectName: "exitButton"
                 width: parent.width
-                height: 50
-                color: "#444444"
-                radius: 10
+                text: qsTr("Quit")
+                iconName: "log-out"
 
                 readonly property var finder: typeof deviceFinder !== "undefined" ? deviceFinder : null
                 property bool quitting: false
+
+                onClicked: exitButton.requestQuit()
 
                 // 回傳 true 表示可以結束（onClosing 用）
                 function requestQuit() {
@@ -684,111 +249,73 @@ Window {
                     cancelText: qsTr("Keep Uploading")
                     onConfirmed: exitButton.quitNow()
                 }
-
-                states: [
-                    State {
-                        name: "hovered"
-                        when: mouseArea4.containsMouse
-                        PropertyChanges {
-                            target: buttonBackground4
-                            color: "#555555"
-                        }
-                    },
-                    State {
-                        name: "pressed"
-                        when: mouseArea4.pressed
-                        PropertyChanges {
-                            target: buttonBackground4
-                            color: "#666666"
-                        }
-                    }
-                ]
-
-                transitions: [
-                    Transition {
-                        from: "*"
-                        to: "*"
-                        ColorAnimation {
-                            target: buttonBackground4
-                            property: "color"
-                            duration: 200
-                        }
-                    }
-                ]
-
-                Rectangle {
-                    id: buttonBackground4
-                    anchors.fill: parent
-                    color: "#444444"
-                    radius: 10
-                }
-
-                Rectangle {
-                    id: rectangle3
-                    width: parent.width
-                    height: parent.height
-                    color: "transparent"
-                    anchors {
-                        left: parent.left
-                        right: parent.right
-                        top: parent.top
-                        bottom: parent.bottom
-                        margins: 10
-                    }
-
-                    Image {
-                        id: exitImage
-                        source: "../../images/icons/exit.png"
-                        width: 30
-                        height: 30
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.left: parent.left
-                    }
-
-                    Text {
-                        text: "Exit"
-                        font.pixelSize: 20
-                        color: "#ffffff"
-                        font.bold: true
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.left: exitImage.right
-                        anchors.right: parent.right
-                        anchors.leftMargin: 10
-                        anchors.rightMargin: 130
-                    }
-                }
-
-                MouseArea {
-                    id: mouseArea4
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: exitButton.requestQuit()
-                }
             }
         }
+
+        // ⌘1～⌘6：照側邊欄的順序換頁（UX-41）。Qt 在 macOS 上的 Ctrl 就是 ⌘。
+        // 放在側邊欄裡、不直接放在 Window 底下：模態對話框（Quit while uploading?）開著時就不會觸發
+        Shortcut { sequence: "Ctrl+1"; onActivated: window.activateNav(homeButton) }
+        Shortcut { sequence: "Ctrl+2"; onActivated: window.activateNav(recordButton) }
+        Shortcut { sequence: "Ctrl+3"; onActivated: window.activateNav(analysisButton) }
+        Shortcut { sequence: "Ctrl+4"; onActivated: window.activateNav(servicesButton) }
+        Shortcut { sequence: "Ctrl+5"; onActivated: window.activateNav(reportsButton) }
+        Shortcut { sequence: "Ctrl+6"; onActivated: window.activateNav(settingsButton) }
     }
 
+    // 第一頁和外殼一起同步建好：launch() 回傳時首頁已經在，視窗一出現就有內容（T18、T19 的測試靠這點）。
+    // 之後側邊欄的換頁才在背景載入（showPage 把 asynchronous 打開，載完就關掉）。Loader 是 focus scope，
+    // 新頁面裡設了 focus 的項目不會把焦點從側邊欄搶走（DS-29）
     Loader {
         id: mainContentLoader
+        objectName: "mainContentLoader"
         anchors.left: sidebar.right
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.bottom: parent.bottom
-        anchors.leftMargin: 0
-        source: "../../qml/pages/server_home_button.qml" // 初始顯示的內容
+        source: "server_home_button.qml" // 初始顯示的內容
+
+        onSourceChanged: window.currentPage = window.fileName(source)
+        onStatusChanged: {
+            if (status !== Loader.Loading)
+                asynchronous = false
+        }
         onLoaded: {
             if (item && typeof item.setWindow === "function") {
                 item.setWindow(window)
             }
+            if (!window.shellCompleted)
+                return
+            // 換頁（DS-29、D10）：新頁面淡入，並用 Polite 唸出頁名；焦點不動，留在側邊欄
+            pageFade.stop()
+            if (Theme.durBase > 0) {
+                pageFade.target = item
+                pageFade.start()
+            }
+            const name = window.pageName(window.currentPage)
+            if (name !== "") {
+                window.announced = window.announced.concat([name])
+                Accessible.announce(name, Accessible.Polite)
+            }
         }
+    }
+
+    // M-5 換頁：新頁面 opacity 0→1、150 ms、OutCubic；不滑動，也不和舊頁交疊（舊頁在換頁的當下就拿掉了）。
+    // OpacityAnimator 在 render thread 上跑（ENG-19），結束時才把 1 寫回頁面。時間是 0（減少動態、
+    // 測試的 animationScale 0）時不跑：Animator 的時間是 0 會停在起點，頁面會一直是透明的（第二波的教訓）
+    OpacityAnimator {
+        id: pageFade
+        objectName: "pageFade"
+        from: 0
+        to: 1
+        duration: Theme.durBase
+        easing.type: Theme.easeEnter
     }
 
     // 通知上的「View Results」（open-analysis:<sid>）：換到分析頁、選 Completed、標出那一列（UX-17、ENG-15）
     Connections {
         target: serverHome
         function onOpenAnalysisRequested(serviceId) {
-            mainContentLoader.source = "../../qml/pages/analysis.qml"
-            const page = mainContentLoader.item
+            const page = window.showPageNow("analysis.qml")
             if (page && typeof page.showService === "function")
                 page.showService(serviceId)
         }
@@ -802,4 +329,17 @@ Window {
         x: window.width - width - Theme.spaceXL
         y: window.height - height - Theme.spaceXL
     }
+
+    // 舊的 id：其他測試檔（test_staff_feedback.py、test_upload_flow.py、test_analysis.py、test_analysis_flow.py、
+    // test_qml_warnings.py）還用以前 MouseArea 的 id 點側邊欄，例如 mouseArea5.clicked(null)。
+    // 那些測試改用上面的 id（例如 analysisButton.click()）之後就刪掉這一段（T23）
+    property alias mouseArea: homeButton
+    property alias mouseArea2: recordButton
+    property alias mouseArea3: settingsButton
+    property alias mouseArea4: exitButton
+    property alias mouseArea5: analysisButton
+    property alias mouseArea6: servicesButton
+    property alias mouseArea7: reportsButton
+
+    Component.onCompleted: shellCompleted = true
 }
