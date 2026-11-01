@@ -21,7 +21,6 @@
 import logging
 import os
 import re
-import shutil
 import uuid
 from collections import deque
 from contextlib import suppress
@@ -31,7 +30,7 @@ from datetime import datetime
 import fitz
 from PySide6.QtCore import QCoreApplication, QDateTime, QLocale, Property, QObject, QUrl, Signal, Slot
 
-from myapp import storage
+from myapp import local_storage, storage
 from myapp.database import DatabaseConnector
 from myapp.notifications import S3_NOT_FOUND, S3_OFFLINE, UNEXPECTED, user_message
 from myapp.service_list import day_text, display_score, format_time, time_range_text
@@ -228,15 +227,27 @@ def fetch(file, token=None, report=None):
     return final
 
 
+def download_cache_dirs():
+    """可以重新下載的快取資料夾（new-feature S5，T40）：雲端有原檔、隨時能重新下載的東西才放進來。
+
+    Quit 時的 clear_cache()、設定頁 Storage 的大小與 Clear Download Cache 都看這一份，三個地方一定一致。
+    錄影（~/video、~/audio）、還沒上傳的檔案不能放進來（local_storage 另外會擋）。新的快取資料夾加在清單後面。
+    """
+    return [
+        media_dir(),
+        charts_dir(),
+        reports_cache_dir(),
+    ]
+
+
 def clear_cache(media_model=None):
-    """Quit 時（clearDir）：先取消還在下載的檔案，再清空影片、圖表、報表頁面的快取（資料夾本身留著）。"""
+    """Quit 時（clearDir）：先取消還在下載的檔案，再清空 download_cache_dirs() 的內容（資料夾本身留著）。
+
+    和設定頁的 Clear Download Cache 用同一個 local_storage.clear_folders()：錄影、還沒存完的錄影不會被清掉。
+    """
     if media_model is not None:
         media_model.close()
-    for folder in (media_dir(), charts_dir(), reports_cache_dir()):
-        if os.path.isdir(folder):
-            shutil.rmtree(folder, ignore_errors=True)
-            os.makedirs(folder, exist_ok=True)
-            logger.info("cleared %s", folder)
+    local_storage.clear_folders(download_cache_dirs())
 
 
 class _InlineRunner:
@@ -1119,6 +1130,16 @@ class PDFHandler(QObject):
     def bind(self, services):
         """之後才拿到 services 時（建立時沒有給）：改用 app 共用的 pdf lane。"""
         self._services = services
+
+    @Slot()
+    def forget_pages(self):
+        """設定頁的 Clear Download Cache 清掉了頁面圖（T40）：放掉目前的頁面，下次打開報表頁時重新畫第 1 頁。"""
+        if not self._current and not self._source:
+            return
+        self._current, self._page, self._page_count, self._source, self._view = "", 0, 0, "", IDLE
+        self._detail = self._technical = ""
+        self._failures = 0
+        self.viewChanged.emit()
 
     def _names(self):
         return {report["name"] for report in self._reports}

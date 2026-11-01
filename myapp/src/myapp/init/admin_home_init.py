@@ -17,6 +17,7 @@ from pathlib import Path
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
 from myapp.db_lane import DbLane
+from myapp.diagnostics import HelpCenter
 from myapp.home_dashboard import HomeDashboard
 from myapp.notifications import Notifier, user_message
 from myapp.passwords import hash_password
@@ -698,6 +699,7 @@ class AdminHome(QObject):
         self.mediaModel = MediaModel()
         self.pdfmodel = PDFHandler(services)
         self.serviceSearch = ServiceSearch.for_admin(services, parent=self)  # 頁首的搜尋（全部＋員工名字）
+        self.helpCenter = HelpCenter(services, reports=self.pdfmodel, parent=self)  # 設定頁的 Help 區塊（T40）
         self._profile.profileChanged.connect(self._sync_level)
 
     @Property(QObject, constant=True)
@@ -754,6 +756,7 @@ def launch(engine, account_id, services=None):
         "mediaModel": home.mediaModel,
         "pdfHandler": home.pdfmodel,
         "serviceSearch": home.serviceSearch,
+        "helpCenter": home.helpCenter,
     }.items():
         context.setContextProperty(name, obj)
     # 外殼的 ToastHost、Theme 的 Binding 用這幾個；MainWindow 已經註冊同一份時不必重設（重設會讓綁定重新計算）

@@ -1,7 +1,7 @@
 """側邊欄「Quit」呼叫的 clearDir()：先取消還在下載的檔案，再清掉影片、圖表、報表頁面的快取（兩端共用 myapp/media.py）。"""
 import pytest
 
-from myapp import media
+from myapp import local_storage, media
 from myapp.db_lane import DbLane
 from myapp.init import admin_home_init, server_home_init
 from myapp.notifications import Notifier
@@ -60,8 +60,9 @@ def test_quit_does_not_create_cache_dirs_that_were_never_used(home, tmp_path):
 def test_quit_cancels_downloads_before_clearing(home, tmp_path, monkeypatch):
     order = []
     monkeypatch.setattr(home.mediaModel, "close", lambda: order.append("cancel downloads"))
-    real_rmtree = media.shutil.rmtree
-    monkeypatch.setattr(media.shutil, "rmtree", lambda path, **kwargs: order.append("clear") or real_rmtree(path, **kwargs))
+    real_rmtree = local_storage.shutil.rmtree  # media.clear_cache() 用 local_storage.clear_folders() 清（T40）
+    monkeypatch.setattr(local_storage.shutil, "rmtree",
+                        lambda path, **kwargs: order.append("clear") or real_rmtree(path, **kwargs))
     fill(tmp_path / "media")
     home.clearDir()
     assert order == ["cancel downloads", "clear"]  # 下載還在寫檔時不清，免得清到一半又冒出新檔案

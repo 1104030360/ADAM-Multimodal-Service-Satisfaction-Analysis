@@ -20,6 +20,7 @@ from datetime import datetime
 import pyaudio
 from pathlib import Path
 from myapp.db_lane import DbLane
+from myapp.diagnostics import HelpCenter
 from myapp.home_dashboard import HomeDashboard
 from myapp.notifications import Notifier, user_message
 from myapp.pending_saves import PendingSaveStore
@@ -1332,6 +1333,7 @@ class ServerHome(QObject):
         self.mediaModel = MediaModel()
         self.pdfmodel = PDFHandler(services)
         self.serviceSearch = ServiceSearch.for_staff(services, account_id, parent=self)  # 頁首的搜尋（只查自己的）
+        self.helpCenter = HelpCenter(services, reports=self.pdfmodel, parent=self)  # 設定頁的 Help 區塊（T40）
 
     @Property(str, notify=accountNameChanged)
     def accountName(self):
@@ -1496,6 +1498,7 @@ def launch(engine, account_id, services=None):
     context.setContextProperty("mediaModel", home.mediaModel)
     context.setContextProperty("pdfHandler", home.pdfmodel)
     context.setContextProperty("serviceSearch", home.serviceSearch)
+    context.setContextProperty("helpCenter", home.helpCenter)
 
     opened = len(engine.rootObjects())
     qml_file = Path(__file__).resolve().parent.parent / "qml/pages/server_home.qml"

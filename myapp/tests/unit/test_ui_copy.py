@@ -36,10 +36,12 @@ QML_FILES = sorted([*PAGES.glob("*.qml"), *COMPONENTS.glob("*.qml")])
 # 顏色規則不掃 Theme.qml：顏色就定義在那裡
 QML_COLOUR_FILES = [path for path in QML_FILES if path != THEME_QML]
 # 給使用者看的字串也來自 Python：錄影視窗（QtWidgets）、兩個 init 模組（通知、裝置名稱）、明細頁和報表（media.py）、
-# 首頁的日期（home_dashboard.py）、Services 頁的標題、日期、長度（service_list.py）
+# 首頁的日期（home_dashboard.py）、Services 頁的標題、日期、長度（service_list.py）、
+# 設定頁 Help 的連線檢查與 Storage（diagnostics.py、local_storage.py，T40）
 PYTHON_FILES = [SRC / "init" / "record_widget.py", SRC / "init" / "server_home_init.py",
                 SRC / "init" / "admin_home_init.py", SRC / "media.py", SRC / "home_dashboard.py",
-                SRC / "service_list.py"]
+                SRC / "service_list.py",
+                SRC / "diagnostics.py", SRC / "local_storage.py"]
 
 # 中日韓的字和全形標點：U+3000–303F、U+3400–4DBF、U+4E00–9FFF、U+F900–FAFF、U+FF00–FFEF
 CJK = re.compile("[" + "".join(f"{chr(first)}-{chr(last)}" for first, last in (
