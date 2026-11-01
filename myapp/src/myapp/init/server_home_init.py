@@ -1,7 +1,8 @@
 """服務人員端（登入後的畫面）的 Python 物件。
 
 F2（前端重建第二波）：資料庫的讀寫都搬到 db lane（ENG-01、ENG-06、ENG-10）。
-- launch() 先把外殼顯示出來（GUI 執行緒 0 個網路往返），帳號名稱、首頁分數、分析清單在 db lane 載入。
+- launch() 先把外殼顯示出來（GUI 執行緒 0 個網路往返），帳號名稱、首頁的三張卡片（homeDashboard）在 db lane 載入；
+  分析清單等打開分析頁才查（新版介面 U1，T28：launch 的往返預算）。
 - 頁面的資料一律是屬性（Property＋notify），清單是增量模型（RowListModel），不再用一次性的 signal 推資料（ENG-08）。
   每個區塊都有 loading、error、ready 三種狀態；「沒有資料」由頁面依資料判斷（DS-25～27、DS-33）。
 - db lane 的工作都是 fn(token, report)，裡面用 services.db.cursor()；預存程序用 execute("CALL …")。
@@ -20,6 +21,7 @@ from datetime import datetime, timedelta
 import pyaudio
 from pathlib import Path
 from myapp.db_lane import DbLane
+from myapp.home_dashboard import HomeDashboard
 from myapp.notifications import Notifier, user_message
 from myapp.pending_saves import PendingSaveStore
 from myapp.search import ServiceSearch
@@ -36,11 +38,14 @@ logger = logging.getLogger(__name__)
 
 # TaskRunner 的 key（同一個 key 同時只跑一個，ENG-14）
 ACCOUNT_NAME_KEY = "staff:account-name"
-HOME_SCORES_KEY = "staff:home-scores"
 ANALYSIS_KEY = "staff:analysis"
 SEARCH_KEY = "staff:search"
-# launch() 在背景載入的四件事：帳號名稱、首頁分數、分析清單、監看要看的服務（ENG-16）
-LAUNCH_KEYS = (ACCOUNT_NAME_KEY, HOME_SCORES_KEY, ANALYSIS_KEY, WATCHER_KEY)
+# 新版首頁（U1）的三張卡片：homeDashboard 的 Overview、Recent Performance、Score Trend，各 1 個往返
+HOME_KEY_PREFIX = "staff:home"
+HOME_KEYS = tuple(f"{HOME_KEY_PREFIX}:{name}" for name in ("overview", "recent", "trend"))
+# launch() 在背景載入的：帳號名稱、首頁的三張卡片、監看要看的服務（ENG-16），1＋3＋1＝5 個往返（ENG-21 的預算）。
+# 分析清單等打開分析頁才查（T28）
+LAUNCH_KEYS = (ACCOUNT_NAME_KEY, *HOME_KEYS, WATCHER_KEY)
 # 「Can't refresh analysis status」：清單的重新整理和監看的查詢共用這一則（同一次斷線只跳一則）
 ANALYSIS_REFRESH_TOAST_KEY = "analysis-refresh"
 
@@ -600,139 +605,6 @@ class DeviceFinder(QObject):
         model = getattr(self.server_home, "serviceModel", None)
         if model is not None:
             model.refresh()
-
-
-# ---------------------------------------------------------------- 首頁分數（UX-05、UX-06、DS-33）
-
-SCORE_KINDS = ("total", "text", "audio", "facial")
-SCORE_SIDES = (("customer", "customer"), ("staff", "server"))  # （畫面上的名稱, 資料表欄位的前綴）
-PERIODS = ("daily", "weekly")
-
-
-def _scores_sql():
-    """每日和每週一次查完（1 個往返）。每週的範圍包含每日；每日的欄位用 CASE 只取今天的。
-
-    -1 表示沒有資料，用 NULLIF 排除；完全沒有資料時 AVG 是 NULL（畫面顯示「—」，不顯示 0）。
-    """
-    today = "s.service_start >= CURDATE()"
-    columns = [f"COUNT(CASE WHEN {today} THEN 1 END) AS daily_count", "COUNT(*) AS weekly_count"]
-    for period in PERIODS:
-        for side, prefix in SCORE_SIDES:
-            for kind in SCORE_KINDS:
-                value = f"NULLIF(sc.{prefix}_{kind}, -1)"
-                if period == "daily":
-                    value = f"CASE WHEN {today} THEN {value} END"
-                columns.append(f"AVG({value}) AS {period}_{side}_{kind}")
-    return ("SELECT " + ",\n       ".join(columns) + "\n"
-            "FROM tbl_service AS s\n"
-            "JOIN tbl_service_score AS sc ON sc.service_id = s.service_id\n"
-            "WHERE s.account_id = %s AND s.service_status = 3\n"
-            "  AND s.service_start >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)")
-
-
-SCORES_SQL = _scores_sql()
-
-
-def empty_scores():
-    return {"count": 0, **{side: {kind: None for kind in SCORE_KINDS} for side, _ in SCORE_SIDES}}
-
-
-def load_scores(db, account_id):
-    """在 db lane 執行：{"daily": {...}, "weekly": {...}}，各有 count 和 customer／staff 的 4 個平均分數。"""
-    with db.cursor(dictionary=True) as cursor:
-        cursor.execute(SCORES_SQL, (account_id,))
-        row = cursor.fetchone()  # 沒有 GROUP BY 的聚合查詢一定剛好一列
-    return {period: {"count": int(row[f"{period}_count"] or 0),
-                     **{side: {kind: score_or_none(row[f"{period}_{side}_{kind}"]) for kind in SCORE_KINDS}
-                        for side, _ in SCORE_SIDES}}
-            for period in PERIODS}
-
-
-class ServiceScoreManager(QObject):
-    """首頁（server_home_button.qml）的分數。
-
-    - daily、weekly：{"count", "customer": {total, text, audio, facial}, "staff": {…}}；沒有資料的分數是 null。
-    - status：loading（還沒有資料）、ready、error。busy 是載入中：ready 時舊的分數留著、變淡（DS-33）。
-    """
-
-    statusChanged = Signal()
-    busyChanged = Signal()
-    scoresChanged = Signal()
-    errorChanged = Signal()
-
-    def __init__(self, services, account_id):
-        super().__init__()
-        self.services = services
-        self.account_id = account_id
-        self._status = "loading"
-        self._busy = False
-        self._scores = {period: empty_scores() for period in PERIODS}
-        self._error_detail = self._error_technical = ""
-        self._failure_count = 0
-
-    @Property(str, notify=statusChanged)
-    def status(self):
-        return self._status
-
-    @Property(bool, notify=busyChanged)
-    def busy(self):
-        return self._busy
-
-    @Property('QVariantMap', notify=scoresChanged)
-    def daily(self):
-        return self._scores["daily"]
-
-    @Property('QVariantMap', notify=scoresChanged)
-    def weekly(self):
-        return self._scores["weekly"]
-
-    @Property(str, notify=errorChanged)
-    def errorDetail(self):
-        return self._error_detail
-
-    @Property(str, notify=errorChanged)
-    def errorTechnical(self):
-        return self._error_technical
-
-    @Property(int, notify=errorChanged)
-    def failureCount(self):
-        return self._failure_count
-
-    @Slot()
-    def refresh(self):
-        """在 db lane 重新載入（1 個往返）。已經在載入就不再送一次。"""
-        db, account_id = self.services.db, self.account_id
-        if self.services.tasks.submit("db", HOME_SCORES_KEY, lambda token, report: load_scores(db, account_id),
-                                      on_ok=self._loaded, on_err=self._failed):
-            self._set_busy(True)
-
-    def _loaded(self, scores):
-        if scores != self._scores:
-            self._scores = scores
-            self.scoresChanged.emit()
-        if self._failure_count:
-            self._failure_count = 0
-            self.errorChanged.emit()
-        self._set_status("ready")
-        self._set_busy(False)
-
-    def _failed(self, error):
-        logger.warning("loading home scores failed: %r", error)
-        self._error_detail, self._error_technical = error_text(error)
-        self._failure_count += 1
-        self.errorChanged.emit()
-        self._set_status("error")  # DS-33：失敗時整排換成區塊錯誤
-        self._set_busy(False)
-
-    def _set_status(self, status):
-        if status != self._status:
-            self._status = status
-            self.statusChanged.emit()
-
-    def _set_busy(self, busy):
-        if busy != self._busy:
-            self._busy = busy
-            self.busyChanged.emit()
 
 
 # ---------------------------------------------------------------- 分析頁（ENG-05、UX-19～21、U2）、送出分析（UX-18）
@@ -1425,7 +1297,7 @@ class ServerHome(QObject):
     """服務人員端的外殼（server_home.qml 的 serverHome）。services 是 AppServices；
     只有直接建立、不經過 launch() 時（例如測試明細頁的下載）可以是 None，這時沒有監看。
 
-    分析完成的通知（ENG-16、ENG-17）：watcher 看到狀態變了，serviceModel 跳 toast，清單和首頁分數在背景重新整理；
+    分析完成的通知（ENG-16、ENG-17）：watcher 看到狀態變了，serviceModel 跳 toast，清單和首頁的卡片在背景重新整理；
     app 不在前景時 Dock 圖示跳動、加上徽章。通知上分析的動作（analyze:、retry-analyze:、open-analysis:）也在這裡接。
     """
 
@@ -1439,7 +1311,7 @@ class ServerHome(QObject):
         self._account_name = ""
         print(f"ServerHome initialized with account_id: {self.account_id}")
         self.deviceFinder = DeviceFinder(self)  # 不在這裡探測：打開錄影頁時才做
-        self.serviceScoreManager = ServiceScoreManager(services, account_id)
+        self.homeDashboard = HomeDashboard(services, account_id, HOME_KEY_PREFIX, self)  # 新版首頁（U1，T28）
         self.serviceModel = ServiceModel(services, account_id)
         self.shell_window = None  # 外殼視窗（launch() 設定）：app 不在前景時讓 Dock 圖示跳動
         self.attention = DockAttention(self)
@@ -1455,11 +1327,14 @@ class ServerHome(QObject):
         return self._account_name
 
     def start(self):
-        """launch() 呼叫：帳號名稱、各頁的資料、監看要看的服務都在 db lane 載入，GUI 執行緒不碰網路。
-        上次沒存完的錄影從本機的設定讀回來，每一筆跳一則附 Retry 的通知（T26）。"""
+        """launch() 呼叫：帳號名稱、首頁的三張卡片、監看要看的服務都在 db lane 載入，GUI 執行緒不碰網路。
+        上次沒存完的錄影從本機的設定讀回來，每一筆跳一則附 Retry 的通知（T26）。
+
+        分析清單不在這裡查（T28）：側邊欄的 Analysis（onLoadAnalysis）、首頁的服務方塊、View Results（openAnalysis）、
+        錄影存好、監看發現狀態變了，都會重新整理它。這樣 launch 是 1＋3＋1＝5 個往返（ENG-21 的預算）。
+        """
         self.loadAccountName()
-        self.serviceScoreManager.refresh()
-        self.serviceModel.refresh()
+        self.homeDashboard.refresh()
         if self.watcher is not None:
             self.watcher.start()
         self.deviceFinder.restore_saves()
@@ -1486,7 +1361,7 @@ class ServerHome(QObject):
     @Slot(str)
     def _analysis_finished(self, service_id):
         self.serviceModel.analysis_finished(service_id)
-        self.serviceScoreManager.refresh()  # 首頁的分數：舊的留著、變淡，新的到了再換（DS-33）
+        self.homeDashboard.refresh()  # 首頁的三張卡片：舊的數字留著，新的到了再換（DS-33、PLAN 5-4）
         self.attention.request(self.shell_window)
 
     @Slot(str)
@@ -1535,14 +1410,20 @@ class ServerHome(QObject):
             self.accountNameChanged.emit()
 
     def _account_name_failed(self, error):
-        # 名字只是顯示用：同一次斷線，首頁的分數會顯示區塊錯誤；按 Retry 或 Home 時再載一次
+        # 名字只是顯示用：同一次斷線，首頁的卡片會顯示區塊錯誤；按 Retry 或 Home 時再載一次
         logger.warning("loading the account name failed: %r", error)
 
     @Slot()
     def onLoadHome(self):
+        """側邊欄的 Home：三張卡片在背景重新查詢（舊的數字留著），還沒載入的帳號名稱一起再載一次。"""
+        self.reloadAccountName()
+        self.homeDashboard.refresh()
+
+    @Slot()
+    def reloadAccountName(self):
+        """首頁卡片的 Retry：名字沒載入（例如同一次斷線）時再載一次。"""
         if not self._account_name:
             self.loadAccountName()
-        self.serviceScoreManager.refresh()
 
     @Slot()
     def onLoadAnalysis(self):
@@ -1596,7 +1477,7 @@ def launch(engine, account_id, services=None):
     context = engine.rootContext()
     context.setContextProperty("serverHome", home)
     context.setContextProperty("deviceFinder", home.deviceFinder)
-    context.setContextProperty("serviceScoreManager", home.serviceScoreManager)
+    context.setContextProperty("homeDashboard", home.homeDashboard)
     context.setContextProperty("serviceModel", home.serviceModel)
     context.setContextProperty("serviceManager", home.serviceManager)
     context.setContextProperty("resultsModel", home.serviceManager.resultsModel)

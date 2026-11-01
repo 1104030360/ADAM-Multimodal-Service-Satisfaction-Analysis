@@ -809,6 +809,191 @@ def test_inline_error_retry_details_and_repeated_failure_hint(harness):
     assert not find(bare, "retryButton").isVisible() and not find(bare, "detailsButton").isVisible()
 
 
+# ── StatTile、ScoreBars（新版介面 U1：首頁的數字方塊和長條圖）─────────────────────
+
+def items_named(root, name):
+    """畫面樹（childItems）裡 objectName 是 name 的項目，依出現的順序：Repeater、ListView 建的項目沒有 QObject parent。"""
+    found, pending = [], [root]
+    while pending:
+        item = pending.pop(0)
+        if item.objectName() == name:
+            found.append(item)
+        pending.extend(item.childItems())
+    return found
+
+
+STAT_TILES = """
+    component Counted: StatTile {
+        property int activations: 0
+        onActivated: activations++
+    }
+    Counted {
+        objectName: "score"; x: 40; y: 80; width: 160
+        label: "Overall"; valueText: "82.4"; delta: 3.2
+        bandText: Theme.bandName(82.4); bandColor: Theme.bandColor(82.4)
+    }
+    Counted {
+        objectName: "down"; x: 240; y: 80; width: 160
+        label: "Audio"; valueText: "68.0"; delta: -1.9
+        bandText: Theme.bandName(68); bandColor: Theme.bandColor(68)
+    }
+    Counted { objectName: "flat"; x: 440; y: 80; width: 160; label: "Facial"; valueText: "90.0"; delta: 0 }
+    Counted { objectName: "none"; x: 640; y: 80; width: 160; label: "Text" }
+    Counted {
+        objectName: "button"; x: 40; y: 320; width: 160; interactive: true
+        label: "Not analyzed"; valueText: "3"; note: "Review"; noteColor: Theme.warningOnDark; noteStrong: true
+    }
+    Counted { objectName: "loadingTile"; x: 240; y: 320; width: 160; interactive: true; loading: true; label: "Overall" }
+"""
+
+
+def test_stat_tile_shows_the_number_the_change_and_the_band_in_words(harness):
+    window = harness.load(STAT_TILES)
+    score, down, flat, none = (find(window, name) for name in ("score", "down", "flat", "none"))
+    assert find(score, "tileValue").property("text") == "82.4"
+    assert qml(find(score, "tileValue"), "font.pixelSize") == 36  # 大數字（Theme.fontStat）
+    assert find(score, "tileDeltaText").property("text") == "3.2%"
+    assert qml(find(score, "tileDeltaText"), "Qt.colorEqual(color, Theme.successOnDark)")  # 往上：綠色＋箭頭
+    assert find(score, "tileBand").property("text") == "Fair"  # 分數帶一定寫字，不只靠顏色
+    assert qml(score, "Accessible.name") == "Overall 82.4, up 3.2%, Fair"
+    assert qml(score, "Accessible.role === Accessible.StaticText && focusPolicy === Qt.NoFocus")
+
+    assert qml(find(down, "tileDeltaText"), "Qt.colorEqual(color, Theme.errorOnDark)")
+    assert qml(down, "Accessible.name") == "Audio 68.0, down 1.9%, Needs improvement"
+    assert qml(find(flat, "tileDeltaText"), "Qt.colorEqual(color, Theme.textMuted)")  # 沒有變：灰色、沒有箭頭
+    assert qml(flat, "Accessible.name") == "Facial 90.0, no change"
+    assert not find(none, "tileDelta").isVisible() and not find(none, "tileBand").isVisible()
+    assert find(none, "tileValue").property("text") == "—"
+    assert qml(none, "Accessible.name") == "Text no data"  # 沒有資料是「—」，不是 0
+
+    click(window, score)  # 不能點的方塊：沒有反應
+    assert score.property("activations") == 0
+
+
+def test_stat_tile_can_be_a_button_for_mouse_and_keyboard(harness):
+    window = harness.load(STAT_TILES)
+    button = find(window, "button")
+    assert qml(button, "Accessible.role === Accessible.Button")
+    assert qml(button, "Accessible.name") == "Not analyzed 3, Review"
+    assert qml(find(button, "tileNote"), "font.weight === Font.DemiBold")
+    button.forceActiveFocus(Qt.FocusReason.TabFocusReason)  # 用鍵盤：Tab 到方塊，按空白鍵
+    assert qml(button, "visualFocus") and find(button, "tileFocusRing").isVisible()  # DS-30
+    QTest.keyClick(window, Qt.Key.Key_Space)
+    wait_until(lambda: button.property("activations") == 1)
+
+    click(window, button)
+    wait_until(lambda: button.property("activations") == 2)
+
+
+def test_stat_tile_while_loading_is_a_skeleton_that_ignores_clicks(harness):
+    window = harness.load(STAT_TILES)
+    tile = find(window, "loadingTile")
+    assert find(tile, "tileSkeleton").isVisible() and not find(tile, "tileContent").isVisible()
+    assert qml(tile, "Accessible.name") == "Overall, loading"
+    click(window, tile)
+    assert tile.property("activations") == 0
+
+
+SCORE_BARS = """
+    ScoreBars {
+        id: bars
+        objectName: "bars"
+        x: 20; y: 60; width: 600
+        interactive: true
+        frontLabel: "Customer score:"
+        backLabel: "Staff score"
+        summary: "Customer overall score of the last 3 analyzed services"
+        bars: [
+            { value: 88.0, compare: 72.0, label: "09:00", sublabel: "Oct 30", tooltip: "S1 · 88.0 / 72.0", name: "S1" },
+            { value: 72.5, compare: null, label: "10:00", sublabel: "Oct 30", tooltip: "S2 · 72.5", name: "S2" },
+            { value: null, compare: 64.0, label: "11:00", sublabel: "Oct 31", tooltip: "S3 · 64.0", name: "S3" }
+        ]
+        property var activations: []
+        onActivated: (index) => activations = activations.concat([index])
+    }
+"""
+
+
+def bar_groups(bars):
+    view = find(bars, "barList")
+    groups = [item for item in view.property("contentItem").childItems() if item.objectName() == "barGroup"]
+    return sorted(groups, key=lambda item: item.property("index"))
+
+
+def test_score_bars_start_at_zero_with_band_colors_guides_and_a_legend(harness):
+    window = harness.load(SCORE_BARS)
+    bars = find(window, "bars")
+    first, second, third = bar_groups(bars)
+    assert find(first, "valueBar").property("height") == pytest.approx(260 * 0.88)  # 從 0 開始，照實畫
+    assert qml(find(first, "valueBar"), "Qt.colorEqual(color, Theme.successOnLight)")
+    assert find(first, "compareBar").isVisible()
+    assert find(first, "compareBar").property("height") == pytest.approx(260 * 0.72)
+    assert qml(find(first, "compareBar"), "Qt.colorEqual(color, Theme.compareBar)")  # 另一方是灰色
+    label = find(first, "valueLabel")
+    assert label.property("text") == "88.0" and qml(label, "Qt.colorEqual(color, Theme.textOnDark)")  # 頂端的白字
+    assert (find(first, "barLabel").property("text"), find(first, "barSublabel").property("text")) == (
+        "09:00", "Oct 30")
+
+    assert qml(find(second, "valueBar"), "Qt.colorEqual(color, Theme.warningOnLight)")
+    assert not find(second, "compareBar").isVisible()  # 另一方沒有分數：沒有灰色的長條
+    assert not find(third, "valueBar").isVisible()
+    assert find(third, "valueLabel").property("text") == "—"  # 沒有分數：寫「—」，不畫 0
+
+    guides = items_named(bars, "guideLabel")
+    assert [guide.property("text") for guide in guides] == ["85", "70"]
+    assert [round(guide.parentItem().property("y")) for guide in guides] == [39, 78]  # 260 × (1 − 0.85)、260 × 0.3
+    assert qml(find(bars, "barList"), "Accessible.role === Accessible.Chart")
+    assert qml(find(bars, "barList"), "Accessible.name") == "Customer overall score of the last 3 analyzed services"
+    assert find(bars, "barLegend").isVisible()
+    assert not bars.property("scrolls")
+
+
+def test_score_bars_open_by_mouse_or_keyboard_and_show_a_tooltip(harness):
+    window = harness.load(SCORE_BARS)
+    bars = find(window, "bars")
+    first, second, third = bar_groups(bars)
+    tip = find(bars, "barTip")
+    assert not tip.property("visible")
+
+    QTest.mouseMove(window, center_of(third))  # 滑鼠移上去：那一組的說明
+    wait_until(lambda: tip.property("visible") and tip.property("text") == "S3 · 64.0")
+    click(window, second)
+    wait_until(lambda: value(bars, "activations") == [1])
+
+    first.forceActiveFocus(Qt.FocusReason.TabFocusReason)  # 鍵盤停在那一組：焦點框和說明
+    assert find(first, "barFocusRing").isVisible()
+    QTest.mouseMove(window, QPoint(900, 650))  # 滑鼠移開，說明跟著鍵盤
+    wait_until(lambda: tip.property("text") == "S1 · 88.0 / 72.0")
+    QTest.keyClick(window, Qt.Key.Key_Space)
+    wait_until(lambda: value(bars, "activations") == [1, 0])
+    assert qml(first, "Accessible.role === Accessible.Button") and qml(first, "Accessible.name") == "S1"
+
+    bars.setProperty("interactive", False)  # 不能點的（管理員的排名）：沒有焦點、按了沒反應，說明照樣有
+    first, second, third = bar_groups(bars)
+    assert qml(second, "focusPolicy === Qt.NoFocus && Accessible.role === Accessible.StaticText")
+    click(window, second)
+    assert value(bars, "activations") == [1, 0]
+    QTest.mouseMove(window, center_of(second))
+    wait_until(lambda: tip.property("visible") and tip.property("text") == "S2 · 72.5")
+
+
+def test_score_bars_scroll_sideways_when_every_group_does_not_fit(harness):
+    window = harness.load("""
+    ScoreBars {
+        objectName: "bars"
+        x: 20; y: 60; width: 600
+        minGroupWidth: 120
+        bars: Array.from({ length: 9 }, (_, i) => ({ value: 90 - 3 * i, compare: 70, label: "Staff " + i,
+                                                     sublabel: "1 service", tooltip: "", name: "Staff " + i }))
+    }
+""")
+    bars = find(window, "bars")
+    view = find(bars, "barList")
+    assert bars.property("scrolls") and qml(view, "interactive")  # 每一位都在，放不下就橫向捲動
+    assert view.property("contentWidth") == pytest.approx(9 * 120 + 8 * 14)
+    assert bar_groups(bars)[0].property("width") == 120
+
+
 def test_field_error_reserves_one_line_and_wraps_long_text(harness):
     window = harness.load("""
     FieldError { id: empty; objectName: "empty"; x: 300; y: 100; width: 300 }
@@ -961,13 +1146,13 @@ def test_theme_sizes_and_layers_match_the_design_system(harness):
     assert {name: theme(window, name) for name in expected} == expected
 
 
-def test_qmldir_declares_theme_as_singleton_and_the_thirteen_components():
+def test_qmldir_declares_theme_as_singleton_and_the_sixteen_components():
     lines = (COMPONENTS / "qmldir").read_text(encoding="utf-8").splitlines()
     assert lines == ["singleton Theme 1.0 Theme.qml"] + [
         f"{name} 1.0 {name}.qml" for name in ("Toast", "ToastHost", "StatusChip", "TransferProgress", "BusyButton",
                                                "EmptyState", "InlineError", "FieldError", "ConfirmDialog",
                                                "SidebarButton", "SettingsView", "Card", "PageHeader",
-                                               "ServiceSearchField")]
+                                               "ServiceSearchField", "StatTile", "ScoreBars")]
 
 
 def test_component_qml_files_use_crlf():

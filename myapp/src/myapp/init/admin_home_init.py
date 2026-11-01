@@ -3,23 +3,23 @@
 前端重建 F2（CONTRACTS §3）：資料庫的讀寫都送到 TaskRunner 的 db lane，用 DbLane 那一條連線做；
 GUI 執行緒上不碰資料庫。結果放進屬性（Property＋notify），頁面不管什麼時候建立，都拿得到最新的狀態（ENG-08）。
 
-- 每個區塊（分數、排名、趨勢、搜尋、帳號資料）都有四種狀態：loading、empty、error、ready（DS-25～27）。
+- 每個區塊（搜尋、帳號資料）都有四種狀態：loading、empty、error、ready（DS-25～27）。
+  首頁的三張卡片在 myapp/home_dashboard.py（新版介面 U1，兩端共用，T28），用的是同一套狀態。
   已經有資料時重新載入，舊資料留著，refreshing 為 true（畫面變淡，DS-33）。
 - 錯誤不再只 print：區塊原地顯示錯誤和重試；新增帳號的結果一定有 toast 或欄位錯誤（UX-33、UX-38）。
 - 明細頁的下載、報表的 PDF 也在背景（第三波 F3）：和服務人員端共用 myapp/media.py。
 """
-import calendar
 import logging
 import re
 import sys
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCharts import QXYSeries  # import 之後，QML 傳進來的 LineSeries／ScatterSeries 才會是 QXYSeries
-from PySide6.QtCore import Property, QObject, QPointF, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import Property, QObject, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 
 from myapp.db_lane import DbLane
+from myapp.home_dashboard import HomeDashboard
 from myapp.notifications import Notifier, user_message
 from myapp.passwords import hash_password
 from myapp.search import ServiceSearch
@@ -38,8 +38,6 @@ from myapp.media import ChartsModel, MediaModel, MediaService, PDFHandler, clear
 # ---------------------------------------------------------------- 區塊的載入狀態（ENG-08、DS-25～27）
 
 LOADING, EMPTY, ERROR, READY, IDLE = "loading", "empty", "error", "ready", "idle"
-NO_SCORE = -1.0  # 和資料庫一樣：-1 表示「沒有資料」，畫面顯示「—」
-SCORE_KEYS = ("total", "text", "audio", "facial")
 DATE_FORMAT = "%Y-%m-%d"
 
 
@@ -462,308 +460,6 @@ class AccountManager(QObject):
             self._submit_add(self._retry_payload)
 
 
-# ---------------------------------------------------------------- 管理員首頁：趨勢、分數、排名
-
-
-def trend_points(rows):
-    """[(日, 服務人員平均, 顧客平均)] → ({日: 分數}, {日: 分數})。沒有資料的日子不放（UX-30：是空白，不是 0）。"""
-    staff, customer = {}, {}
-    for day, staff_score, customer_score in rows:
-        if staff_score is not None:  # 某天的分數全是 -1 時，NULLIF 之後只剩 NULL，AVG 也是 NULL
-            staff[int(day)] = float(staff_score)
-        if customer_score is not None:
-            customer[int(day)] = float(customer_score)
-    return staff, customer
-
-
-def as_points(scores):
-    """{日: 分數} → [{"x": 日, "y": 分數}]，依日期排序（給 QML 的 ScatterSeries）。"""
-    return [{"x": day, "y": scores[day]} for day in sorted(scores)]
-
-
-def as_runs(scores):
-    """{日: 分數} → 連續的日子一段：[[{"x", "y"}, …], …]。每一段畫一條線，段和段之間斷開（UX-30）。"""
-    runs = []
-    for point in as_points(scores):
-        if runs and point["x"] == runs[-1][-1]["x"] + 1:
-            runs[-1].append(point)
-        else:
-            runs.append([point])
-    return runs
-
-
-class TrendDataManager(_Section):
-    """趨勢圖：選定月份每一天的平均分數。只有有資料的日子才有點；x 軸是那個月實際的天數（UX-30）。
-
-    換月份用 replace=True：使用者連續換月份時，只留最後一次的結果。圖表由 QML 呼叫 fillSeries()，
-    每條線一次給完（ENG-19），不逐點送 signal。
-    """
-
-    trendChanged = Signal()
-
-    QUERY = """
-        SELECT DAY(service.service_start) AS day,
-               AVG(NULLIF(score.server_total, -1)) AS server_score,
-               AVG(NULLIF(score.customer_total, -1)) AS customer_score
-        FROM tbl_service_score AS score
-        JOIN tbl_service AS service ON score.service_id = service.service_id
-        WHERE service.service_status = 3
-          AND service.service_start >= %s AND service.service_start < %s
-        GROUP BY DAY(service.service_start)
-        ORDER BY DAY(service.service_start)
-    """
-
-    def __init__(self, services, parent=None):
-        super().__init__(services, "admin:trends", parent=parent)
-        today = date.today()
-        self._month, self._year = today.month, today.year
-        self._staff, self._customer = {}, {}
-
-    @Property(int, notify=trendChanged)
-    def month(self):
-        return self._month
-
-    @Property(int, notify=trendChanged)
-    def year(self):
-        return self._year
-
-    @Property(int, notify=trendChanged)
-    def daysInMonth(self):
-        return calendar.monthrange(self._year, self._month)[1]
-
-    @Property("QVariantList", notify=trendChanged)
-    def staffPoints(self):
-        return as_points(self._staff)
-
-    @Property("QVariantList", notify=trendChanged)
-    def customerPoints(self):
-        return as_points(self._customer)
-
-    @Property("QVariantList", notify=trendChanged)
-    def staffRuns(self):
-        return as_runs(self._staff)
-
-    @Property("QVariantList", notify=trendChanged)
-    def customerRuns(self):
-        return as_runs(self._customer)
-
-    @Slot(int, int, result=bool)
-    def load(self, month, year):
-        """載入 year 年 month 月。年份選單還沒準備好時 QML 會傳 0（Number("")），那時不查。"""
-        if not (1 <= month <= 12 and 1 <= year < 9999):
-            return False
-        db = self.services.db
-        start = datetime(year, month, 1)
-        end = (start + timedelta(days=32)).replace(day=1)  # 下個月 1 號；用「小於」它，月底最後一天整天都算
-
-        def work(token, report):
-            with db.cursor() as cursor:
-                cursor.execute(self.QUERY, (start, end))
-                return cursor.fetchall()
-
-        return self._submit(work, lambda rows: self._apply(month, year, rows), replace=True)
-
-    @Slot(result=bool)
-    def retry(self):
-        return self.load(self._month, self._year)
-
-    @Slot(QObject, "QVariantList")
-    def fillSeries(self, series, points):
-        """把整條線一次交給 QML 的 LineSeries／ScatterSeries（ENG-19：一次 replace，不逐點 append）。"""
-        if not isinstance(series, QXYSeries):
-            raise TypeError(f"fillSeries() needs a LineSeries or ScatterSeries, not {type(series).__name__}")
-        series.replace([QPointF(point["x"], point["y"]) for point in points])
-
-    def _apply(self, month, year, rows):
-        self._month, self._year = month, year
-        self._staff, self._customer = trend_points(rows)
-        self.trendChanged.emit()
-        return not self._staff and not self._customer
-
-
-def scores_query():
-    """一個查詢同時算每日（今天）和每週（7 天前到今天）：1 個往返，以前是 2 個。-1 不算進平均。"""
-    periods = {"daily": "service.service_start >= CURDATE()", "weekly": None}
-    columns = []
-    for period, condition in periods.items():
-        columns.append(f"COUNT(CASE WHEN {condition} THEN 1 END) AS {period}_count" if condition
-                       else f"COUNT(*) AS {period}_count")
-        for who in ("customer", "server"):
-            for key in SCORE_KEYS:
-                value = f"NULLIF(score.{who}_{key}, -1)"
-                if condition:
-                    value = f"CASE WHEN {condition} THEN {value} END"
-                columns.append(f"AVG({value}) AS {period}_{who}_{key}")
-    return (f"SELECT {', '.join(columns)} FROM tbl_service AS service "
-            "JOIN tbl_service_score AS score ON service.service_id = score.service_id "
-            "WHERE service.service_status = 3 AND service.service_start >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)")
-
-
-class ServiceScoreManager(_Section):
-    """管理員首頁的每日、每週分數（DS-33）。所有人的服務都算；-1（沒有資料）不算進平均。
-
-    分數是 {"total", "text", "audio", "facial"}，沒有資料的是 -1（畫面顯示「—」，不畫 0）。
-    dailyState、weeklyState 是各期間的狀態：今天沒有完成的服務（或分數全是 -1）時是 empty。
-    """
-
-    scoresChanged = Signal()
-    periodStatesChanged = Signal()  # dailyState、weeklyState：跟著 stateChanged 一起發
-    QUERY = scores_query()
-
-    def __init__(self, services, parent=None):
-        super().__init__(services, "admin:scores", parent=parent)
-        self._counts = {"daily": 0, "weekly": 0}
-        self._scores = {(period, who): dict.fromkeys(SCORE_KEYS, NO_SCORE)
-                        for period in ("daily", "weekly") for who in ("customer", "server")}
-        self.stateChanged.connect(self.periodStatesChanged)  # 分數在 stateChanged 之前就換好了
-
-    @Property(int, notify=scoresChanged)
-    def dailyCount(self):
-        return self._counts["daily"]
-
-    @Property(int, notify=scoresChanged)
-    def weeklyCount(self):
-        return self._counts["weekly"]
-
-    @Property("QVariantMap", notify=scoresChanged)
-    def dailyCustomerScores(self):
-        return dict(self._scores["daily", "customer"])
-
-    @Property("QVariantMap", notify=scoresChanged)
-    def dailyStaffScores(self):
-        return dict(self._scores["daily", "server"])
-
-    @Property("QVariantMap", notify=scoresChanged)
-    def weeklyCustomerScores(self):
-        return dict(self._scores["weekly", "customer"])
-
-    @Property("QVariantMap", notify=scoresChanged)
-    def weeklyStaffScores(self):
-        return dict(self._scores["weekly", "server"])
-
-    @Property(str, notify=periodStatesChanged)
-    def dailyState(self):
-        return self._period_state("daily")
-
-    @Property(str, notify=periodStatesChanged)
-    def weeklyState(self):
-        return self._period_state("weekly")
-
-    @Slot(result=bool)
-    def refresh(self):
-        db = self.services.db
-
-        def work(token, report):
-            with db.cursor(dictionary=True) as cursor:
-                cursor.execute(self.QUERY)
-                return cursor.fetchone()
-
-        return self._submit(work, self._apply)
-
-    def _apply(self, row):
-        for period in ("daily", "weekly"):
-            self._counts[period] = int(row[f"{period}_count"] or 0)
-            for who in ("customer", "server"):
-                self._scores[period, who] = {
-                    key: NO_SCORE if row[f"{period}_{who}_{key}"] is None else float(row[f"{period}_{who}_{key}"])
-                    for key in SCORE_KEYS}
-        self.scoresChanged.emit()
-        return not self._has_data("daily") and not self._has_data("weekly")
-
-    def _has_data(self, period):
-        scores = [*self._scores[period, "customer"].values(), *self._scores[period, "server"].values()]
-        return self._counts[period] > 0 and any(score >= 0 for score in scores)
-
-    def _period_state(self, period):
-        if self._state not in (READY, EMPTY):
-            return self._state
-        return READY if self._has_data(period) else EMPTY
-
-
-def rank(rows):
-    """[(姓名, 顧客平均, 服務人員平均)] → (顧客前 5、顧客後 5、服務人員前 5、服務人員後 5)，每一項是 {"name", "score"}。
-
-    平均在 SQL 裡算好（排除 -1）；沒有分數（None 或 -1）的人不排名。分數取到小數第 2 位。
-    同分時照姓名排序（SQL 的 ORDER BY），結果固定。
-    """
-    customers = [(name, round(float(customer), 2)) for name, customer, _ in rows
-                 if customer is not None and customer != -1]
-    staff = [(name, round(float(server), 2)) for name, _, server in rows if server is not None and server != -1]
-
-    def entries(pairs):
-        return [{"name": name, "score": score} for name, score in pairs]
-
-    return (entries(sorted(customers, key=lambda pair: pair[1], reverse=True)[:5]),
-            entries(sorted(customers, key=lambda pair: pair[1])[:5]),
-            entries(sorted(staff, key=lambda pair: pair[1], reverse=True)[:5]),
-            entries(sorted(staff, key=lambda pair: pair[1])[:5]))
-
-
-class RankingModel(_Section):
-    """排名：全部期間、已完成的服務，依服務人員的平均分數取前 5 和後 5。
-
-    平均改在 SQL 裡算（ENG-06）：回傳的列數是服務人員的人數，不再隨著服務的筆數變多。
-    """
-
-    rankingChanged = Signal()
-
-    QUERY = """
-        SELECT acc.account_name,
-               AVG(NULLIF(score.customer_total, -1)) AS customer_score,
-               AVG(NULLIF(score.server_total, -1)) AS server_score
-        FROM tbl_service_score AS score
-        JOIN tbl_service AS service ON score.service_id = service.service_id
-        JOIN tbl_account AS acc ON service.account_id = acc.account_id
-        WHERE service.service_status = 3
-        GROUP BY acc.account_name
-        ORDER BY acc.account_name
-    """
-
-    def __init__(self, services, parent=None):
-        super().__init__(services, "admin:ranking", parent=parent)
-        self._ranking = ([], [], [], [])
-        self._ranked = 0
-
-    @Property("QVariantList", notify=rankingChanged)
-    def topCustomer(self):
-        return self._ranking[0]
-
-    @Property("QVariantList", notify=rankingChanged)
-    def bottomCustomer(self):
-        return self._ranking[1]
-
-    @Property("QVariantList", notify=rankingChanged)
-    def topStaff(self):
-        return self._ranking[2]
-
-    @Property("QVariantList", notify=rankingChanged)
-    def bottomStaff(self):
-        return self._ranking[3]
-
-    @Property(int, notify=rankingChanged)
-    def rankedCount(self):
-        """有分數、進得了排名的服務人員人數。"""
-        return self._ranked
-
-    @Slot(result=bool)
-    def refresh(self):
-        db = self.services.db
-
-        def work(token, report):
-            with db.cursor() as cursor:
-                cursor.execute(self.QUERY)
-                return cursor.fetchall()
-
-        return self._submit(work, self._apply)
-
-    def _apply(self, rows):
-        self._ranking = rank(rows)
-        self._ranked = len({name for name, customer, server in rows
-                            if (customer is not None and customer != -1) or (server is not None and server != -1)})
-        self.rankingChanged.emit()
-        return self._ranked == 0
-
-
 # ---------------------------------------------------------------- 服務查詢
 
 
@@ -963,6 +659,8 @@ class ResultsModel(QStandardItemModel):
 
 # ---------------------------------------------------------------- 主畫面
 
+HOME_KEY_PREFIX = "admin:home"  # 首頁三張卡片的 TaskRunner key：admin:home:overview、:ranking、:trend
+
 
 class AdminHome(QObject):
     """管理員端的主畫面：建構時不碰資料庫（ENG-06），各頁的資料由頁面或 launch() 送到 db lane 載入。"""
@@ -972,9 +670,7 @@ class AdminHome(QObject):
         self.account_id = account_id
         self.services = services
         self._profile = AccountProfile(services, account_id, self)
-        self.serviceScoreManager = ServiceScoreManager(services, self)
-        self.rankingModel = RankingModel(services, self)
-        self.trendDataManager = TrendDataManager(services, self)
+        self.homeDashboard = HomeDashboard(services, None, HOME_KEY_PREFIX, self)  # 新版首頁（U1，T28）：全部員工
         self.serviceManager = ServiceManager(services, self)
         self.accountManager = AccountManager(services, self)
         self.chartsModel = ChartsModel()
@@ -1016,8 +712,8 @@ class AdminHome(QObject):
 def launch(engine, account_id, services=None):
     """建立管理員端的主畫面（admin_home.qml），回傳 AdminHome。
 
-    GUI 執行緒上不碰資料庫（0 個往返）：帳號名稱和等級在這裡送到 db lane，首頁的分數、排名、趨勢由頁面自己送，
-    每一項只載入一次（ENG-06），背景總共 4 個往返。
+    GUI 執行緒上不碰資料庫（0 個往返）：帳號名稱和等級在這裡送到 db lane，首頁的三張卡片（Overview、Staff Ranking、
+    Score Trend）由首頁建立時送（homeDashboard.refresh()），背景總共 1＋3＝4 個往返（T28）。
 
     services：MainWindow 的 AppServices。沒給時（還沒改的舊測試直接呼叫 launch）自己建一份，
     並註冊外殼要用的 context property（notifier、uiPrefs、tasks），視窗關掉時一起收掉。
@@ -1029,9 +725,7 @@ def launch(engine, account_id, services=None):
     context = engine.rootContext()
     for name, obj in {
         "adminHome": home,
-        "serviceScoreManager": home.serviceScoreManager,
-        "rankingModel": home.rankingModel,
-        "trendDataManager": home.trendDataManager,
+        "homeDashboard": home.homeDashboard,
         "serviceManager": home.serviceManager,
         "resultsModel": home.serviceManager.resultsModel,
         "accountManager": home.accountManager,

@@ -1,4 +1,5 @@
-"""管理員端看得到的回饋（前端重建 F1 接線＋F2，CONTRACTS §3）：新增帳號、外殼的通知、各區塊的空狀態和錯誤。
+"""管理員端看得到的回饋（前端重建 F1 接線＋F2，CONTRACTS §3；新版介面 U1）：新增帳號、外殼的通知、首頁三張卡片的
+空狀態、錯誤、重新整理和切換。
 
 - 每個測試都開著 no_network_on_gui_thread（GUI 執行緒碰網路就失敗），並且要求 QML 零警告。
 - 資料庫經過 db_proxy：數往返次數，也可以讓它斷線（kill）。只斷言結果和往返次數，不斷言時間。
@@ -15,14 +16,13 @@ import pytest
 from PySide6.QtCore import QObject, QPointF, Qt
 from PySide6.QtTest import QTest
 
+from myapp import home_dashboard
 from myapp.init import admin_home_init
 from myapp.passwords import verify_password
 from tests.integration.helpers import ADMIN_ID, find_button, qml, toasts, unused_port, wait_until
 
 pytestmark = pytest.mark.integration
 
-MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
-          "November", "December"]
 FORM_FIELDS = ("usernameField", "passwordField", "nameField", "jobTitleField")
 
 
@@ -31,7 +31,7 @@ FORM_FIELDS = ("usernameField", "passwordField", "nameField", "jobTitleField")
 
 def settled(home):
     """首頁和帳號資料都載入完了（成功、沒有資料或失敗都算），也不在重新整理。"""
-    sections = (home.profile, home.serviceScoreManager, home.rankingModel, home.trendDataManager)
+    sections = (home.profile, *home.homeDashboard.sections)
     return all(section.state != "loading" and not section.refreshing for section in sections)
 
 
@@ -140,11 +140,27 @@ def toast_titled(window, title):
     return matching()[0]
 
 
-def rings(page, panel="dailyPanel"):
-    """一個期間的 8 個分數環：顧客 4 個、服務人員 4 個（Repeater 的項目用 itemAt 拿）。"""
-    panel_item = child(page, panel)
-    return [qml(child(panel_item, repeater), f"itemAt({i})")
-            for repeater in ("customerRings", "staffRings") for i in range(4)]
+def find_item(root, name):
+    """在畫面樹（childItems）裡找 objectName 是 name 的項目：Repeater、ListView 建立的項目沒有 QObject parent。"""
+    pending = [root]
+    while pending:
+        item = pending.pop(0)
+        if item.objectName() == name:
+            return item
+        pending.extend(item.childItems())
+    raise AssertionError(f"找不到 {name}")
+
+
+def js(obj, expression):
+    """qml() 的結果；JS 陣列、物件轉成 Python 的 list、dict。"""
+    result = qml(obj, expression)
+    return result.toVariant() if hasattr(result, "toVariant") else result
+
+
+def tile_value(page, name):
+    tile = find_item(page, name)  # 留著方塊的參照，子物件的 wrapper 才不會失效（T17）
+    value = child(tile, "tileValue")
+    return value.property("text")
 
 
 def run_on_db_lane(services, work):
@@ -160,15 +176,6 @@ def warm_up(services):
             with services.db.cursor(dictionary=dictionary) as cursor:
                 cursor.execute("SELECT 1")
                 cursor.fetchall()
-        return True
-    run_on_db_lane(services, work)
-
-
-def freeze_lane_clock(services, moment):
-    """讓 db lane 那條連線的 NOW()、CURDATE() 停在 moment（SET TIMESTAMP 只影響這條連線）。"""
-    def work():
-        with services.db.cursor() as cursor:
-            cursor.execute("SET TIMESTAMP = UNIX_TIMESTAMP(%s)", (moment,))
         return True
     run_on_db_lane(services, work)
 
@@ -203,10 +210,11 @@ def test_launch_shows_the_shell_first_and_loads_in_the_background(db, db_proxy, 
         page = qml(window, "mainContentLoader.item")
         assert page is not None  # 外殼和首頁已經建好了
         assert qml(window, "header.userName") == ""  # 名字還在載入
-        assert {child(ring, "scoreText").property("text") for ring in rings(page)} == {"—"}  # 還沒載入：「—」，不是 0
+        for name in ("overviewSkeleton", "rankingSkeleton", "trendSkeleton"):  # 還沒載入：灰色骨架，不是 0
+            assert child(page, name).isVisible(), name
         assert db_proxy.snapshot()["rt"] == 0  # db lane 被擋著，這段期間的往返只可能來自 GUI 執行緒
     wait_until(lambda: settled(home))
-    assert db_proxy.snapshot()["rt"] == 4  # 名字和等級、分數、排名、趨勢各 1 個往返（預算 ≤ 5）
+    assert db_proxy.snapshot()["rt"] == 4  # 名字和等級 1，首頁的三張卡片各 1（預算 ≤ 5，T28）
     assert qml(window, "header.userName") == "系統管理員（佔位）"
 
 
@@ -226,6 +234,7 @@ def test_add_account_success_shows_a_toast_clears_the_form_and_focuses_username(
     page = open_add_page(admin)
     wait_until(lambda: qml(page, "levelField.count") == 5)
     fill(page, usernameField="new_staff", passwordField="S3cret-pass", nameField="新同事", jobTitleField="櫃檯人員")
+    warm_up(admin.services)  # INSERT 用一般的 cursor；首頁的查詢都用 dictionary cursor，建 cursor 不算（T16）
     admin.proxy.reset()
     click(admin.window, child(page, "addAccountButton"))
 
@@ -424,111 +433,119 @@ def test_toasts_are_visible_when_motion_is_off(admin):
     assert toast.property("opacity") == 1
 
 
-# ---------------------------------------------------------------- 首頁：沒有資料、錯誤、重新整理（DS-25～27、DS-33）
+# ---------------------------------------------------------------- 首頁（U1，T28）：空狀態、錯誤、重新整理、切換（PLAN 5-2、5-4）
+
+
+def seed_staff(db, today, scores):
+    """scores：[(名字, 顧客分數, 員工分數)]，每人今天一筆分析完成的服務。回傳帳號。"""
+    accounts = []
+    for number, (name, customer, staff) in enumerate(scores, start=3):
+        account = f"00000000-0000-0000-0000-{number:012d}"
+        db.add_account(account, f"staff{number}", name)
+        service_id = f"S{today:%Y%m%d}{number:02d}0000"
+        db.add_service(service_id, f"{today} {number:02d}:00:00", account_id=account)
+        db.add_scores(service_id, customer=customer, server=staff)
+        accounts.append(account)
+    return accounts
+
+
+def refreshed_page(admin):
+    """首頁重新查詢（和側邊欄的 Home 一樣是頁面建立時查；這裡直接叫），等三張卡片都回來。"""
+    page = qml(admin.window, "mainContentLoader.item")
+    admin.home.homeDashboard.refresh()
+    wait_until(lambda: settled(admin.home))
+    return page
 
 
 def test_home_without_data_shows_empty_states_not_zeros(admin):
     page = qml(admin.window, "mainContentLoader.item")
-    daily = child(page, "dailyPanel")
-    assert child(daily, "panelSummary").property("text") == "No completed analyses today"
-    assert {child(ring, "scoreText").property("text") for ring in rings(page)} == {"—"}
-    assert qml(rings(page)[0], "Accessible.name") == "Customer overall score, no data"
-    legend = child(daily, "scoreLegend")  # 弧線顏色的門檻寫出來（UX-07）
-    assert legend.isVisible() and qml(legend, "Accessible.name") == (
-        "Arc colors: good is 85 and up, fair is 70 to 84, needs improvement is below 70.")
+    empty = child(page, "overviewEmpty")
+    assert empty.isVisible() and child(empty, "emptyTitle").property("text") == "No services in the last 30 days"
+    assert child(empty, "emptyDescription").property("text") == (
+        "Scores show up here after staff record services and they're analyzed.")
+    assert not child(page, "newRecordingButton").isVisible()  # 管理員端不錄影：沒有 New Recording
+    assert child(page, "overviewSubtitle").property("text") == "Last 30 days · 0 services"
+    assert not child(page, "sideToggle").isVisible() and not child(page, "periodBox").isVisible()
+    ranking = child(page, "rankingEmpty")
+    assert ranking.isVisible()
+    assert child(ranking, "emptyTitle").property("text") == "No analyzed services in the last 30 days"
+    assert not child(page, "rankingBars").isVisible()
+    trend = child(page, "trendEmpty")
+    assert trend.isVisible() and child(trend, "emptyTitle").property("text") == "No scores in the last 14 days"
 
-    qml(page, "root.currentTab = 2")
-    empty = child(page, "rankingEmpty")
-    assert empty.isVisible() and child(empty, "emptyTitle").property("text") == "No rankings yet"
-    assert not child(page, "rankingGrid").isVisible()
 
-    qml(page, "root.currentTab = 3")
+def test_home_ranks_every_staff_member_and_switches_without_querying(admin, db):
+    """排名列出每一位員工（以前只留前 5、後 5），由高到低；Customer／Staff、期間、分數換了都不再查詢（T28）。"""
     today = date.today()
-    empty = child(page, "trendsEmpty")
-    assert empty.isVisible()
-    assert child(empty, "emptyTitle").property("text") == f"No completed analyses in {MONTHS[today.month - 1]} {today.year}"
+    names = ["Ava", "Ben", "Cai", "Dee", "Eli", "Fay", "Gus"]
+    seed_staff(db, today, [(name, 60 + 5 * n, 95 - 5 * n) for n, name in enumerate(names)])
+    page = refreshed_page(admin)
+    assert child(page, "overviewSubtitle").property("text") == "Last 30 days · 7 services · 7 staff"
+    assert tile_value(page, "scoreTile_overall") == "75.0"  # (60 + 65 + … + 90) / 7
+    assert child(page, "scoresLabel").property("text") == "Customer scores, all staff"
+    bars = child(page, "rankingBars")
+    assert js(bars, "bars.map(bar => bar.label)") == names[::-1]  # 顧客分數由高到低
+    assert js(bars, "bars.map(bar => bar.sublabel)") == ["1 service"] * 7
+    assert child(page, "rankingSubtitle").property("text") == "Customer overall score by staff · last 30 days"
+    assert page.findChild(QObject, "openRankingButton") is None  # 卡片裡已經列出每一位：沒有 ↗（T28）
 
+    # 管理員端沒有分析頁：服務方塊只是數字，不能點、不接受焦點
+    completed = child(page, "completedTile")
+    assert not qml(completed, "interactive") and qml(completed, "Accessible.role === Accessible.StaticText")
+    assert qml(completed, "focusPolicy === Qt.NoFocus")
+    assert child(child(page, "notAnalyzedTile"), "tileNote").property("text") == "Nothing waiting"
 
-def test_home_tabs_are_graphite_segments_for_mouse_and_keyboard(admin):
-    """F5（D2、DS-12、UX-41）：四個分頁是和服務人員端共用的 SegmentTab。選取的是石墨灰白字（以前是 Material Green，
-    白字 2.78:1），沒選的是 #E0E0E0；滑鼠和鍵盤都能切換，輔助技術知道它是分頁、哪一個被選取。"""
-    page = qml(admin.window, "mainContentLoader.item")
-    tabs = [child(page, name) for name in ("dailyTab", "weeklyTab", "rankingTab", "trendsTab")]
-    assert [tab.property("text") for tab in tabs] == ["Daily Scores", "Weekly Scores", "Ranking", "Trends"]
-    assert [tab.property("selected") for tab in tabs] == [True, False, False, False]
-    assert qml(tabs[0], "Qt.colorEqual(background.color, Theme.segmentSelected)"
-                        " && Qt.colorEqual(contentItem.color, Theme.segmentSelectedText)")
-    assert qml(tabs[1], "Qt.colorEqual(background.color, Theme.segmentIdle)"
-                        " && Qt.colorEqual(contentItem.color, Theme.segmentIdleText)")
-    assert qml(tabs[0], "Accessible.role === Accessible.PageTab && Accessible.selected")
-
-    click(admin.window, tabs[2])
-    assert qml(page, "currentTab") == 2 and tabs[2].property("selected") and not tabs[0].property("selected")
-    assert child(page, "rankingPanel").isVisible() and not child(page, "dailyPanel").isVisible()
-
-    tabs[3].forceActiveFocus(Qt.FocusReason.TabFocusReason)  # 用鍵盤：Tab 到「Trends」，按空白鍵
-    assert qml(tabs[3], "visualFocus")  # 看得到焦點框（DS-30）
+    admin.proxy.reset()
+    staff = child(page, "sideStaff")  # 用鍵盤：Tab 到 Staff，按空白鍵
+    staff.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    assert qml(staff, "visualFocus")
     QTest.keyClick(admin.window, Qt.Key.Key_Space)
-    wait_until(lambda: qml(page, "currentTab") == 3)
-    assert child(page, "trendsPanel").isVisible() and not child(page, "rankingPanel").isVisible()
+    wait_until(lambda: qml(page, "overview.side") == "staff")
+    assert qml(staff, "Accessible.checked") and not qml(child(page, "sideCustomer"), "Accessible.checked")
+    assert js(bars, "bars.map(bar => bar.label)") == names  # 員工分數由高到低
+    assert child(page, "rankingSubtitle").property("text") == "Staff overall score by staff · last 30 days"
+    assert child(page, "scoresLabel").property("text") == "Staff scores, all staff"
+    qml(page, 'overview.period = "today"')
+    assert child(page, "overviewSubtitle").property("text") == "Today · 7 services · 7 staff"
+    qml(page, 'trend.metric = "facial"')
+    assert child(page, "trendSubtitle").property("text") == "Facial · all staff · last 14 days"
+    assert admin.proxy.snapshot()["rt"] == 0
 
 
-def test_ranking_boxes_are_neutral_and_trend_controls_have_names(admin, db):
-    """排名的四格是中性的灰底、#333333 的字：紅綠只代表狀態（DS-12、DS-13），以前的綠、橘、藍、紅標題不到 4.5:1（UX-45）。
-    趨勢的選單和圖表有給輔助技術的名稱（UX-41）。"""
+def test_home_controls_have_names_and_the_trend_chart_describes_itself(admin, db):
     today = date.today()
-    service_id = f"S{today:%Y%m%d}090000"
-    db.add_service(service_id, f"{today} 09:00:00")
-    db.add_scores(service_id, customer=92, server=64)
-    page = qml(admin.window, "mainContentLoader.item")
-    qml(page, "rankingModel.refresh(); root.reloadTrends()")
-    wait_until(lambda: admin.home.rankingModel.state == "ready" and admin.home.trendDataManager.state == "ready")
-    qml(page, "root.currentTab = 2")
-    for name, title in (("topCustomers", "Top 5 Customers"), ("bottomCustomers", "Bottom 5 Customers"),
-                        ("topStaff", "Top 5 Staff"), ("bottomStaff", "Bottom 5 Staff")):
-        box = child(page, name)
-        assert qml(box, "Qt.colorEqual(color, Theme.card) && Qt.colorEqual(border.color, Theme.cardBorder)"), name
-        assert qml(box, "Accessible.role === Accessible.List") and qml(box, "Accessible.name") == title
-
-    qml(page, "root.currentTab = 3")
-    assert (qml(page, "monthSelector.Accessible.name"), qml(page, "yearSelector.Accessible.name")) == ("Month", "Year")
+    seed_staff(db, today, [("Ava", 92, 64)])
+    page = refreshed_page(admin)
+    assert (qml(page, "overview.Accessible.name"), qml(child(page, "sideToggle"), "Accessible.name")) == (
+        "Overview", "Show scores for")
+    assert (child(page, "periodBox").property("displayText"), qml(child(page, "periodBox"), "Accessible.name")) == (
+        "Last 30 days", "Period")
+    assert qml(child(page, "metricBox"), "Accessible.name") == "Score"
     chart = child(page, "trendChart")
     assert qml(chart, "Accessible.role === Accessible.Chart")
-    assert qml(chart, "Accessible.name") == f"Daily average scores, {MONTHS[today.month - 1]} {today.year}"
-    assert qml(chart, "Accessible.description") == "Days with data: staff 1, customers 1."
+    label = home_dashboard.short_day(today)
+    first = home_dashboard.short_day(home_dashboard.trend_days(today)[0])
+    assert qml(chart, "Accessible.name") == f"Overall score, daily average from {first} to {label}"
+    assert qml(chart, "Accessible.description").startswith(f"Customer · 92.0 on {label}. Staff · 64.0 on {label}")
+    assert child(page, "customerLegend").property("text") == f"Customer · 92.0 on {label}"
+    overall = find_item(page, "scoreTile_overall")
+    assert qml(overall, "Accessible.name") == "Overall 92.0, Good"
 
 
-def test_scores_refresh_keeps_old_rings_dimmed_and_repaints_on_change(admin, db):
+def test_home_refresh_keeps_old_numbers_and_says_updating(admin, db):
     today = date.today()
-    freeze_lane_clock(admin.services, f"{today} 18:00:00")
-    service_id = f"S{today:%Y%m%d}090000"
-    db.add_service(service_id, f"{today} 09:00:00")
-    db.add_scores(service_id, customer=80, server=70)
-    scores = admin.home.serviceScoreManager
-    page = qml(admin.window, "mainContentLoader.item")
-    scores.refresh()
-    ring = rings(page)[0]  # 顧客的 Overall
-    wait_until(lambda: child(ring, "scoreText").property("text") == "80")
-    assert qml(ring, "Accessible.name") == "Customer overall score 80, fair"
-    assert child(child(page, "dailyPanel"), "panelSummary").property("text") == "Services analyzed today: 1"
-    render_frames(admin.window)  # 排隊中的重畫都畫完，之後才開始數
-    paints = ring.property("paints")
-    assert paints > 0
-
-    panel = child(page, "dailyPanel")
+    seed_staff(db, today, [("Ava", 80, 70)])
+    page = refreshed_page(admin)
+    subtitle = child(page, "overviewSubtitle")
+    assert tile_value(page, "scoreTile_overall") == "80.0"
     with db_lane_blocked(admin.services):
-        db.execute("UPDATE tbl_service_score SET customer_total = 90 WHERE service_id = %s", (service_id,))
-        scores.refresh()  # 排在被擋住的工作後面
-        wait_until(lambda: child(panel, "rings").property("opacity") == 0.5)  # 過了 300 ms 才變淡
-        assert child(panel, "panelStatus").property("text") == "Updating…"
-        assert child(ring, "scoreText").property("text") == "80"  # 舊資料留著，不換成 placeholder
-        assert qml(ring, "Accessible.name") == "Customer overall score 80, fair, updating"
-        render_frames(admin.window)
-        assert ring.property("paints") == paints  # 變淡、狀態列改變都不重畫 Canvas：資料沒變
-
-    wait_until(lambda: child(ring, "scoreText").property("text") == "90")
-    wait_until(lambda: child(panel, "rings").property("opacity") == 1)
-    wait_until(lambda: ring.property("paints") > paints)  # 分數變了，Canvas 才重畫
+        db.execute("UPDATE tbl_service_score SET customer_total = 90")
+        admin.home.homeDashboard.refresh()  # 排在被擋住的工作後面
+        wait_until(lambda: subtitle.property("text").endswith(" · Updating…"))  # 過了 300 ms 才寫
+        assert tile_value(page, "scoreTile_overall") == "80.0"  # 舊資料留著，不換成骨架（PLAN 5-4）
+        assert not child(page, "overviewSkeleton").isVisible()
+    wait_until(lambda: tile_value(page, "scoreTile_overall") == "90.0")
+    wait_until(lambda: not subtitle.property("text").endswith("Updating…"))
 
 
 def test_offline_at_launch_shows_block_errors_and_retry_recovers(db, engine, services, qml_warnings,
@@ -541,23 +558,22 @@ def test_offline_at_launch_shows_block_errors_and_retry_recovers(db, engine, ser
     assert toast.property("actionLabel") == "Retry"
 
     page = qml(ui.window, "mainContentLoader.item")
-    scores_error = child(child(page, "dailyPanel"), "scoresError")
-    assert scores_error.isVisible()
-    assert child(scores_error, "errorTitle").property("text") == "Scores failed to load"
-    assert child(scores_error, "errorDetail").property("text") == (
+    for name, title in (("overviewError", "Couldn't load the overview"), ("rankingError", "Couldn't load the ranking"),
+                        ("trendError", "Couldn't load the trend")):
+        error = child(page, name)  # 一張卡片一個錯誤，不跳對話框（PLAN 5-2）
+        assert error.isVisible() and child(error, "errorTitle").property("text") == title, name
+    overview_error = child(page, "overviewError")
+    assert child(overview_error, "errorDetail").property("text") == (
         "Can't reach the database. Check your network and try again.")
-    assert child(scores_error, "detailsButton").isVisible()  # 技術細節收在 Details 裡
-    for tab, name, title in ((2, "rankingError", "Ranking failed to load"), (3, "trendsError", "Trends failed to load")):
-        qml(page, f"root.currentTab = {tab}")
-        assert child(page, name).isVisible() and child(child(page, name), "errorTitle").property("text") == title
+    assert child(overview_error, "detailsButton").isVisible()  # 技術細節收在 Details 裡
 
     reconnect_directly(monkeypatch, mysql_server)
-    click(ui.window, child(child(page, "trendsError"), "retryButton"))
-    wait_until(lambda: ui.home.trendDataManager.state == "empty")
-    qml(page, "root.currentTab = 0")
-    click(ui.window, child(scores_error, "retryButton"))
-    wait_until(lambda: ui.home.serviceScoreManager.state == "empty")
-    assert not scores_error.isVisible()
+    click(ui.window, child(child(page, "trendError"), "retryButton"))
+    wait_until(lambda: ui.home.homeDashboard.trend.state == "empty")
+    assert overview_error.isVisible()  # 只重查那一張：其他卡片照舊
+    click(ui.window, child(overview_error, "retryButton"))
+    wait_until(lambda: ui.home.homeDashboard.overview.state == "empty")
+    assert not overview_error.isVisible() and child(page, "overviewEmpty").isVisible()
 
     page = open_page(ui, "admin_add_page.qml")  # 不知道自己的等級：表單換成區塊錯誤
     profile_error = child(page, "profileError")
@@ -663,8 +679,7 @@ def test_page_objects_live_as_long_as_the_shell(engine, services):
     window = engine.rootObjects()[-1]
     wait_until(lambda: not any(services.tasks.isBusy(key) for key in ("admin:profile",)))
     gc.collect()
-    for name in ("adminHome", "serviceScoreManager", "rankingModel", "trendDataManager", "serviceManager",
-                 "resultsModel", "accountManager"):
+    for name in ("adminHome", "homeDashboard", "serviceManager", "resultsModel", "accountManager"):
         assert qml(window, f"{name} !== null"), name
     page = open_page(SimpleNamespace(window=window), "admin_add_page.qml")
     assert page is not None

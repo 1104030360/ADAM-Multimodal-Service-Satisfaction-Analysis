@@ -141,8 +141,8 @@ def test_admin_page_has_no_warnings(engine, services, qml_warnings, page):
     assert qml_warnings == []
 
 
-def test_admin_home_tabs_and_search_states_have_no_warnings(engine, services, db, qml_warnings):
-    """F5（D2）：管理員首頁的四個分頁（共用的 SegmentTab）、有資料的排名和趨勢圖，
+def test_admin_home_controls_and_search_states_have_no_warnings(engine, services, db, qml_warnings):
+    """U1：管理員首頁的 Customer／Staff、三個期間、四個分數（有資料的排名和趨勢圖），
     以及查詢頁（共用的 DateField）的日期錯誤和結果，都畫出來，零警告。"""
     from datetime import date
 
@@ -151,13 +151,14 @@ def test_admin_home_tabs_and_search_states_have_no_warnings(engine, services, db
     db.add_scores(f"S{today:%Y%m%d}090000", customer=92, server=64)
     home = admin_home_init.launch(engine, ADMIN_ID, services)
     window = engine.rootObjects()[-1]
-    sections = (home.serviceScoreManager, home.rankingModel, home.trendDataManager)
+    sections = home.homeDashboard.sections
     wait_until(lambda: all(section.state not in ("loading", "idle") for section in sections))
     page = qml(window, "mainContentLoader.item")  # 留著參照，子物件的 wrapper 才不會失效（T17）
-    for name in ("weeklyTab", "rankingTab", "trendsTab", "dailyTab"):
-        tab = page.findChild(QObject, name)
-        qml(tab, "clicked()")
-        wait_until(lambda: qml(tab, "selected"))
+    for change in ("side = \"staff\"", "period = \"today\"", "period = \"7d\"", "side = \"customer\""):
+        qml(page, f"overview.{change}")
+        settle()
+    for metric in ("text", "audio", "facial", "overall"):
+        qml(page, f"trend.metric = \"{metric}\"")
         settle()
     show_page(window, "admin_service_page.qml")
     search = qml(window, "mainContentLoader.item")

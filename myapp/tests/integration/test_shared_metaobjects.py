@@ -66,7 +66,7 @@ def test_staff_home_objects_keep_the_class_metaobject(engine, services):
 
 def test_admin_home_objects_keep_the_class_metaobject(engine, services):
     home = admin_home_init.launch(engine, ADMIN_ID, services)
-    sections = (home.profile, home.serviceScoreManager, home.rankingModel, home.trendDataManager)
+    sections = (home.profile, *home.homeDashboard.sections)
     wait_until(lambda: all(section.state != "loading" for section in sections))
     objects = app_objects(home, services.tasks, services.notifier, services.ui_prefs)
     assert {"AdminHome", "AccountProfile", "AccountManager"} <= {type(obj).__name__ for obj in objects}

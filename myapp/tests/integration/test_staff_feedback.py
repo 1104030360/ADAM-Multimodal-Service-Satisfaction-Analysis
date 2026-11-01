@@ -1,8 +1,9 @@
 """服務人員端與登入的回饋（前端重建 F2，CONTRACTS §3）：資料庫都在 db lane，畫面上分清「載入中、沒有資料、錯誤」。
 
 - 登入：背景驗證、按鈕忙碌、Enter 送出、帳號密碼錯和連不上資料庫各自的說明與焦點（DS-31、UX-01～03）
-- launch()：外殼馬上出現；GUI 執行緒 0 個往返、背景 ≤ 5 個（ENG-21）
-- 首頁：還沒有資料是「—」不是 0、資料到了 Canvas 重畫、重新整理時舊的分數變淡、錯誤可以重試（DS-33、UX-05、UX-06）
+- launch()：外殼馬上出現；GUI 執行緒 0 個往返、背景 5 個（ENG-21）
+- 首頁（U1，T28）：載入中是骨架、沒有服務是空狀態＋New Recording、重新查詢時舊的數字留著（Updating…）、
+  一張卡片讀不到只有那張顯示錯誤；服務方塊打開分析頁、長條打開明細、換 Customer／Staff 不再查詢
 - 分析頁：U2 改版後搬到 test_analysis_page.py（T30）
 - 服務查詢：日期格式錯不查、空狀態、錯誤重試、連按只留最後一次（UX-24）
 - 錄影頁：打開才探測裝置，探測中、裝置不夠、探測失敗各有畫面（UX-13、ENG-06）
@@ -14,6 +15,7 @@ import os
 import random
 import threading
 from contextlib import contextmanager
+from datetime import date
 from itertools import count
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,10 +25,10 @@ import pytest
 from PySide6.QtCore import QObject, QPointF, Qt, QUrl, qInstallMessageHandler
 from PySide6.QtTest import QAbstractItemModelTester, QTest
 
-from myapp import main
+from myapp import home_dashboard, main
 from myapp.database import verify_login
 from myapp.init import server_home_init
-from myapp.init.server_home_init import (ACCOUNT_NAME_KEY, ANALYSIS_KEY, HOME_SCORES_KEY, LAUNCH_KEYS, SEARCH_KEY,
+from myapp.init.server_home_init import (ACCOUNT_NAME_KEY, ANALYSIS_KEY, HOME_KEYS, LAUNCH_KEYS, SEARCH_KEY,
                                         RowListModel)
 from myapp.main import MainWindow
 from myapp.services import CLOSE_DB_KEY
@@ -68,11 +70,6 @@ def db_lane_held(tasks):
     finally:
         gate.set()
         wait_until(lambda: not tasks.isBusy(key))
-
-
-def freeze_db_clock(services, moment):
-    """db lane 那條連線的 NOW()、CURDATE() 停在 moment（SET TIMESTAMP 只影響這條連線）。"""
-    on_db_lane(services.tasks, services.db, lambda lane: query(lane, "SET TIMESTAMP = UNIX_TIMESTAMP(%s)", (moment,)))
 
 
 def cut_database(services, db, monkeypatch):
@@ -125,9 +122,31 @@ def show_page(window, sidebar_button):
     return qml(window, "mainContentLoader.item")
 
 
-def ring_text(page, side, kind):
-    ring = find_item(page, f"scoreRing_{side}_{kind}")
-    return find(ring, "scoreText").property("text")
+def js(obj, expression):
+    """qml() 的結果；JS 陣列、物件轉成 Python 的 list、dict。"""
+    result = qml(obj, expression)
+    return result.toVariant() if hasattr(result, "toVariant") else result
+
+
+def scroll_into_view(item):
+    """首頁比測試的視窗（800×600）高：item 沒有整個露出來時，把整頁捲到它在中間。
+    用最外層的 Flickable（頁面）：長條圖的 ListView 也是 Flickable，捲它沒有用。"""
+    flickable, parent = None, item.parentItem()
+    while parent is not None:
+        if parent.inherits("QQuickFlickable"):
+            flickable = parent
+        parent = parent.parentItem()
+    top = item.mapToItem(flickable, QPointF(0, 0)).y()
+    if 0 <= top and top + item.height() <= flickable.height():
+        return
+    highest = max(0.0, flickable.property("contentHeight") - flickable.height())
+    wanted = flickable.property("contentY") + top - (flickable.height() - item.height()) / 2
+    flickable.setProperty("contentY", min(highest, max(0.0, wanted)))
+
+
+def center_of(item):
+    scroll_into_view(item)
+    return item.mapToScene(QPointF(item.width() / 2, item.height() / 2)).toPoint()
 
 
 # ── 登入 ─────────────────────────────────────────────────────────────────────
@@ -240,7 +259,7 @@ def test_login_button_ignores_repeat_submits_while_busy(login, monkeypatch):
     assert attempts == [("placeholder_staff", "CHANGE-ME-staff-000X")]
 
 
-# ── launch() 與首頁分數 ───────────────────────────────────────────────────────
+# ── launch() 與首頁（新版介面 U1，T28）─────────────────────────────────────────
 
 def test_page_objects_live_as_long_as_the_shell(engine, services, db):
     """setContextProperty 不會留住 Python 物件：launch() 要自己讓它們和外殼活得一樣久，gc 之後頁面還能用。"""
@@ -248,8 +267,7 @@ def test_page_objects_live_as_long_as_the_shell(engine, services, db):
     window = engine.rootObjects()[-1]
     wait_for_launch(services)
     gc.collect()
-    for name in ("serverHome", "serviceScoreManager", "serviceModel", "serviceManager", "resultsModel",
-                 "deviceFinder"):
+    for name in ("serverHome", "homeDashboard", "serviceModel", "serviceManager", "resultsModel", "deviceFinder"):
         assert qml(window, f"{name} !== null"), name
     page = show_page(window, "analysisButton")
     assert qml(page, "vm !== null")
@@ -258,12 +276,21 @@ def test_page_objects_live_as_long_as_the_shell(engine, services, db):
     wait_until(lambda: not services.tasks.isBusy(ANALYSIS_KEY))
 
 
-def add_scored_services(db):
-    """10/30 兩筆分析完成的服務：顧客 (88+60)/2=74、服務人員 (72+91)/2=81.5；顧客的文字分數只有一筆。"""
+def add_scored_services(db, monkeypatch):
+    """10/30 兩筆分析完成的服務：顧客 (88+60)/2=74、服務人員 (72+91)/2=81.5；顧客的文字分數只有一筆。
+    首頁的期間從這台電腦的日期往前算（home_dashboard.today()）：「今天」換成 10/30。"""
+    monkeypatch.setattr(home_dashboard, "today", lambda: date(2026, 10, 30))
     db.add_service("S20261030090000", "2026-10-30 09:00:00")
     db.add_scores("S20261030090000", customer=88, server=72, customer_text=-1)
     db.add_service("S20261030100000", "2026-10-30 10:00:00")
     db.add_scores("S20261030100000", customer=60, server=91)
+
+
+def tile_value(page, name):
+    """分數方塊（Repeater 建的，findChild 找不到）或服務方塊上的大數字。"""
+    tile = find_item(page, name)  # 留著方塊的參照，子物件的 wrapper 才不會失效（T17）
+    value = find(tile, "tileValue")
+    return value.property("text")
 
 
 def test_launch_shows_the_shell_at_once_and_loads_in_the_background(engine, services, db, db_proxy,
@@ -275,100 +302,172 @@ def test_launch_shows_the_shell_at_once_and_loads_in_the_background(engine, serv
         home, window = launch_staff(engine, services)
         assert window.isVisible()
         assert db_proxy.snapshot()["rt"] == 0  # GUI 執行緒上 0 個往返（以前 15 個）
-        assert all(services.tasks.isBusy(key) for key in LAUNCH_KEYS)  # 帳號名稱、分數、分析清單都排在 db lane
+        assert all(services.tasks.isBusy(key) for key in LAUNCH_KEYS)  # 名字、首頁的三張卡片、監看都排在 db lane
+        assert not services.tasks.isBusy(ANALYSIS_KEY)  # 分析清單等打開分析頁才查（T28）
         assert qml(window, "header.userName") == ""
         page = qml(window, "mainContentLoader.item")
-        assert ring_text(page, "customer", "total") == "—"
+        for name in ("overviewSkeleton", "recentSkeleton", "trendSkeleton"):  # 還沒載入：灰色骨架，不是 0（PLAN 5-2）
+            assert find(page, name).isVisible(), name
     wait_for_launch(services)
-    assert db_proxy.snapshot()["rt"] <= 5  # ENG-21 的預算；實際是 4（名字、分數、清單、監看各 1）
+    assert db_proxy.snapshot()["rt"] == 5  # ENG-21 的預算：名字 1、首頁的三張卡片 3、監看 1
     assert qml(window, "header.userName") == STAFF_NAME == home.accountName
 
 
-def test_home_shows_dashes_until_scores_arrive_then_repaints(engine, services, db, no_network_on_gui_thread):
-    add_scored_services(db)
-    freeze_db_clock(services, "2026-10-30 18:00:00")
+def test_home_shows_the_scores_when_they_arrive_and_switches_without_querying(engine, services, db, db_proxy,
+                                                                              monkeypatch, no_network_on_gui_thread):
+    add_scored_services(db, monkeypatch)
     with db_lane_held(services.tasks):
         home, window = launch_staff(engine, services)
         page = qml(window, "mainContentLoader.item")
-        ring = find_item(page, "scoreRing_customer_total")
-        wait_until(lambda: ring.property("paintCount") >= 1)  # 第一次只畫軌道
-        painted = ring.property("paintCount")
-        assert {ring_text(page, side, kind) for side in ("customer", "staff")
-                for kind in ("total", "text", "audio", "facial")} == {"—"}  # 還沒載入：「—」，不是 0（UX-05）
-        assert not find(page, "countText").isVisible()
-        assert qml(ring, "children[0].Accessible.name") == "Customer overall score, loading"  # 和管理員首頁一樣（F5）
-    wait_until(lambda: not services.tasks.isBusy(HOME_SCORES_KEY))
-    assert (ring_text(page, "customer", "total"), ring_text(page, "customer", "text")) == ("74", "60")
-    assert ring_text(page, "staff", "total") == "82"
-    wait_until(lambda: ring.property("paintCount") > painted)  # 資料到了才重畫（UX-06）
-    assert find(page, "countText").property("text") == "Services analyzed today: 2"
-    assert qml(ring, "children[0].Accessible.name") == "Customer overall score 74, fair"
+        assert not find_item(page, "scoreTile_overall").isVisible()
+    wait_for_launch(services)
+    assert not find(page, "overviewSkeleton").isVisible()
+    overall = find_item(page, "scoreTile_overall")
+    assert overall.isVisible()
+    assert (tile_value(page, "scoreTile_overall"), tile_value(page, "scoreTile_text")) == ("74.0", "60.0")
+    assert find(overall, "tileBand").property("text") == "Fair"  # 分數旁邊一定寫字（PLAN 第 2 節）
+    assert qml(overall, "Accessible.name") == "Overall 74.0, Fair"  # 上一期沒有分數：不寫變化
+    assert not find(overall, "tileDelta").isVisible()
+    assert find(page, "overviewSubtitle").property("text") == "Last 30 days · 2 services recorded"
+    assert tile_value(page, "completedTile") == "2"
 
-    qml(page, "showDaily = false")
-    assert find(page, "countText").property("text") == "Services analyzed in the last 7 days: 2"  # UX-07
-    assert find(page, "weeklyTab").property("selected") and not find(page, "dailyTab").property("selected")
+    db_proxy.reset()
+    qml(page, 'overview.side = "staff"')  # Customer／Staff、期間、趨勢的分數：資料都在，不再查詢（T28）
+    assert tile_value(page, "scoreTile_overall") == "81.5"
+    assert find(page, "scoresLabel").property("text") == "Staff scores"
+    qml(page, 'overview.period = "today"')
+    assert find(page, "overviewSubtitle").property("text") == "Today · 2 services recorded"
+    qml(page, 'trend.metric = "text"')
+    assert js(page, "trend.customerValues")[-1] == 60.0
+    assert db_proxy.snapshot()["rt"] == 0
 
 
-def test_home_without_data_shows_dashes_and_says_why(engine, services, db, no_network_on_gui_thread):
+def test_home_without_data_says_why_and_offers_new_recording(engine, services, db, no_network_on_gui_thread):
     home, window = launch_staff(engine, services)
     wait_for_launch(services)
     page = qml(window, "mainContentLoader.item")
-    assert find(page, "countText").property("text") == "No completed analyses today"
-    assert {ring_text(page, "staff", kind) for kind in ("total", "text", "audio", "facial")} == {"—"}
-    ring = find_item(page, "scoreRing_staff_total")
-    assert qml(ring, "children[0].Accessible.name") == "Staff overall score, no data"
-    legend = find(page, "scoreLegend")  # 弧線顏色的門檻寫出來（UX-07），和管理員首頁同一個元件
-    assert legend.isVisible() and qml(legend, "Accessible.name") == (
-        "Arc colors: good is 85 and up, fair is 70 to 84, needs improvement is below 70.")
-    # 分頁是共用的 SegmentTab：選取的是石墨灰白字（D2、DS-12）
-    daily, weekly = find(page, "dailyTab"), find(page, "weeklyTab")
-    assert qml(daily, "Qt.colorEqual(background.color, Theme.segmentSelected) && Accessible.selected")
-    assert qml(weekly, "Qt.colorEqual(background.color, Theme.segmentIdle) && !Accessible.selected")
-    qml(page, "showDaily = false")
-    assert find(page, "countText").property("text") == "No completed analyses in the last 7 days"
+    empty = find(page, "overviewEmpty")
+    assert empty.isVisible() and find(empty, "emptyTitle").property("text") == "No services in the last 30 days"
+    assert find(empty, "emptyDescription").property("text") == (
+        "Record a service. Its scores show up here after it's analyzed.")
+    assert find(page, "overviewSubtitle").property("text") == "Last 30 days · 0 services recorded"
+    assert not find(page, "sideToggle").isVisible() and not find(page, "periodBox").isVisible()
+    assert find(page, "recentEmpty").isVisible() and find(page, "trendEmpty").isVisible()
+    button = find(page, "newRecordingButton")
+    assert button.isVisible() and button.property("variant") == "primary"
+    qml(button, "clicked()")
+    wait_until(lambda: qml(window, "currentPage") == "record_widget.qml")
 
 
-def test_home_refresh_keeps_the_old_scores_dimmed(engine, services, db, no_network_on_gui_thread):
-    add_scored_services(db)
-    freeze_db_clock(services, "2026-10-30 18:00:00")
+def test_home_refresh_keeps_the_old_numbers_and_says_updating(engine, services, db, monkeypatch,
+                                                              no_network_on_gui_thread):
+    add_scored_services(db, monkeypatch)
     home, window = launch_staff(engine, services)
     wait_for_launch(services)
     page = qml(window, "mainContentLoader.item")
-    rows, indicator = find(page, "scoreRows"), find(page, "updatingIndicator")
-    assert rows.property("opacity") == 1 and not indicator.isVisible()
+    subtitle = find(page, "overviewSubtitle")
+    assert tile_value(page, "scoreTile_overall") == "74.0" and "Updating" not in subtitle.property("text")
     with db_lane_held(services.tasks):
-        qml(window, "homeButton.click()")  # 側邊欄 Home：在背景重新載入
-        wait_until(lambda: qml(page, "refreshing"))
-        assert rows.property("opacity") == 0.5 and indicator.isVisible()  # 舊的分數留著、變淡，旁邊「Updating…」
-        assert ring_text(page, "customer", "total") == "74"
-    wait_until(lambda: not services.tasks.isBusy(HOME_SCORES_KEY))
-    assert rows.property("opacity") == 1 and not indicator.isVisible()
+        db.execute("UPDATE tbl_service_score SET customer_total = 90 WHERE service_id = 'S20261030100000'")
+        qml(window, "homeButton.click()")  # 側邊欄 Home：三張卡片在背景重新查詢
+        assert all(services.tasks.isBusy(key) for key in HOME_KEYS)
+        wait_until(lambda: subtitle.property("text") == "Last 30 days · 2 services recorded · Updating…")  # 300 ms 後
+        assert tile_value(page, "scoreTile_overall") == "74.0"  # 舊的數字留著，不閃成骨架（PLAN 5-4）
+        assert not find(page, "overviewSkeleton").isVisible()
+    wait_until(lambda: tile_value(page, "scoreTile_overall") == "89.0")
+    wait_until(lambda: subtitle.property("text") == "Last 30 days · 2 services recorded")
 
 
-def test_home_failure_offers_retry_and_recovers(engine, services, db, monkeypatch, no_network_on_gui_thread):
+def test_home_failure_shows_an_error_per_card_and_retry_recovers(engine, services, db, monkeypatch,
+                                                                 no_network_on_gui_thread):
     port = os.environ["DB_PORT"]
     monkeypatch.setenv("DB_PORT", str(unused_port()))  # 一開始就連不上
     home, window = launch_staff(engine, services)
     wait_for_launch(services)
     page = qml(window, "mainContentLoader.item")
-    error = find(page, "scoresError")
-    assert error.isVisible() and not find(page, "scoreRows").isVisible()  # 整排換成區塊錯誤（DS-33）
-    assert error.property("title") == "Couldn't load scores"
-    assert error.property("detail") == OFFLINE
+    error = find(page, "overviewError")
+    assert error.isVisible() and not find(page, "overviewSkeleton").isVisible()
+    assert error.property("title") == "Couldn't load the overview"
+    assert error.property("detail") == OFFLINE  # 還沒載入過：不寫「Scores from … are hidden」
     assert "2003" in error.property("technicalDetail")  # 技術細節收在 Details 裡
+    assert find(page, "recentError").property("title") == "Couldn't load recent services"
+    assert find(page, "trendError").property("title") == "Couldn't load the trend"
     assert home.accountName == ""
 
     for failures in (2, 3):  # 一直失敗：第 3 次多一行建議（DS-27）
         qml(error, "retry()")
-        wait_until(lambda: error.property("failureCount") == failures)
+        # 名字也跟著重載、也失敗：等它回來，最後一次 Retry 才不會因為同一個 key 還在跑而略過
+        wait_until(lambda: error.property("failureCount") == failures and not services.tasks.isBusy(ACCOUNT_NAME_KEY))
     assert error.property("showsHint")
 
     monkeypatch.setenv("DB_PORT", port)
-    qml(error, "retry()")  # Retry：分數和還沒載入的帳號名稱一起重試
-    assert error.property("busy")
-    wait_until(lambda: not services.tasks.isBusy(HOME_SCORES_KEY) and not services.tasks.isBusy(ACCOUNT_NAME_KEY))
-    assert not error.isVisible() and find(page, "scoreRows").isVisible()
+    qml(error, "retry()")  # Retry：只重查這一張卡片，還沒載入的帳號名稱一起再載一次
+    wait_until(lambda: not any(services.tasks.isBusy(key) for key in (HOME_KEYS[0], ACCOUNT_NAME_KEY)))
+    assert not error.isVisible() and home.homeDashboard.overview.state == "empty"
+    assert find(page, "trendError").isVisible()  # 其他卡片不受影響：各自重試（PLAN 5-2）
     assert qml(window, "header.userName") == STAFF_NAME
+
+
+def test_service_tiles_and_the_open_button_lead_to_the_analysis_page(engine, services, db, monkeypatch,
+                                                                     no_network_on_gui_thread):
+    add_scored_services(db, monkeypatch)
+    db.add_service("S20261030120000", "2026-10-30 12:00:00", status=1)
+    home, window = launch_staff(engine, services)
+    wait_for_launch(services)
+    page = qml(window, "mainContentLoader.item")
+    tile = find(page, "notAnalyzedTile")
+    assert qml(tile, "interactive && Accessible.role === Accessible.Button")
+    assert qml(tile, "Accessible.name") == "Not analyzed 1, Review"
+    assert qml(tile, "Qt.colorEqual(iconFill, Theme.warningOnLight)")  # 有還沒送出的：橘色的待辦方塊
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, center_of(tile))
+    assert services.tasks.isBusy(ANALYSIS_KEY)  # launch 沒查分析清單：換頁時在背景查
+    wait_until(lambda: qml(window, "currentPage") == "analysis.qml")
+    wait_until(lambda: not services.tasks.isBusy(ANALYSIS_KEY))
+    assert [row["serviceId"] for row in home.serviceModel.notAnalyzedModel.rows()] == ["S20261030120000"]
+
+    page = show_page(window, "homeButton")  # 鍵盤：Tab 到 Completed，按空白鍵
+    completed = find(page, "completedTile")
+    completed.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    assert qml(completed, "visualFocus") and find(completed, "tileFocusRing").isVisible()  # DS-30
+    QTest.keyClick(window, Qt.Key.Key_Space)
+    wait_until(lambda: qml(window, "currentPage") == "analysis.qml")
+
+    page = show_page(window, "homeButton")
+    button = find(page, "openCompletedButton")  # ↗：分析頁的 Completed
+    assert qml(button, "Accessible.name") == "Open in Analysis"
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, center_of(button))
+    wait_until(lambda: qml(window, "currentPage") == "analysis.qml")
+
+
+def test_recent_bars_show_both_scores_and_open_the_service(engine, services, db, monkeypatch,
+                                                           no_network_on_gui_thread):
+    add_scored_services(db, monkeypatch)
+    home, window = launch_staff(engine, services)
+    wait_for_launch(services)
+    page = qml(window, "mainContentLoader.item")
+    bars = find(page, "recentBars")
+    assert js(bars, "bars.map(bar => bar.label + ' ' + bar.sublabel)") == ["09:00 Oct 30", "10:00 Oct 30"]  # 舊的在左
+    groups = rows_of(find(bars, "barList"), "barGroup")
+    first = groups[0]
+    assert find(first, "valueLabel").property("text") == "88.0"
+    assert qml(find(first, "valueBar"), "Qt.colorEqual(color, Theme.successOnLight)")  # 88：Good 的填色
+    assert find(first, "compareBar").isVisible()  # 另一方（員工 72）是灰色
+    assert qml(first, "Accessible.name") == "S20261030090000, Oct 30 09:00, customer 88.0, staff 72.0"
+    assert find(bars, "barLegend").isVisible()
+
+    QTest.mouseMove(window, center_of(first))  # 滑鼠移上去：服務 ID、時間、兩個分數
+    tip = find(bars, "barTip")
+    wait_until(lambda: tip.property("visible"))
+    assert tip.property("text") == "S20261030090000\nOct 30 · 09:00\nCustomer 88.0 · Staff 72.0"
+
+    qml(page, 'overview.side = "staff"')  # 彩色換成員工的分數，灰色是顧客的
+    assert js(bars, "bars.map(bar => bar.value)") == [72.0, 91.0]
+    first = rows_of(find(bars, "barList"), "barGroup")[0]  # 資料換了，每一組重新建立
+    assert find(first, "valueLabel").property("text") == "72.0"
+
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, center_of(first))
+    wait_until(lambda: qml(window, "currentPage") == "server_service_detail_page.qml")  # window.openServiceDetail
+    assert qml(window, "mediaModel.serviceId") == "S20261030090000"  # 明細頁打開的就是這一筆
 
 
 # ── 服務查詢 ─────────────────────────────────────────────────────────────────

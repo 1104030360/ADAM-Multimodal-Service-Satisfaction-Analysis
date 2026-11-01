@@ -1,17 +1,18 @@
-"""管理員端（步驟 2-4、4-1～4-5；前端重建 F2）：首頁、趨勢、排名、搜尋、帳號管理接真的 MySQL 8.4。
+"""管理員端（步驟 2-4、4-1～4-5；前端重建 F2；新版介面 U1）：首頁的三張卡片、搜尋、帳號管理接真的 MySQL 8.4。
 
 資料庫的工作都在 db lane（services fixture 的 TaskRunner＋DbLane），no_network_on_gui_thread 確認 GUI 執行緒不碰網路。
 結果放在屬性裡，等待一律用 wait_until。畫面上的回饋（toast、欄位錯誤、空狀態）在 test_admin_feedback.py。
 """
-import calendar
 from datetime import date
 
 import pytest
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtTest import QTest
 
+from myapp import home_dashboard
+from myapp.home_dashboard import HomeDashboard
 from myapp.init import admin_home_init
-from myapp.init.admin_home_init import AdminHome, RankingModel, ServiceManager, ServiceScoreManager, TrendDataManager
+from myapp.init.admin_home_init import AdminHome, ServiceManager
 from myapp.passwords import verify_password
 from tests.integration.helpers import ADMIN_ID, STAFF_ID, STAFF_NAME, qml, table_row, wait_until
 
@@ -28,72 +29,89 @@ def loaded(section):
     wait_until(lambda: section.state not in ("loading", "idle") and not section.refreshing)
 
 
-def freeze_lane_clock(services, moment):
-    """讓 db lane 那條連線的 NOW()、CURDATE() 停在 moment（MySQL 的 SET TIMESTAMP，只影響這條連線）。"""
-    done = []
-
-    def work(token, report):
-        with services.db.cursor() as cursor:
-            cursor.execute("SET TIMESTAMP = UNIX_TIMESTAMP(%s)", (moment,))
-
-    services.tasks.submit("db", "test:clock", work, on_ok=done.append)
-    wait_until(lambda: done)
+# ---------------------------------------------------------------- 新版首頁（U1，T28）：全部員工
 
 
-def test_trend_has_points_only_on_days_with_scores(db, services):
-    db.add_service("S20261001100000", "2026-10-01 10:00:00")
-    db.add_scores("S20261001100000", customer=80, server=70)
-    db.add_service("S20261031233000", "2026-10-31 23:30:00")  # 月底最後一天的晚上
-    db.add_scores("S20261031233000", customer=-1, server=90)  # 顧客分數沒有資料
-    db.add_service("S20261031120000", "2026-10-31 12:00:00", status=2)  # 分數寫好了、但還沒完成：不算
-    db.add_scores("S20261031120000", customer=0, server=0)
-    db.add_service("S20261101000000", "2026-11-01 00:00:00")  # 下個月：不算
-    db.add_scores("S20261101000000", customer=10, server=10)
-
-    manager = TrendDataManager(services)
-    assert manager.load(10, 2026)
-    loaded(manager)
-    staff = {point["x"]: point["y"] for point in manager.staffPoints}
-    customer = {point["x"]: point["y"] for point in manager.customerPoints}
-    assert staff == {1: 70.0, 31: 90.0}  # 沒有資料的日子沒有點，不是 0（UX-30）
-    assert customer == {1: 80.0}  # 31 日的顧客分數是 -1：那天沒有顧客的點
-    assert (manager.state, manager.daysInMonth) == ("ready", 31)
+def admin_dashboard(services, monkeypatch, day=date(2026, 10, 30)):
+    """管理員端的 homeDashboard（全部員工）。期間從這台電腦的日期往前算：測試把「今天」換成 day。"""
+    monkeypatch.setattr(home_dashboard, "today", lambda: day)
+    return HomeDashboard(services, None, "admin:home")
 
 
-def test_admin_dashboard_averages_all_staff_and_skips_missing_scores(db, services):
+def settle(services, dashboard):
+    wait_until(lambda: not any(services.tasks.isBusy(key) for key in dashboard.keys))
+
+
+def staff_member(db, number, name):
+    account_id = f"00000000-0000-0000-0000-{number:012d}"
+    db.add_account(account_id, f"staff{number}", name)
+    return account_id
+
+
+def test_admin_overview_and_trend_cover_every_staff_member(db, services, monkeypatch):
+    other = staff_member(db, 3, "王小明")
     db.add_service("S20261030090000", "2026-10-30 09:00:00")
-    db.add_scores("S20261030090000", customer=80, server=70, customer_text=-1)
-    db.add_service("S20261030100000", "2026-10-30 10:00:00", account_id=ADMIN_ID)  # 所有人的服務都算
-    db.add_scores("S20261030100000", customer=60, server=90)
-    db.add_service("S20261027100000", "2026-10-27 10:00:00")  # 3 天前：只算進本週
-    db.add_scores("S20261027100000", customer=100, server=100)
-    db.add_service("S20261030110000", "2026-10-30 11:00:00", status=2)  # 還在分析：不算
-    db.add_scores("S20261030110000", customer=0, server=0)
+    db.add_scores("S20261030090000", customer=80, server=70)
+    db.add_service("S20261030100000", "2026-10-30 10:00:00", account_id=other)
+    db.add_scores("S20261030100000", customer=60, server=-1)
+    db.add_service("S20261029100000", "2026-10-29 10:00:00", status=1, account_id=other)
+    db.add_service("S20261028100000", "2026-10-28 10:00:00", status=2)
 
-    freeze_lane_clock(services, "2026-10-30 18:00:00")
-    manager = ServiceScoreManager(services)
-    manager.refresh()
-    loaded(manager)
-    assert (manager.dailyCount, manager.weeklyCount) == (2, 3)
-    assert manager.dailyCustomerScores == {"total": 70.0, "text": 60.0, "audio": 70.0, "facial": 70.0}
-    assert manager.weeklyStaffScores["total"] == pytest.approx((70 + 90 + 100) / 3)
-    assert (manager.dailyState, manager.weeklyState) == ("ready", "ready")
+    dashboard = admin_dashboard(services, monkeypatch)
+    assert dashboard.recent is None and dashboard.keys == (
+        "admin:home:overview", "admin:home:ranking", "admin:home:trend")
+    dashboard.refresh()
+    settle(services, dashboard)
+    today, week = dashboard.overview.periods["today"], dashboard.overview.periods["7d"]
+    assert (today["count"], today["completed"], today["staffCount"]) == (2, 2, 2)  # 「2 services · 2 staff」
+    assert today["customer"]["overall"]["value"] == 70.0 and today["staff"]["overall"]["value"] == 70.0
+    assert (week["count"], week["analyzing"], week["notAnalyzed"], week["staffCount"]) == (4, 1, 1, 2)
+    trend = dashboard.trend
+    assert trend.days[-1] == "2026-10-30" and trend.series["customer"]["overall"][-1] == 70.0
+    assert trend.series["customer"]["overall"][-2] is None  # 10/29 只有還沒分析的服務
 
 
-def test_ranking_averages_each_staff_member_in_sql(db, services):
-    db.add_service("S20261030090000", "2026-10-30 09:00:00")
-    db.add_scores("S20261030090000", customer=80, server=-1)
-    db.add_service("S20261030100000", "2026-10-30 10:00:00")
-    db.add_scores("S20261030100000", customer=60, server=90)
-    db.add_service("S20261030110000", "2026-10-30 11:00:00", status=2)  # 還沒分析完：不算
-    db.add_scores("S20261030110000", customer=0, server=0)
+def test_staff_ranking_lists_everyone_with_analyzed_services_in_30_days(db, services, monkeypatch):
+    names = ["Ava", "Ben", "Cai", "Dee", "Eli", "Fay", "Gus"]  # 7 個人：以前只留前 5、後 5
+    for number, name in enumerate(names, start=3):
+        account = staff_member(db, number, name)
+        for day in (1, 2):
+            service_id = f"S202610{number:02d}{day:02d}0000"
+            db.add_service(service_id, f"2026-10-{number:02d} {day:02d}:00:00", account_id=account)
+            db.add_scores(service_id, customer=50 + number * 5, server=-1 if name == "Cai" else 100 - number * 5)
+    early = staff_member(db, 20, "Old")
+    db.add_service("S20260930230000", "2026-09-30 23:00:00", account_id=early)  # 30 天前：不算
+    db.add_scores("S20260930230000", customer=99, server=99)
+    waiting = staff_member(db, 21, "Wai")
+    db.add_service("S20261030110000", "2026-10-30 11:00:00", status=2, account_id=waiting)  # 還在分析：不算
 
-    model = RankingModel(services)
-    model.refresh()
-    loaded(model)
-    assert model.topCustomer == [{"name": STAFF_NAME, "score": 70.0}]
-    assert model.topStaff == [{"name": STAFF_NAME, "score": 90.0}]  # -1 不算進平均
-    assert (model.state, model.rankedCount) == ("ready", 1)
+    dashboard = admin_dashboard(services, monkeypatch)
+    ranking = dashboard.ranking
+    ranking.refresh()
+    settle(services, dashboard)
+    assert ranking.state == "ready"
+    assert [row["name"] for row in ranking.byCustomer] == ["Gus", "Fay", "Eli", "Dee", "Cai", "Ben", "Ava"]
+    assert [row["name"] for row in ranking.byStaff] == ["Ava", "Ben", "Dee", "Eli", "Fay", "Gus", "Cai"]  # 沒有分數的在最後
+    assert ranking.byCustomer[0] == {"accountId": "00000000-0000-0000-0000-000000000009", "name": "Gus", "count": 2,
+                                     "customer": 95.0, "staff": 55.0, "customerBand": "good",
+                                     "staffBand": "needsImprovement"}
+
+
+def test_admin_dashboard_is_three_round_trips(db, db_proxy, services, monkeypatch):
+    dashboard = admin_dashboard(services, monkeypatch)
+
+    def warm_up(token, report):  # 連線、建 dictionary cursor 不算在預算裡（T16）
+        with services.db.cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT 1 AS one")
+            return cursor.fetchall()
+
+    services.tasks.submit("db", "test:warm-up", warm_up)
+    wait_until(lambda: not services.tasks.isBusy("test:warm-up"))
+    db_proxy.reset()
+    dashboard.refresh()
+    settle(services, dashboard)
+    assert db_proxy.snapshot()["rt"] == 3
+    assert [section.state for section in dashboard.sections] == ["empty", "empty", "empty"]
 
 
 def test_search_filters_by_staff_name_and_covers_whole_end_day(db, services):
@@ -159,38 +177,11 @@ def test_duplicate_username_is_reported_on_the_username_field(db, account_result
     assert db.rows("SELECT COUNT(*) FROM tbl_account")[0][0] == 2
 
 
-def test_trend_page_starts_at_current_month_and_redraws_without_stacking(engine, db, services):
-    today = date.today()
-    first, second = today.replace(day=1), today.replace(day=2)
-    db.add_service(f"S{first:%Y%m%d}100000", f"{first} 10:00:00")
-    db.add_scores(f"S{first:%Y%m%d}100000", customer=80, server=70)
-    db.add_service(f"S{second:%Y%m%d}100000", f"{second} 10:00:00")
-    db.add_scores(f"S{second:%Y%m%d}100000", customer=60, server=-1)
-
-    home = admin_home_init.launch(engine, ADMIN_ID, services)
-    page = qml(engine.rootObjects()[-1], "mainContentLoader.item")  # admin_home_page.qml
-    loaded(home.trendDataManager)
-    assert qml(page, "yearSelector.currentText") == str(today.year)  # QML 的 new Date() 就是電腦現在的日期
-    assert qml(page, "monthSelector.currentIndex") == today.month - 1
-    assert qml(page, "valueAxisX.max") == calendar.monthrange(today.year, today.month)[1]  # 那個月實際的天數
-    assert (qml(page, "staffDots.count"), qml(page, "customerDots.count")) == (1, 2)
-    assert qml(page, "trendLines.length") == 1  # 顧客 1、2 日連成一條線；服務人員只有 1 日，只有點
-    assert qml(page, "chartView.count") == 3
-
-    other = 0 if today.month != 1 else 1  # 使用者改選另一個月（一月，或今天就是一月時選二月）
-    qml(page, f"monthSelector.currentIndex = {other}; monthSelector.activated({other})")
-    wait_until(lambda: home.trendDataManager.month == other + 1)
-    loaded(home.trendDataManager)
-    assert home.trendDataManager.state == "empty"
-    assert qml(page, "chartView.count") == 2  # 重畫，不是疊上去：舊的線段拿掉了，只剩兩組點
-    assert (qml(page, "staffDots.count"), qml(page, "customerDots.count")) == (0, 0)
-
-
 def test_opening_add_account_does_not_reload_home_data(engine, db, services, db_proxy):
     home = admin_home_init.launch(engine, ADMIN_ID, services)
     window = engine.rootObjects()[-1]
     wait_until(window.isExposed)
-    for section in (home.profile, home.serviceScoreManager, home.rankingModel, home.trendDataManager):
+    for section in (home.profile, *home.homeDashboard.sections):
         loaded(section)
     db_proxy.reset()
     add_button = qml(window, "addAccountButton")  # 側邊欄的 Add Account

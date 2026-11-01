@@ -68,7 +68,7 @@ def settled(side, home, services):
     """launch() 在背景載入的資料都回來了：之後的畫面和焦點不會再被它們改動。"""
     if side is STAFF:
         return not any(services.tasks.isBusy(key) for key in server_home_init.LAUNCH_KEYS)
-    sections = (home.profile, home.serviceScoreManager, home.rankingModel, home.trendDataManager)
+    sections = (home.profile, *home.homeDashboard.sections)
     return all(section.state != "loading" and not section.refreshing for section in sections)
 
 

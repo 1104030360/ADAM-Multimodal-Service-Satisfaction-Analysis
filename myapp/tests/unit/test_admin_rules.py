@@ -1,4 +1,4 @@
-"""管理員端不需要真的資料庫的規則：帳號等級與必填欄位、排名、趨勢的空白日子、日期格式、區塊的狀態。
+"""管理員端不需要真的資料庫的規則：帳號等級與必填欄位、日期格式、區塊的狀態。首頁三張卡片的規則在 test_home_dashboard.py。
 
 背景工作用真的 TaskRunner，db lane 換成假的 DbLane（FakeLane）：查詢的結果、例外都由測試決定。
 """
@@ -9,9 +9,7 @@ from types import SimpleNamespace
 import mysql.connector
 import pytest
 
-from myapp.init import admin_home_init
-from myapp.init.admin_home_init import (AccountManager, AccountProfile, RankingModel, ServiceManager,
-                                        ServiceScoreManager, TrendDataManager, as_runs, rank, trend_points)
+from myapp.init.admin_home_init import AccountManager, AccountProfile, ServiceManager
 from myapp.notifications import Notifier
 from myapp.tasks import TaskRunner
 from tests.integration.helpers import toasts, wait_until
@@ -54,8 +52,7 @@ def services():
     services.tasks.shutdown()
 
 
-TASK_KEYS = ("account:add", "account:update", "admin:profile", "admin:scores", "admin:ranking", "admin:trends",
-             "admin:search", "admin:staff-names")
+TASK_KEYS = ("account:add", "account:update", "admin:profile", "admin:search", "admin:staff-names")
 
 
 def settle(services):
@@ -282,131 +279,6 @@ def test_missing_account_is_an_error_not_level_zero(services):
     profile.load()
     settle(services)
     assert (profile.state, profile.level) == ("error", 0)
-
-
-# ---------------------------------------------------------------- 排名（UX-31）：平均在 SQL 裡算，-1 不算
-
-
-def test_ranking_ignores_missing_scores():
-    top_customers, _, top_staff, _ = rank([
-        ("小明", 80.0, None),  # SQL 的 AVG(NULLIF(…, -1))：全部是 -1 時是 NULL
-        ("小華", None, 60.0),
-        ("小美", -1, -1),       # 萬一沒有先排除 -1，這裡也不排名
-    ])
-    assert top_customers == [{"name": "小明", "score": 80.0}]
-    assert top_staff == [{"name": "小華", "score": 60.0}]
-
-
-def test_ranking_keeps_best_and_worst_five():
-    rows = [("員工1", 31 / 3, 90.0)] + [(f"員工{n}", n * 10.0, 100 - n * 10.0) for n in range(2, 8)]
-    top_customers, bottom_customers, top_staff, bottom_staff = rank(rows)
-    assert [p["name"] for p in top_customers] == ["員工7", "員工6", "員工5", "員工4", "員工3"]
-    assert [p["name"] for p in bottom_customers] == ["員工1", "員工2", "員工3", "員工4", "員工5"]
-    assert bottom_customers[0]["score"] == 10.33  # 取到小數第 2 位
-    assert [p["name"] for p in top_staff] == ["員工1", "員工2", "員工3", "員工4", "員工5"]
-    assert [p["name"] for p in bottom_staff] == ["員工7", "員工6", "員工5", "員工4", "員工3"]
-
-
-def test_ranking_section_states(services):
-    model = RankingModel(services)
-    assert model.state == "loading"
-    services.db.rows = [("小華", None, None)]  # 有服務但沒有任何分數：沒有人可以排名
-    assert model.refresh()
-    assert not model.refresh()  # 還在載入：不重複送，結果回來時一樣會更新
-    settle(services)
-    assert len(services.db.calls) == 1
-    assert (model.state, model.rankedCount) == ("empty", 0)
-
-    services.db.rows = [("小明", 80.0, 70.0)]
-    model.refresh()
-    assert model.refreshing and model.state == "empty"  # 重新整理時舊的畫面留著
-    settle(services)
-    assert (model.state, model.refreshing, model.rankedCount) == ("ready", False, 1)
-
-    services.db.error = mysql_error(2013, "Lost connection to MySQL server during query")
-    model.refresh()
-    settle(services)
-    assert (model.state, model.failureCount) == ("error", 1)
-    assert model.errorTechnical.startswith("Error: 2013")
-    model.refresh()
-    settle(services)
-    assert model.failureCount == 2  # 連續失敗的次數，InlineError ≥ 3 時多一行建議
-
-
-# ---------------------------------------------------------------- 趨勢（UX-30）：沒有資料的日子是空白
-
-
-def test_trend_days_without_scores_are_gaps_not_zero():
-    staff, customer = trend_points([(1, 70.0, 80.0), (2, None, 75.0), (5, 90.0, None)])
-    assert staff == {1: 70.0, 5: 90.0}
-    assert customer == {1: 80.0, 2: 75.0}
-    assert as_runs({1: 1.0, 2: 2.0, 4: 4.0, 6: 6.0, 7: 7.0}) == [
-        [{"x": 1, "y": 1.0}, {"x": 2, "y": 2.0}], [{"x": 4, "y": 4.0}], [{"x": 6, "y": 6.0}, {"x": 7, "y": 7.0}]]
-
-
-def test_trends_with_invalid_year_query_nothing(services):
-    manager = TrendDataManager(services)
-    assert not manager.load(10, 0)  # 年份選單還沒準備好時，QML 會傳 Number("") = 0
-    assert not manager.load(13, 2026)
-    assert services.db.calls == [] and manager.state == "loading"
-
-
-def test_trends_cover_the_selected_month(services):
-    manager = TrendDataManager(services)
-    services.db.rows = [(3, 70.0, None)]
-    manager.load(2, 2028)  # 閏年的 2 月
-    settle(services)
-    _, (start, end) = services.db.calls[0]
-    assert (start.isoformat(), end.isoformat()) == ("2028-02-01T00:00:00", "2028-03-01T00:00:00")
-    assert (manager.month, manager.year, manager.daysInMonth) == (2, 2028, 29)
-    assert manager.staffPoints == [{"x": 3, "y": 70.0}] and manager.customerPoints == []
-    assert manager.state == "ready"
-    services.db.rows = []
-    assert manager.retry()
-    settle(services)
-    assert manager.state == "empty"
-
-
-def test_fill_series_rejects_objects_that_are_not_series(services):
-    with pytest.raises(TypeError):
-        TrendDataManager(services).fillSeries(services.notifier, [])
-
-
-# ---------------------------------------------------------------- 首頁分數：一個查詢算每日和每週
-
-
-def score_row(daily_count, weekly_count, daily=None, weekly=None):
-    row = {"daily_count": daily_count, "weekly_count": weekly_count}
-    for period, value in (("daily", daily), ("weekly", weekly)):
-        for who in ("customer", "server"):
-            for key in admin_home_init.SCORE_KEYS:
-                row[f"{period}_{who}_{key}"] = value
-    return row
-
-
-def test_scores_without_data_today_are_empty_not_zero(services):
-    manager = ServiceScoreManager(services)
-    assert (manager.dailyState, manager.weeklyState) == ("loading", "loading")
-    services.db.rows = [score_row(0, 2, weekly=75.0)]
-    manager.refresh()
-    settle(services)
-    assert (manager.state, manager.dailyState, manager.weeklyState) == ("ready", "empty", "ready")
-    assert manager.dailyCustomerScores == {"total": -1.0, "text": -1.0, "audio": -1.0, "facial": -1.0}
-    assert manager.weeklyStaffScores["total"] == 75.0 and manager.weeklyCount == 2
-    assert len(services.db.calls) == 1  # 每日和每週是同一個查詢
-
-    services.db.rows = [score_row(3, 3)]  # 有服務，但分數全是 -1（AVG 是 NULL）
-    manager.refresh()
-    settle(services)
-    assert (manager.state, manager.dailyState, manager.weeklyState) == ("empty", "empty", "empty")
-
-
-def test_scores_error_state_reaches_both_periods(services):
-    manager = ServiceScoreManager(services)
-    services.db.error = mysql_error(2003, "Can't connect to MySQL server")
-    manager.refresh()
-    settle(services)
-    assert (manager.dailyState, manager.weeklyState) == ("error", "error")
 
 
 # ---------------------------------------------------------------- 服務查詢：日期格式、條件

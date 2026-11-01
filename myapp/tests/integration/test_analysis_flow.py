@@ -4,7 +4,7 @@
 - 送出：按鈕忙碌（Sending…）→ POST 在 io lane → 狀態在 db lane 改成 2 → toast「Sent for analysis」→ 那一列移到 Analyzing
 - 送不出去：那一列回到 Analyze，常駐的錯誤 toast＋Retry；按 Retry 再送（UX-18、DS-20）
 - 監看（ENG-16）：在別頁也收得到「Analysis complete」（View Results 會換到分析頁並標出那一列）、
-  「Analysis failed」（Retry）；清單和首頁分數在背景重新整理
+  「Analysis failed」（Retry）；清單和首頁的三張卡片在背景重新整理
 - app 不在前景：Dock 圖示跳動、加上徽章，切回來清掉（ENG-17、D6）
 - 每次監看只有 1 個網路往返；「更新不到」只跳一則警告，和清單的重新整理共用
 """
@@ -18,7 +18,7 @@ from PySide6.QtCore import QObject, Qt
 from PySide6.QtGui import QGuiApplication, QWindow
 
 from myapp.init import server_home_init
-from myapp.init.server_home_init import ANALYSIS_KEY, HOME_SCORES_KEY, LAUNCH_KEYS, WATCHER_KEY
+from myapp.init.server_home_init import ANALYSIS_KEY, HOME_KEYS, LAUNCH_KEYS, WATCHER_KEY
 from tests.integration.helpers import STAFF_ID, qml, toasts, unused_port, wait_until
 
 pytestmark = pytest.mark.integration
@@ -47,8 +47,8 @@ def launch_staff(engine, services):
 
 
 def settled(services):
-    """監看的查詢，以及它觸發的清單、首頁分數的重新整理，都做完了。"""
-    wait_until(lambda: not any(services.tasks.isBusy(key) for key in (WATCHER_KEY, ANALYSIS_KEY, HOME_SCORES_KEY)))
+    """監看的查詢，以及它觸發的清單、首頁卡片的重新整理，都做完了。"""
+    wait_until(lambda: not any(services.tasks.isBusy(key) for key in (WATCHER_KEY, ANALYSIS_KEY, *HOME_KEYS)))
 
 
 def poll(home):
@@ -218,7 +218,7 @@ def test_completion_reaches_another_page_and_view_results_opens_the_row(engine, 
     assert (toast["severity"], toast["detail"]) == ("success", f"Scores and charts for {SID} are ready.")
     assert (toast["actionLabel"], toast["actionId"]) == ("View Results", f"open-analysis:{SID}")
     assert toast["timeoutMs"] >= 8000  # 有動作按鈕：至少停 8 秒（DS-21）
-    assert busy_keys == [WATCHER_KEY, ANALYSIS_KEY, HOME_SCORES_KEY]  # 清單和首頁分數在背景重新整理
+    assert busy_keys == [WATCHER_KEY, ANALYSIS_KEY, *HOME_KEYS]  # 清單和首頁的三張卡片在背景重新整理
     assert ids(home.serviceModel.completedModel) == [SID] and home.watcher.watched == []
     assert not home.watcher.polling  # 沒有要看的了：不再查
 
@@ -321,7 +321,7 @@ def test_each_watcher_poll_is_one_round_trip(engine, services, db, db_proxy, no_
     set_status(db, "S20261031090000", 3)
     db_proxy.reset()
     poll(home)
-    assert db_proxy.snapshot()["rt"] == 3  # 監看 1，加上狀態變了才有的清單 1、首頁分數 1
+    assert db_proxy.snapshot()["rt"] == 5  # 監看 1，加上狀態變了才有的清單 1、首頁的三張卡片各 1
     assert home.watcher.watched == ["S20261031100000", "S20261031110000"]
 
 
