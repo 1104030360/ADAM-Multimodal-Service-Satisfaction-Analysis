@@ -4,6 +4,8 @@ import QtQuick.Layouts
 // 頁首（new-UIUX PLAN 第 4 節、6-1）：兩個外殼共用，在內容區最上面，和頁面同寬。
 // - 左邊：首頁是 ADAM 字標；其他頁是頁面標題和一句說明（這一頁做什麼）；明細頁前面多一顆「‹ Services」。
 // - 右邊：放在 PageHeader 裡的子項目（搜尋服務 ID，UD5）、主要動作（只有首頁有，UD12）、頭像和名字。
+//   頭像：有照片（userPhoto，帳號在設定頁換的，new-feature N3）時是圓形的照片，沒有或載入失敗時是預設的圖示。
+//   new-feature PLAN 寫「側邊欄顯示」：U0 已經把頭像從側邊欄搬到頁首，所以照片在這裡（T36）。
 // 標題、說明、上一頁由外殼依目前的頁面決定；頁面要自己給（明細頁的服務 ID）時，外殼讀頁面的
 // headerTitle、headerSubtitle、headerBackText，按「‹」呼叫頁面的 goBack()。
 RowLayout {
@@ -17,6 +19,7 @@ RowLayout {
     property url actionIcon: ""
     property string userName: ""
     property string userRole: ""
+    property url userPhoto: ""              // 圓形的照片（本機快取的 PNG，外面透明）；空的＝預設的圖示
     default property alias extras: extraSlot.data
 
     signal back()
@@ -135,11 +138,28 @@ RowLayout {
             Accessible.ignored: true
 
             Image {
+                objectName: "headerAvatarIcon"
                 anchors.centerIn: parent
+                visible: !headerPhoto.visible
                 width: 24
                 height: 24
                 sourceSize: Qt.size(24, 24)
                 source: "icons/circle-user-round_iconNeutral.svg"
+                Accessible.ignored: true
+            }
+
+            // 照片已經是圓形的 PNG（Python 在 io lane 做好），這裡不需要遮罩或 shader
+            Image {
+                id: headerPhoto
+                objectName: "headerPhoto"
+                anchors.fill: parent
+                visible: header.userPhoto.toString() !== "" && status === Image.Ready
+                source: header.userPhoto
+                sourceSize: Qt.size(2 * Theme.controlHeight, 2 * Theme.controlHeight)    // Retina 上也清楚
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+                smooth: true
+                mipmap: true
                 Accessible.ignored: true
             }
         }

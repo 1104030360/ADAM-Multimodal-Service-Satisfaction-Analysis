@@ -219,7 +219,8 @@ def test_quit_uses_the_same_folders_and_protection(tmp_path, monkeypatch):
     recording = write(tmp_path / "video" / "S1_cam0.avi")
     write(tmp_path / "charts" / "c.png")
     assert media.download_cache_dirs() == [str(tmp_path), str(tmp_path / "charts"),
-                                           os.path.join(os.path.dirname(str(tmp_path)), "reports")]
+                                           os.path.join(os.path.dirname(str(tmp_path)), "reports"),
+                                           os.path.join(os.path.dirname(str(tmp_path)), "avatars")]
     media.clear_cache()
     assert recording.exists()
     assert list((tmp_path / "charts").iterdir()) == []
@@ -345,7 +346,7 @@ def test_clearing_is_blocked_while_a_download_or_report_uses_the_cache(services,
     release = threading.Event()
     services.tasks.submit("io", "media:S1:S1_cam0.avi", lambda token, report: release.wait(5))
     assert storage.inUse and not storage.canClear and not storage.clear()
-    assert storage.blockedReason == "A video, chart or report is downloading or opening. Try again when it's done."
+    assert storage.blockedReason == "A video, chart, report or photo is downloading or opening. Try again when it's done."
     services.tasks.submit("io", "upload:S2", lambda token, report: release.wait(5))  # 上傳不用快取
     release.set()
     wait_until(lambda: not storage.inUse)

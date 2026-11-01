@@ -266,7 +266,8 @@ LIST_ROLES = ("serviceId", "staffName", "startTime", "dateText", "lengthText", "
 
 @dataclass(frozen=True)
 class Criteria:
-    """一次搜尋的條件：start、end 是 datetime（當天 00:00）或 None；staff_name 是管理員選的服務人員（空字串＝全部）。"""
+    """一次搜尋的條件：start、end 是 datetime（當天 00:00）或 None；account_id 是只看哪一位服務人員（空字串＝全部）。
+    staff_name 只用來顯示（標題的「王小明 · …」）：篩選一律用 account_id，名字可以改、可以重複（T36）。"""
     start: datetime = None
     end: datetime = None
     account_id: str = ""
@@ -290,9 +291,6 @@ def search_query(criteria, limit):
     if criteria.account_id:
         conditions += " AND s.account_id = %s"
         params.append(criteria.account_id)
-    if criteria.staff_name:
-        conditions += " AND a.account_name = %s"
-        params.append(criteria.staff_name)
     if criteria.start is not None:
         conditions += " AND s.service_start >= %s"
         params.append(criteria.start)

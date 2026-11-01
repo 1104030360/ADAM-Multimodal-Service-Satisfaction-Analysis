@@ -297,14 +297,16 @@ def test_search_rejects_bad_dates_without_querying(services):
 
 def test_search_covers_the_whole_end_day_and_remembers_the_query(services):
     manager = ServiceManager(services)
-    assert manager.search("王小明", " 2026-10-01 ", "2026-10-31")
+    assert manager.search("acc-7", " 2026-10-01 ", "2026-10-31")
     settle(services)
     sql, params = services.db.calls[0]
-    assert "a.account_name = %s" in sql and params[0] == "王小明"
+    # 用 account_id 篩選，不用名字（名字可以改、可以重複，new-feature T36）
+    assert "s.account_id = %s" in sql and "a.account_name" not in sql.split("WHERE")[1] and params[0] == "acc-7"
     assert [p.isoformat() for p in params[1:-1]] == ["2026-10-01T00:00:00", "2026-11-01T00:00:00"]
     assert "s.service_status = 3" in sql and params[-1] == 8  # 只有分析完成的；一次 8 筆（UD7）
     assert manager.state == "empty"
-    assert manager.lastQuery == {"name": "王小明", "start": "2026-10-01", "end": "2026-10-31"}
+    assert manager.lastQuery == {"staffId": "acc-7", "start": "2026-10-01", "end": "2026-10-31"}
+    assert manager.staffText == "Selected staff member"  # 名單還沒載入：不把 account_id 顯示出來
 
     services.db.error = mysql_error(2013, "Lost connection to MySQL server during query")
     manager.retrySearch()  # 區塊錯誤的 Retry 用同一組條件
@@ -322,7 +324,7 @@ def test_search_with_only_an_end_date(services):
     settle(services)
     sql, params = services.db.calls[0]
     assert "s.service_start >= %s" not in sql and [p.isoformat() for p in params[:-1]] == ["2026-11-01T00:00:00"]
-    assert manager.state == "ready" and manager.lastQuery == {"name": "", "start": "", "end": "2026-10-31"}
+    assert manager.state == "ready" and manager.lastQuery == {"staffId": "", "start": "", "end": "2026-10-31"}
     assert manager.listModel.rowCount() == 1
     # 沒填開始日：範圍的開頭用查到的服務最早的那一天（T31 第 2 節）
     assert (manager.countText, manager.subtitle) == ("1 service", "All staff · Oct 30 – Oct 31, 2026 · newest first")
@@ -330,10 +332,12 @@ def test_search_with_only_an_end_date(services):
 
 def test_staff_names_load_in_the_background(services):
     manager = ServiceManager(services)
-    services.db.rows = [("王小明",), ("服務人員（佔位）",)]
+    services.db.rows = [("acc-7", "王小明", "wang"), ("acc-2", "服務人員（佔位）", "placeholder_staff")]
     assert manager.loadNames()
     settle(services)
     assert (manager.namesState, manager.names) == ("ready", ["王小明", "服務人員（佔位）"])
+    assert manager.staffIds == ["acc-7", "acc-2"]
+    assert "account_id" in services.db.calls[0][0] and "DISTINCT" not in services.db.calls[0][0]
     services.db.error = mysql_error(2003, "Can't connect to MySQL server")
     manager.loadNames()
     assert manager.namesState == "loading"

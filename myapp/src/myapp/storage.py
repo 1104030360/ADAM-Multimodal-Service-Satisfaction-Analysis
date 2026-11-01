@@ -16,7 +16,7 @@ from s3transfer.subscribers import BaseSubscriber
 
 from myapp.tasks import Cancelled
 
-CONTENT_TYPES = {".avi": "video/x-msvideo", ".wav": "audio/wav", ".png": "image/png"}
+CONTENT_TYPES = {".avi": "video/x-msvideo", ".wav": "audio/wav", ".png": "image/png", ".jpg": "image/jpeg"}
 
 
 @lru_cache(maxsize=1)
@@ -46,6 +46,11 @@ def upload(local_path, key):
 def download(key, local_path):
     s3_client().download_file(bucket(), key, local_path)
     return local_path
+
+
+def delete(key):
+    """刪掉 S3 上的 key（帳號照片換掉或移除時刪舊的，N3）。key 不存在也不算錯（S3 的 DeleteObject 本來就是這樣）。"""
+    s3_client().delete_object(Bucket=bucket(), Key=key)
 
 
 # ---- 背景工作用：有進度、可以取消（前端重建 F3，ENG-13）------------------------------------------

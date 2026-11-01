@@ -27,6 +27,7 @@ Item {
                 objectName: "accountSettings"
                 width: parent.width
                 window: root.window
+                account: typeof myAccount !== "undefined" ? myAccount : null    // 兩端的 context property（T36）
             }
 
             SettingsGeneral {

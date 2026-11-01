@@ -92,7 +92,8 @@ def test_staff_ranking_lists_everyone_with_analyzed_services_in_30_days(db, serv
     assert ranking.state == "ready"
     assert [row["name"] for row in ranking.byCustomer] == ["Gus", "Fay", "Eli", "Dee", "Cai", "Ben", "Ava"]
     assert [row["name"] for row in ranking.byStaff] == ["Ava", "Ben", "Dee", "Eli", "Fay", "Gus", "Cai"]  # 沒有分數的在最後
-    assert ranking.byCustomer[0] == {"accountId": "00000000-0000-0000-0000-000000000009", "name": "Gus", "count": 2,
+    assert ranking.byCustomer[0] == {"accountId": "00000000-0000-0000-0000-000000000009", "name": "Gus", "label": "Gus",
+                                     "count": 2,
                                      "customer": 95.0, "staff": 55.0, "customerBand": "good",
                                      "staffBand": "needsImprovement"}
 
@@ -123,7 +124,8 @@ def test_search_filters_by_staff_name_and_covers_whole_end_day(db, services):
     manager.loadNames()
     wait_until(lambda: manager.namesState == "ready")
     assert sorted(manager.names) == sorted([STAFF_NAME, "王小明"])  # 下拉選單只列服務人員（等級 1）
-    assert manager.search(STAFF_NAME, "2026-10-31", "2026-10-31")
+    staff_id = manager.staffIds[manager.names.index(STAFF_NAME)]  # 用 account_id 篩選（名字可以改、可以重複，T36）
+    assert manager.search(staff_id, "2026-10-31", "2026-10-31")
     loaded(manager)
     assert [row["serviceId"] for row in manager.listModel.rows()] == ["S20261031235900"]
     row = table_row(manager.listModel, 0)

@@ -42,11 +42,11 @@ Flickable {
         return rows.map(row => ({
             value: row[side],
             compare: row[other],
-            label: row.name,
+            label: row.label,       // 同名的人後面加上登入帳號（依 account_id 分組，T36）
             sublabel: countText(row.count),
-            tooltip: qsTr("%1 · %2\nCustomer %3 · Staff %4").arg(row.name).arg(countText(row.count))
+            tooltip: qsTr("%1 · %2\nCustomer %3 · Staff %4").arg(row.label).arg(countText(row.count))
                 .arg(scoreText(row.customer)).arg(scoreText(row.staff)),
-            name: qsTr("%1, %2, customer %3, staff %4").arg(row.name).arg(countText(row.count))
+            name: qsTr("%1, %2, customer %3, staff %4").arg(row.label).arg(countText(row.count))
                 .arg(scoreText(row.customer)).arg(scoreText(row.staff))
         }))
     }

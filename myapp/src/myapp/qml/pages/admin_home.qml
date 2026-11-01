@@ -89,7 +89,7 @@ Window {
         case "admin_add_page.qml": return qsTr("Add a staff or admin account.")
         case "admin_service_page.qml": return qsTr("Find any staff member's services and open their videos and charts.")
         case "admin_reports_page.qml": return qsTr("Choose a report to read it here.")
-        case "admin_setting_page.qml": return qsTr("Changes apply right away and are kept for next time.")
+        case "admin_setting_page.qml": return qsTr("Preferences apply right away. Account changes apply when you save.")
         }
         return ""
     }
@@ -228,6 +228,7 @@ Window {
         userName: adminHome ? adminHome.profile.name : ""
         userRole: adminHome && adminHome.profile.level > 0 ? qsTr("Admin · level %1").arg(adminHome.profile.level)
                                                            : qsTr("Admin")
+        userPhoto: adminHome ? adminHome.profile.photoSource : ""      // 設定頁換的照片（T36）
         // 搜尋服務 ID（UD5、T32）：放在標題和主要動作之間；明細頁沒有（設計稿的明細頁頁首是「‹ Services」和服務 ID）
         ServiceSearchField {
             objectName: "serviceSearchField"

@@ -132,7 +132,7 @@ def test_admin_list_filters_by_staff_and_lists_only_completed_newest_first(servi
     wait_until(lambda: not manager.loadingMore)
     assert [row["serviceId"] for row in manager.listModel.rows()] == everyone
 
-    assert manager.search(OTHER_NAME, "2026-10-23", "")
+    assert manager.search(OTHER_ID, "2026-10-23", "")  # 用 account_id 篩選，名字只用來顯示（T36）
     wait_until(lambda: manager.state == "ready" and not manager.refreshing)
     assert [row["serviceId"] for row in manager.listModel.rows()] == theirs[:3]
     assert manager.subtitle == f"{OTHER_NAME} · Oct 23 – Oct 25, 2026 · newest first"

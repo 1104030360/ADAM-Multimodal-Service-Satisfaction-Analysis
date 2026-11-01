@@ -632,7 +632,7 @@ def test_search_shows_date_errors_empty_results_and_rows(admin, db):
               "nameComboBox.activated(nameComboBox.currentIndex)")  # 使用者選了一個服務人員
     click(admin.window, child(page, "searchButton"))
     wait_until(lambda: manager.state == "ready")
-    assert manager.lastQuery["name"] == "服務人員（佔位）"
+    assert manager.lastQuery["staffId"] == "00000000-0000-0000-0000-000000000002"  # 用 account_id（T36）
     assert qml(child(page, "resultList"), "count") == 1 and not empty.isVisible()
     assert manager.subtitle == "服務人員（佔位） · Oct 1 – Oct 31, 2026 · newest first"
 
@@ -646,7 +646,7 @@ def test_search_shows_date_errors_empty_results_and_rows(admin, db):
 
     qml(page, "nameComboBox.currentIndex = 0; nameComboBox.activated(0)")  # 改回「All staff」：不再篩選名字
     click(admin.window, child(page, "searchButton"))
-    wait_until(lambda: manager.lastQuery["name"] == "" and manager.state == "ready")
+    wait_until(lambda: manager.lastQuery["staffId"] == "" and manager.state == "ready")
 
 
 def test_search_failure_is_a_block_error_with_retry(admin, db, mysql_server, monkeypatch):

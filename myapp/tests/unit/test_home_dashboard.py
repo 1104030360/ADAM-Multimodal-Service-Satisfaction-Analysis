@@ -285,7 +285,8 @@ def test_admin_dashboard_ranks_everyone_instead_of_recent_services(services):
     assert ranking.state == "ready"
     assert [row["name"] for row in ranking.byCustomer] == [f"Staff {n}" for n in range(7, 0, -1)]  # 7 個人都列出來
     assert [row["name"] for row in ranking.byStaff] == [f"Staff {n}" for n in range(1, 8)]
-    assert ranking.byCustomer[0] == {"accountId": "a7", "name": "Staff 7", "count": 7, "customer": 67.0,
+    assert ranking.byCustomer[0] == {"accountId": "a7", "name": "Staff 7", "label": "Staff 7", "count": 7,
+                                    "customer": 67.0,
                                     "staff": 83.0, "customerBand": "needsImprovement", "staffBand": "fair"}
     assert services.db.calls[1][1] == (at("2026-10-03"),)  # 30 天內（含今天）
 

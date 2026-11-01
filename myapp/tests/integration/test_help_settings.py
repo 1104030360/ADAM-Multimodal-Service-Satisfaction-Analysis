@@ -387,7 +387,7 @@ def test_clearing_is_disabled_while_a_download_is_still_running(engine, services
     key = media.task_key(SID, f"{SID}_cam1.avi")  # 離開明細頁之後還在收尾的下載
     services.tasks.submit("io", key, lambda token, report: release.wait(10))
     assert not button.property("enabled") and reason.isVisible()
-    assert reason.property("text") == "A video, chart or report is downloading or opening. Try again when it's done."
+    assert reason.property("text") == "A video, chart, report or photo is downloading or opening. Try again when it's done."
     assert not storage.clear()
     release.set()
     wait_until(lambda: button.property("enabled"))

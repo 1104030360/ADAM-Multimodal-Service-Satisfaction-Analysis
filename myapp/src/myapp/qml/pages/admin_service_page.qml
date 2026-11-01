@@ -16,12 +16,13 @@ Item {
     id: searchPage
 
     readonly property bool searching: serviceManager.state === "loading" || serviceManager.refreshing
-    // 使用者在選單選的名字；空字串＝不篩選（選單第 0 項「All staff」）。名單在背景載入，
-    // 換名單時 ComboBox 會回到第 0 項，所以選了誰記在這裡，名單換好再放回去
-    property string chosenName: ""
+    // 使用者在選單選的服務人員（account_id）；空字串＝不篩選（選單第 0 項「All staff」）。名單在背景載入，
+    // 換名單時 ComboBox 會回到第 0 項，所以選了誰記在這裡，名單換好再放回去。
+    // 用 account_id 不用名字：名字可以改、可以重複（同名的人選單上多寫登入帳號，new-feature T36）
+    property string chosenStaff: ""
 
     function search() {
-        if (!serviceManager.search(chosenName, startDateField.text, endDateField.text)
+        if (!serviceManager.search(chosenStaff, startDateField.text, endDateField.text)
                 && (serviceManager.startDateError !== "" || serviceManager.endDateError !== ""))
             (serviceManager.startDateError !== "" ? startDateField : endDateField).forceActiveFocus()
     }
@@ -37,11 +38,11 @@ Item {
         return qsTr("No completed services yet")
     }
 
-    // 選單顯示 chosenName；沒選是「All staff」。名單裡已經沒有這個人時也回到「All staff」，不再用他篩選
+    // 選單顯示 chosenStaff 那個人；沒選是「All staff」。名單裡已經沒有這個人時也回到「All staff」，不再用他篩選
     function showChosenName() {
-        const index = chosenName !== "" ? nameComboBox.find(chosenName) : 0
-        if (index < 0)
-            chosenName = ""
+        const index = chosenStaff !== "" ? serviceManager.staffIds.indexOf(chosenStaff) + 1 : 0
+        if (index <= 0)
+            chosenStaff = ""
         nameComboBox.currentIndex = Math.max(0, index)
     }
 
@@ -60,7 +61,7 @@ Item {
         const query = serviceManager.lastQuery
         startDateField.text = query.start
         endDateField.text = query.end
-        chosenName = query.name
+        chosenStaff = query.staffId
         showChosenName()
         serviceManager.loadNames()
         if (serviceManager.state === "idle")
@@ -130,7 +131,7 @@ Item {
                             leftPadding: 14
                             rightPadding: 40
                             Accessible.name: qsTr("Staff")
-                            onActivated: (index) => searchPage.chosenName = index > 0 ? textAt(index) : ""
+                            onActivated: (index) => searchPage.chosenStaff = index > 0 ? serviceManager.staffIds[index - 1] : ""
                             // 名單內容變了，ComboBox 會回到第 0 項；等它換好，再放回使用者選的人
                             onModelChanged: Qt.callLater(searchPage.showChosenName)
 
@@ -339,7 +340,7 @@ Item {
                     moreErrorTechnical: serviceManager.moreErrorTechnical
                     moreFailureCount: serviceManager.moreFailureCount
                     emptyTitle: searchPage.emptyTitle(serviceManager.lastQuery)
-                    emptyDescription: serviceManager.lastQuery.name ? qsTr("Try a different staff member or date range.")
+                    emptyDescription: serviceManager.lastQuery.staffId ? qsTr("Try a different staff member or date range.")
                                                                     : qsTr("Try a different date range.")
                     errorTitle: qsTr("Search failed")
                     errorDetail: serviceManager.errorDetail

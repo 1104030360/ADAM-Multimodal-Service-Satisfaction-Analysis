@@ -29,7 +29,7 @@ SCAN_KEY = "storage:scan"
 CLEAR_KEY = "storage:clear"
 # 這些 key 的工作在跑時，快取正在被用：明細頁的下載（media:<sid>:<檔名>）、報表頁畫頁面（pdf:…）。
 # 帳號照片、報表 PDF 的下載加進來時，把它們的前綴加在這裡
-CACHE_TASK_PREFIXES = ("media:", "pdf:")
+CACHE_TASK_PREFIXES = ("media:", "pdf:", "avatar:", "account:self:photo:")  # 照片：下載、處理、上傳（T36）
 RECORDING_FOLDERS = ("video", "audio")  # 錄影寫在「目前目錄」底下的這兩個資料夾（record_widget.Recording）
 
 IDLE, LOADING, READY, ERROR = "idle", "loading", "ready", "error"  # CacheStorage.state
@@ -335,7 +335,7 @@ class CacheStorage(QObject):
         if self._clearing or not self._measured or self._error:
             return ""
         if self._busy_keys:
-            return _tr("A video, chart or report is downloading or opening. Try again when it's done.")
+            return _tr("A video, chart, report or photo is downloading or opening. Try again when it's done.")
         if self._size == 0:
             return _tr("The download cache is empty.")
         return ""

@@ -202,12 +202,18 @@ def recent_rows(rows):
 
 
 def ranking_rows(rows):
-    """排名查詢的每一列（每位員工一列）→ {"accountId", "name", "count", "customer", "staff", 兩個分數帶}。"""
+    """排名查詢的每一列（每位員工一列）→ {"accountId", "name", "label", "count", "customer", "staff", 兩個分數帶}。
+
+    依 account_id 分組，同名的人是兩列；label 是畫面上的名字，同名時後面加上登入帳號「王小明 (wang)」（T36）。
+    """
+    names = [row["account_name"] for row in rows]
     result = []
     for row in rows:
         customer, staff = score(row["customer"]), score(row["staff"])
-        result.append({"accountId": str(row["account_id"]), "name": row["account_name"], "count": int(row["services"]),
-                       "customer": customer, "staff": staff,
+        name, username = row["account_name"], row.get("account_username") or ""
+        label = _tr("%1 (%2)", name, username) if username and names.count(name) > 1 else name
+        result.append({"accountId": str(row["account_id"]), "name": name, "label": label,
+                       "count": int(row["services"]), "customer": customer, "staff": staff,
                        "customerBand": band(customer), "staffBand": band(staff)})
     return result
 
@@ -282,14 +288,14 @@ def trend_sql(per_account):
 
 # 每位員工 30 天內分析完成的服務數和兩個平均；有服務的員工都列出來（以前的 RankingModel 只留前 5、後 5）
 RANKING_SQL = """
-SELECT a.account_id, a.account_name, COUNT(*) AS services,
+SELECT a.account_id, a.account_name, a.account_username, COUNT(*) AS services,
        AVG(NULLIF(sc.customer_total, -1)) AS customer,
        AVG(NULLIF(sc.server_total, -1)) AS staff
 FROM tbl_service AS s
 JOIN tbl_account AS a ON a.account_id = s.account_id
 LEFT JOIN tbl_service_score AS sc ON sc.service_id = s.service_id
 WHERE s.service_status = 3 AND s.service_start >= %s
-GROUP BY a.account_id, a.account_name
+GROUP BY a.account_id, a.account_name, a.account_username
 """
 
 

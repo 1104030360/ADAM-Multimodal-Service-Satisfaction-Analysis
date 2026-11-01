@@ -16,6 +16,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
+from myapp import account
 from myapp.db_lane import DbLane
 from myapp.diagnostics import HelpCenter
 from myapp.home_dashboard import HomeDashboard
@@ -139,73 +140,19 @@ class _Section(QObject):
             self.stateChanged.emit()
 
 
-# ---------------------------------------------------------------- 帳號資料（側邊欄的名字、新增帳號的等級上限）
+# ---------------------------------------------------------------- 帳號資料（頁首的名字和照片、新增帳號的等級上限）
 
 
-class AccountProfile(_Section):
-    """登入的管理員的名字和等級：launch() 時在背景載入（1 個往返），不再在 GUI 執行緒呼叫預存程序（ENG-06）。
+class AccountProfile(account.AccountProfile):
+    """登入的管理員的帳號資料：兩端共用的 myapp/account.py（new-feature S6，T36），launch() 時在背景載入（1 個往返）。
 
     載入失敗時，除了區塊的錯誤狀態，再跳一則可以重試的通知：名字和等級是整個管理員端都要用的。
     """
 
-    # 子類別的屬性要用自己的 signal 當 notify：PySide 不認得基底類別的 signal（notify 會變成空的）
-    profileChanged = Signal()
-
     RETRY_ACTION = "admin:profile:retry"
 
     def __init__(self, services, account_id, parent=None):
-        super().__init__(services, "admin:profile", parent=parent)
-        self.account_id = account_id
-        self._name = ""
-        self._level = 0  # 0＝還不知道
-        self._toast_id = 0
-        services.notifier.actionTriggered.connect(self._on_action)
-
-    @Property(str, notify=profileChanged)
-    def name(self):
-        return self._name
-
-    @Property(int, notify=profileChanged)
-    def level(self):
-        return self._level
-
-    @Slot(result=bool)
-    def load(self):
-        db, account_id = self.services.db, self.account_id
-
-        def work(token, report):
-            with db.cursor(dictionary=True) as cursor:
-                cursor.execute("SELECT account_name, account_level FROM tbl_account WHERE account_id = %s",
-                               (account_id,))
-                return cursor.fetchone()
-
-        return self._submit(work, self._apply)
-
-    def _apply(self, row):
-        if row is None:  # 帳號被刪掉了：當成錯誤，不要讓等級上限變成 0 卻看起來正常
-            raise LookupError(f"account {self.account_id} not found")
-        self._name = row["account_name"]
-        self._level = int(row["account_level"])
-        self.profileChanged.emit()
-        if self._toast_id:
-            self.services.notifier.dismiss(self._toast_id)
-            self._toast_id = 0
-        return False
-
-    def _succeeded(self, on_data, result):
-        try:
-            super()._succeeded(on_data, result)
-        except LookupError as exc:
-            self._failed(exc)
-
-    def _failed(self, exc):
-        super()._failed(exc)
-        self._toast_id = self.services.notifier.fromException(exc, key=self.key, actionId=self.RETRY_ACTION)
-
-    @Slot(str, int)
-    def _on_action(self, action_id, toast_id):
-        if action_id == self.RETRY_ACTION:
-            self.load()
+        super().__init__(services, account_id, "admin:profile", retry_action=self.RETRY_ACTION, parent=parent)
 
 
 class AccountManager(QObject):
@@ -467,10 +414,22 @@ from myapp.service_list import (LIST_ROLES, PAGE_SIZE, Criteria, RowListModel, c
                                 shown_text, staff_label)
 
 
+def staff_choices(rows):
+    """名單的列 (account_id, 名字, 登入帳號) → [(account_id, 選單上的字)]。名字重複的人後面加上登入帳號，
+    選單上分得出是誰（名字不是唯一的，PLAN 13.7）。"""
+    counts = {}
+    for _, name, _ in rows:
+        counts[name] = counts.get(name, 0) + 1
+    return [(str(account_id), fill("%1 (%2)", name, username) if counts[name] > 1 else name)
+            for account_id, name, username in rows]
+
+
 class ServiceManager(_Section):
     """Services 頁（admin_service_page.qml，PLAN §6-9）：服務人員名單和搜尋都在背景。
 
-    - 名單：只列等級 1（服務人員）；namesState 是 loading、error、ready、empty。
+    - 名單：只列等級 1（服務人員）；namesState 是 loading、error、ready、empty。names 是選單上的字（名字；
+      同名的人後面加上登入帳號，例如「王小明 (wang)」），staffIds 是同樣順序的 account_id。
+      搜尋用 account_id 篩選，不用名字：名字可以改、可以重複（new-feature PLAN 13.7，T36）。
     - 搜尋：日期格式不對、To 早於 From 時不查，錯誤顯示在那個欄位下方；新的搜尋取代還在跑的舊搜尋（replace=True）。
       state 一開始是 idle（還沒搜尋過；頁面第一次打開時查一次全部）。lastQuery 是最後一次送出的條件，
       頁面重新建立時拿來還原欄位，空狀態也用它寫出「No services from … to …」。
@@ -488,14 +447,15 @@ class ServiceManager(_Section):
     loadingMoreChanged = Signal()   # loadingMore 和 Show More 的錯誤
 
     NAMES_KEY = "admin:staff-names"
-    NAMES_QUERY = "SELECT DISTINCT account_name FROM tbl_account WHERE account_level = 1 ORDER BY account_name"
+    NAMES_QUERY = ("SELECT account_id, account_name, account_username FROM tbl_account WHERE account_level = 1 "
+                   "ORDER BY account_name, account_username")
 
     def __init__(self, services, parent=None):
         super().__init__(services, "admin:search", state=IDLE, parent=parent)
-        self._names = []
+        self._staff = []  # [(account_id, 選單上的字)]
         self._names_state = LOADING
         self._date_errors = {"start": "", "end": ""}
-        self._query = {"name": "", "start": "", "end": ""}
+        self._query = {"staffId": "", "start": "", "end": ""}
         self._list = RowListModel(LIST_ROLES, "serviceId", self)  # 依服務 ID 增量更新：Show More 只在最後插入
         self._criteria = None        # 最後一次送出的條件（Criteria）：Show More 用同一組
         self._page = None            # 畫面上這份結果（service_list.SearchPage）
@@ -506,7 +466,13 @@ class ServiceManager(_Section):
 
     @Property(list, notify=namesChanged)
     def names(self):
-        return self._names
+        """選單上的字：名字；同名的服務人員後面加上登入帳號（T36）。"""
+        return [label for _, label in self._staff]
+
+    @Property(list, notify=namesChanged)
+    def staffIds(self):
+        """和 names 同樣順序的 account_id：搜尋用這個篩選。"""
+        return [account_id for account_id, _ in self._staff]
 
     @Property(str, notify=namesChanged)
     def namesState(self):
@@ -522,7 +488,7 @@ class ServiceManager(_Section):
 
     @Property("QVariantMap", notify=queryChanged)
     def lastQuery(self):
-        """最後一次送出的條件 {"name", "start", "end"}（日期是使用者打的字）。"""
+        """最後一次送出的條件 {"staffId", "start", "end"}（staffId 空字串＝全部；日期是使用者打的字）。"""
         return dict(self._query)
 
     # ------------------------------------------------------------ 清單與標題（新版 Services 頁）
@@ -586,7 +552,7 @@ class ServiceManager(_Section):
         def work(token, report):
             with db.cursor() as cursor:
                 cursor.execute(self.NAMES_QUERY)
-                return [row[0] for row in cursor.fetchall()]
+                return staff_choices(cursor.fetchall())
 
         submitted = self.services.tasks.submit("db", self.NAMES_KEY, work, on_ok=self._names_loaded,
                                                on_err=self._names_failed)
@@ -596,8 +562,9 @@ class ServiceManager(_Section):
         return submitted
 
     @Slot(str, str, str, result=bool)
-    def search(self, name, start_date, end_date):
-        """檢查日期、送出搜尋（從 8 筆開始）。回傳是否已經送出（日期有錯時回傳 False）。"""
+    def search(self, staff_id, start_date, end_date):
+        """檢查日期、送出搜尋（從 8 筆開始）。staff_id 是選單選的服務人員的 account_id（空字串＝全部）。
+        回傳是否已經送出（日期有錯時回傳 False）。"""
         start, end, errors = date_errors(start_date, end_date)
         if errors != self._date_errors:
             self._date_errors = errors
@@ -605,13 +572,18 @@ class ServiceManager(_Section):
         if any(errors.values()):
             return False
 
-        criteria = Criteria(start, end, staff_name=name)
+        staff_id = staff_id or ""
+        label = ""  # 標題上的名字（只用來顯示）。名單裡找不到時不把 account_id 寫出來
+        if staff_id:
+            label = next((text for account_id, text in self._staff if account_id == staff_id),
+                         self.tr("Selected staff member"))
+        criteria = Criteria(start, end, account_id=staff_id, staff_name=label)
         db = self.services.db
         submitted = self._submit(lambda token, report: search_page(db, criteria, PAGE_SIZE),
                                  lambda page: self._show_results(criteria, page), replace=True)
         if submitted:
             self._criteria = criteria
-            self._query = {"name": name, "start": start_date.strip(), "end": end_date.strip()}
+            self._query = {"staffId": staff_id, "start": start_date.strip(), "end": end_date.strip()}
             self.queryChanged.emit()
             self._set_loading_more(False, "", "", reset_failures=True)  # 還在跑的 Show More 被這次搜尋取代了
         return submitted
@@ -632,7 +604,7 @@ class ServiceManager(_Section):
     @Slot(result=bool)
     def retrySearch(self):
         """用最後一次送出的條件再搜尋一次（區塊錯誤的 Retry）。"""
-        return self.search(self._query["name"], self._query["start"], self._query["end"])
+        return self.search(self._query["staffId"], self._query["start"], self._query["end"])
 
     @Slot(str)
     def clearDateError(self, field):
@@ -668,9 +640,9 @@ class ServiceManager(_Section):
         if before != (self._loading_more, self._more_detail, self._more_technical, self._more_failures):
             self.loadingMoreChanged.emit()
 
-    def _names_loaded(self, names):
-        self._names = names
-        self._names_state = READY if names else EMPTY
+    def _names_loaded(self, staff):
+        self._staff = staff
+        self._names_state = READY if staff else EMPTY
         self.namesChanged.emit()
 
     def _names_failed(self, exc):
@@ -699,12 +671,15 @@ class AdminHome(QObject):
         self.mediaModel = MediaModel()
         self.pdfmodel = PDFHandler(services)
         self.serviceSearch = ServiceSearch.for_admin(services, parent=self)  # 頁首的搜尋（全部＋員工名字）
+        self.myAccount = account.AccountSelfService(services, self._profile, self)  # 設定頁的 Account（T36）
         self.helpCenter = HelpCenter(services, reports=self.pdfmodel, parent=self)  # 設定頁的 Help 區塊（T40）
+        self.helpCenter.storage.cleared.connect(self.myAccount.cacheCleared)  # 照片的快取清掉了：重新下載（T36）
         self._profile.profileChanged.connect(self._sync_level)
 
     @Property(QObject, constant=True)
     def profile(self):
-        """AccountProfile：name、level、state。側邊欄顯示 name；新增帳號頁依 level 列出能指派的等級。"""
+        """AccountProfile（myapp/account.py）：name、username、level、photoSource、state。頁首顯示名字和照片；
+        新增帳號頁依 level 列出能指派的等級。"""
         return self._profile
 
     @Slot(result=str)
@@ -756,6 +731,7 @@ def launch(engine, account_id, services=None):
         "mediaModel": home.mediaModel,
         "pdfHandler": home.pdfmodel,
         "serviceSearch": home.serviceSearch,
+        "myAccount": home.myAccount,
         "helpCenter": home.helpCenter,
     }.items():
         context.setContextProperty(name, obj)

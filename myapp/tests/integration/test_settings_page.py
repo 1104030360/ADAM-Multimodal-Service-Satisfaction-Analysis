@@ -40,6 +40,18 @@ def open_settings(engine, home_init, account_id, page, services):
     return window, page_item, page_item.findChild(QObject, "settingsView")
 
 
+def reveal(item):
+    """item 在設定頁的 Flickable 裡、沒有整個露出來時，先捲到它（Account 區塊在 General 上面，離線的視窗只有 800 高）。"""
+    flickable = item.parentItem()
+    while flickable is not None and not flickable.inherits("QQuickFlickable"):
+        flickable = flickable.parentItem()
+    top = item.mapToItem(flickable, QPointF(0, 0)).y()
+    if 0 <= top and top + item.height() <= flickable.height():
+        return
+    highest = max(0.0, flickable.property("contentHeight") - flickable.height())
+    flickable.setProperty("contentY", min(highest, max(0.0, flickable.property("contentY") + top)))
+
+
 def option(view, name):
     found = view.findChild(QObject, name)
     assert found is not None, name
@@ -74,7 +86,7 @@ def test_window_mode_options_follow_and_switch_main_window(engine, services, qml
 def test_settings_page_is_english_with_named_groups(engine, services, qml_warnings, home_init, account_id, page):
     window, _page, view = open_settings(engine, home_init, account_id, page, services)
     assert qml(window, "header.title") == "Settings"  # 頁面標題在外殼的頁首，頁面自己不畫（新版介面 PLAN 6-1）
-    assert qml(window, "header.subtitle") == "Changes apply right away and are kept for next time."
+    assert qml(window, "header.subtitle") == "Preferences apply right away. Account changes apply when you save."
     assert [option(view, name).property("text") for name in OPTIONS] == [
         "Windowed", "Full Screen", "Follow System", "On", "Off"]
     assert option(option(view, "motionSection"), "groupHint").property("text") == (
@@ -103,6 +115,7 @@ def test_options_are_whole_tiles_that_show_which_one_is_chosen(engine, services,
     assert qml(on, "background.color") == qml(on, "Theme.tile")
     assert qml(follow, "indicator.children[0].visible") and not qml(on, "indicator.children[0].visible")
 
+    reveal(on)
     right_edge = on.mapToScene(QPointF(on.width() - 12, on.height() / 2)).toPoint()  # 離圓圈和字都很遠的地方
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, right_edge)
     assert services.ui_prefs.motionMode == 1

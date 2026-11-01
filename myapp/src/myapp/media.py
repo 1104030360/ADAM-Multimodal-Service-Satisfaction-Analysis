@@ -95,6 +95,11 @@ def reports_cache_dir():
     return os.path.join(os.path.dirname(os.path.normpath(media_dir())), "reports")
 
 
+def avatar_cache_dir():
+    """帳號照片的快取（new-feature N3，myapp/account.py）：和影片的快取放在同一層，Quit 時一起清掉。"""
+    return os.path.join(os.path.dirname(os.path.normpath(media_dir())), "avatars")
+
+
 def list_key(service_id):
     return f"media:{service_id}"
 
@@ -237,6 +242,7 @@ def download_cache_dirs():
         media_dir(),
         charts_dir(),
         reports_cache_dir(),
+        avatar_cache_dir(),     # 帳號照片（N3，T36）：S3 上有原檔，清掉之後重新下載
     ]
 
 

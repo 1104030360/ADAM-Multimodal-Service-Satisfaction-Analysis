@@ -19,6 +19,7 @@ from PySide6.QtCore import QCoreApplication, QLocale, QObject, Property, Qt, QSe
 from datetime import datetime
 import pyaudio
 from pathlib import Path
+from myapp.account import AccountProfile, AccountSelfService
 from myapp.db_lane import DbLane
 from myapp.diagnostics import HelpCenter
 from myapp.home_dashboard import HomeDashboard
@@ -1320,7 +1321,11 @@ class ServerHome(QObject):
         super().__init__()
         self.account_id = account_id
         self.services = services
-        self._account_name = ""
+        # 帳號資料（名字、登入帳號、照片）和設定頁的自助修改：兩端共用 myapp/account.py（new-feature S6，T36）。
+        # key 沿用以前載入名字的 ACCOUNT_NAME_KEY：launch 的往返預算不變（1 個）
+        self._profile = AccountProfile(services, account_id, ACCOUNT_NAME_KEY, parent=self)
+        self._profile.profileChanged.connect(self._profile_changed)
+        self.myAccount = None if services is None else AccountSelfService(services, self._profile, self)
         print(f"ServerHome initialized with account_id: {self.account_id}")
         self.deviceFinder = DeviceFinder(self)  # 不在這裡探測：打開錄影頁時才做
         self.homeDashboard = HomeDashboard(services, account_id, HOME_KEY_PREFIX, self)  # 新版首頁（U1，T28）
@@ -1334,10 +1339,21 @@ class ServerHome(QObject):
         self.pdfmodel = PDFHandler(services)
         self.serviceSearch = ServiceSearch.for_staff(services, account_id, parent=self)  # 頁首的搜尋（只查自己的）
         self.helpCenter = HelpCenter(services, reports=self.pdfmodel, parent=self)  # 設定頁的 Help 區塊（T40）
+        if self.myAccount is not None:  # 清掉下載快取時照片的檔案也沒了：重新下載（T36）
+            self.helpCenter.storage.cleared.connect(self.myAccount.cacheCleared)
 
     @Property(str, notify=accountNameChanged)
     def accountName(self):
-        return self._account_name
+        return self._profile.name
+
+    @Property(QObject, constant=True)
+    def profile(self):
+        """AccountProfile（myapp/account.py）：頁首的名字和照片、設定頁的 Account 區塊。"""
+        return self._profile
+
+    @Slot()
+    def _profile_changed(self):
+        self.accountNameChanged.emit()
 
     def start(self):
         """launch() 呼叫：帳號名稱、首頁的三張卡片、監看要看的服務都在 db lane 載入，GUI 執行緒不碰網路。
@@ -1406,25 +1422,9 @@ class ServerHome(QObject):
 
     @Slot()
     def loadAccountName(self):
-        db, account_id = self.services.db, self.account_id
-
-        def load(token, report):
-            with db.cursor(dictionary=True) as cursor:
-                cursor.execute("CALL sp_get_account_name(%s)", (account_id,))
-                row = cursor.fetchone()
-            return row["account_name"] if row else ""
-
-        self.services.tasks.submit("db", ACCOUNT_NAME_KEY, load, on_ok=self._set_account_name,
-                                   on_err=self._account_name_failed)
-
-    def _set_account_name(self, name):
-        if name != self._account_name:
-            self._account_name = name
-            self.accountNameChanged.emit()
-
-    def _account_name_failed(self, error):
-        # 名字只是顯示用：同一次斷線，首頁的卡片會顯示區塊錯誤；按 Retry 或 Home 時再載一次
-        logger.warning("loading the account name failed: %r", error)
+        """帳號資料（名字、登入帳號、等級、照片）在 db lane 載入（1 個往返）。失敗只記 log：名字只是顯示用，
+        同一次斷線，首頁的卡片會顯示區塊錯誤；按 Retry 或 Home 時再載一次。"""
+        self._profile.load()
 
     @Slot()
     def onLoadHome(self):
@@ -1435,7 +1435,7 @@ class ServerHome(QObject):
     @Slot()
     def reloadAccountName(self):
         """首頁卡片的 Retry：名字沒載入（例如同一次斷線）時再載一次。"""
-        if not self._account_name:
+        if not self._profile.name:
             self.loadAccountName()
 
     @Slot()
@@ -1446,7 +1446,7 @@ class ServerHome(QObject):
     @Slot(result=str)
     def getAccountName(self):
         """舊的介面：回傳已經載入的名字，不連資料庫（QML 改綁 accountName 屬性）。"""
-        return self._account_name
+        return self._profile.name
 
     @Slot(result=str)
     def getID(self):
@@ -1498,6 +1498,7 @@ def launch(engine, account_id, services=None):
     context.setContextProperty("mediaModel", home.mediaModel)
     context.setContextProperty("pdfHandler", home.pdfmodel)
     context.setContextProperty("serviceSearch", home.serviceSearch)
+    context.setContextProperty("myAccount", home.myAccount)  # 設定頁的 Account（T36）
     context.setContextProperty("helpCenter", home.helpCenter)
 
     opened = len(engine.rootObjects())

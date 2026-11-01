@@ -148,9 +148,11 @@ def test_query_for_one_staff_member_covers_the_whole_end_day():
     assert sql.rstrip().endswith("LIMIT %s")
 
 
-def test_query_for_admins_filters_by_name_or_not_at_all():
-    sql, params = search_query(Criteria(staff_name="Mia Chen"), 8)
-    assert "a.account_name = %s" in sql and params == ("Mia Chen", 8)
+def test_query_for_admins_filters_by_account_id_or_not_at_all():
+    """管理員選的服務人員：用 account_id 篩選，名字只用來顯示（名字可以改、可以重複，new-feature T36）。"""
+    sql, params = search_query(Criteria(account_id="acc-9", staff_name="Mia Chen"), 8)
+    assert "s.account_id = %s" in sql and "a.account_name" not in sql.split("WHERE")[1]
+    assert params == ("acc-9", 8)
     sql, params = search_query(Criteria(), 8)  # All staff、日期都沒填
     assert "%s" not in sql.split("WHERE")[1].split("LIMIT")[0] and params == (8,)
 
@@ -334,7 +336,8 @@ def test_a_new_search_starts_again_from_eight(side, services):
 
 def test_admin_subtitle_names_the_staff_filter(services):
     manager = admin_home_init.ServiceManager(services)
-    manager.search("Mia Chen", "2026-10-19", "2026-11-01")
+    manager._names_loaded([("acc-9", "Mia Chen")])  # 選單上的名字（名單的查詢在 test_admin_rules.py）
+    manager.search("acc-9", "2026-10-19", "2026-11-01")
     settle(services, Admin)
     assert manager.staffText == "Mia Chen"
     assert manager.subtitle == "Mia Chen · Oct 19 – Nov 1, 2026 · newest first"

@@ -40,7 +40,7 @@ QML_COLOUR_FILES = [path for path in QML_FILES if path != THEME_QML]
 # 設定頁 Help 的連線檢查與 Storage（diagnostics.py、local_storage.py，T40）
 PYTHON_FILES = [SRC / "init" / "record_widget.py", SRC / "init" / "server_home_init.py",
                 SRC / "init" / "admin_home_init.py", SRC / "media.py", SRC / "home_dashboard.py",
-                SRC / "service_list.py",
+                SRC / "service_list.py", SRC / "account.py",
                 SRC / "diagnostics.py", SRC / "local_storage.py"]
 
 # 中日韓的字和全形標點：U+3000–303F、U+3400–4DBF、U+4E00–9FFF、U+F900–FAFF、U+FF00–FFEF

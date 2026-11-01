@@ -85,7 +85,7 @@ Window {
         case "analysis.qml": return qsTr("Send recorded services for analysis and see the results.")
         case "server_service_page.qml": return qsTr("Find a past service and open its videos and charts.")
         case "server_reports_page.qml": return qsTr("Choose a report to read it here.")
-        case "server_setting_button.qml": return qsTr("Changes apply right away and are kept for next time.")
+        case "server_setting_button.qml": return qsTr("Preferences apply right away. Account changes apply when you save.")
         }
         return ""
     }
@@ -296,6 +296,7 @@ Window {
         onActionClicked: window.activateNav(recordButton)
         userName: serverHome ? serverHome.accountName : ""  // 在 db lane 載入，到了就更新
         userRole: qsTr("Staff")
+        userPhoto: serverHome ? serverHome.profile.photoSource : ""    // 設定頁換的照片（T36）
         // 搜尋服務 ID（UD5、T32）：放在標題和主要動作之間；明細頁沒有（設計稿的明細頁頁首是「‹ Services」和服務 ID）
         ServiceSearchField {
             objectName: "serviceSearchField"

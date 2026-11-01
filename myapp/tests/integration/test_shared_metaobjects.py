@@ -60,7 +60,8 @@ def test_staff_home_objects_keep_the_class_metaobject(engine, services):
     assert home.deviceFinder.saver is not None  # 第一次錄影才建立；先建好，連它接的 signal 一起檢查
     objects = app_objects(home, services.tasks, services.notifier, services.ui_prefs)
     assert {"ServerHome", "DeviceFinder", "RecordingSaver", "SavesModel", "ServiceModel", "AnalysisWatcher",
-            "DockAttention", "MediaModel", "ChartsModel"} <= {type(obj).__name__ for obj in objects}
+            "DockAttention", "MediaModel", "ChartsModel", "AccountProfile",
+            "AccountSelfService"} <= {type(obj).__name__ for obj in objects}
     assert with_dynamic_slots(objects) == {}
 
 
@@ -69,5 +70,6 @@ def test_admin_home_objects_keep_the_class_metaobject(engine, services):
     sections = (home.profile, *home.homeDashboard.sections)
     wait_until(lambda: all(section.state != "loading" for section in sections))
     objects = app_objects(home, services.tasks, services.notifier, services.ui_prefs)
-    assert {"AdminHome", "AccountProfile", "AccountManager"} <= {type(obj).__name__ for obj in objects}
+    assert {"AdminHome", "AccountProfile", "AccountManager", "AccountSelfService"} <= {
+        type(obj).__name__ for obj in objects}
     assert with_dynamic_slots(objects) == {}
