@@ -72,18 +72,43 @@ def calendar(field):
     return child(field, "calendarPopup")
 
 
+def drawn(window):
+    """等視窗畫出下一個畫格。
+
+    Qt Quick 在畫每一個畫格之前才排版面（polish）：MonthGrid 的格子、Layout 的高度、被推回視窗裡的 Popup。
+    使用者點得到的一定是畫出來、排好的東西；測試不等就點，第一次打開的月曆格子還全部疊在左上角，
+    會點到疊在最上面的最後一格（10 月的月曆是 2026-11-07，T35 第 7 節）。
+    """
+    frames = []
+
+    def swapped():
+        frames.append(True)
+
+    window.frameSwapped.connect(swapped)
+    try:
+        window.update()
+        wait_until(lambda: frames)
+    finally:
+        window.frameSwapped.disconnect(swapped)
+
+
+def laid_out(ui, field):
+    """月曆畫好了：在視窗裡（放不下時 Popup 會被推回來），6 週 42 格各在自己的位置上。"""
+    content = qml(calendar(field), "contentItem")
+    corner = content.mapToScene(QPointF(0, 0))
+    inside = (corner.x() >= 0 and corner.y() >= 0 and corner.x() + content.width() <= ui.window.width()
+              and corner.y() + content.height() <= ui.window.height())
+    days = [item for item in items(content) if item.objectName().startswith("day-")]
+    places = {(round(point.x()), round(point.y())) for point in (day.mapToScene(QPointF(0, 0)) for day in days)}
+    return inside and len(days) == 42 and len(places) == 42
+
+
 def open_calendar(ui, field):
-    """點日期欄打開月曆，等它排好位置：放不下時 Popup 會被推回視窗裡（margins），推好之前的座標點不準。"""
+    """點日期欄打開月曆，等它畫出來、排好版面（drawn），才點裡面的東西。"""
     click(ui.window, field)
     wait_until(lambda: field.property("calendarOpen"))
-    content = qml(calendar(field), "contentItem")
-
-    def inside_the_window():
-        corner = content.mapToScene(QPointF(0, 0))
-        return (corner.x() >= 0 and corner.y() >= 0 and corner.x() + content.width() <= ui.window.width()
-                and corner.y() + content.height() <= ui.window.height())
-
-    wait_until(inside_the_window)
+    drawn(ui.window)
+    wait_until(lambda: laid_out(ui, field))
 
 
 def pick(ui, field, date, months_back=0):
@@ -93,14 +118,17 @@ def pick(ui, field, date, months_back=0):
         click(ui.window, child(calendar(field), "previousMonthButton"))
     grid = child(calendar(field), "monthGrid")
     wait_until(lambda: (qml(grid, "year"), qml(grid, "month")) == (int(date[:4]), int(date[5:7]) - 1))
+    drawn(ui.window)  # 換月之後格子就地換成新的日期，位置不變；照樣等畫出來再點，和使用者一樣
+    wait_until(lambda: laid_out(ui, field))
 
     def the_day():  # 這個月的那一格（前後月份補上的格子也叫 day-…，但 inMonth 是 false）
         return [item for item in items(qml(calendar(field), "contentItem"))
                 if item.objectName() == f"day-{date}" and item.property("inMonth")]
 
-    wait_until(lambda: len(the_day()) == 1)
-    click(ui.window, the_day()[0])
+    [day] = the_day()
+    click(ui.window, day)
     wait_until(lambda: not field.property("calendarOpen"))
+    assert field.property("text") == date  # 點到的就是指著的那一天
 
 
 def listed(manager):
@@ -177,6 +205,7 @@ def test_the_open_calendar_has_no_warnings(side, engine, services, db, qml_warni
         month = child(calendar(field), "monthSelect")
         qml(month, "popup.open()")
         wait_until(lambda: qml(month, "popup.opened"))
+        drawn(ui.window)
         qml(month, "popup.close()")
         QTest.keyClick(ui.window, Qt.Key.Key_Escape)
         wait_until(lambda: not field.property("calendarOpen"))

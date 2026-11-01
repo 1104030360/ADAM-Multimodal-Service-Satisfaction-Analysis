@@ -99,7 +99,7 @@ Window {
         case "analysis.qml": return qsTr("Send recorded services for analysis and see the results.")
         case "server_service_page.qml": return qsTr("Find a past service and open its videos and charts.")
         case "server_reports_page.qml": return qsTr("Reports an admin has published for you.")
-        case "server_setting_button.qml": return qsTr("Preferences apply right away. Account changes apply when you save.")
+        case "server_setting_button.qml": return qsTr("Preferences apply right away. Account and device changes apply when you save.")
         }
         return ""
     }

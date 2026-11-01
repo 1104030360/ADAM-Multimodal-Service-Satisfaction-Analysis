@@ -140,6 +140,49 @@ def click(window, item):
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
 
 
+def drawn(window):
+    """等視窗畫出下一個畫格。
+
+    Qt Quick 在畫每一個畫格之前才排版面（polish）：MonthGrid 的格子、Layout 的高度、被推回視窗裡的 Popup、
+    下拉清單的列。使用者點得到的一定是畫出來、排好的東西；測試不等就點，第一次打開的月曆格子還全部疊在左上角，
+    會點到疊在最上面的最後一格（T35 第 7 節）。
+    """
+    frames = []
+
+    def swapped():
+        frames.append(True)
+
+    window.frameSwapped.connect(swapped)
+    try:
+        window.update()
+        wait_until(lambda: frames)
+    finally:
+        window.frameSwapped.disconnect(swapped)
+
+
+def laid_out(window, field):
+    """月曆畫好了：在視窗裡，6 週 42 格各在自己的位置上。"""
+    content = qml(popup(field), "contentItem")
+    corner = content.mapToScene(QPointF(0, 0))
+    inside = (corner.x() >= 0 and corner.y() >= 0 and corner.x() + content.width() <= window.width()
+              and corner.y() + content.height() <= window.height())
+    places = {(round(point.x()), round(point.y())) for point in (day.mapToScene(QPointF(0, 0)) for day in cells(field))}
+    return inside and len(places) == 42
+
+
+def opened(page, field):
+    """月曆開著，而且已經畫出來、排好版面：之後才點裡面的東西。"""
+    wait_until(lambda: is_open(field))
+    drawn(page.window)
+    wait_until(lambda: laid_out(page.window, field))
+
+
+def open_calendar(page, field, into_calendar=False):
+    """和點欄位（False）或按 ↓、點月曆圖示（True）一樣打開月曆，等它畫好。"""
+    qml(field, f"openCalendar({'true' if into_calendar else 'false'})")
+    opened(page, field)
+
+
 def shown_month(field):
     return (qml(popup(field), "contentItem") and child(popup(field), "monthSelect").property("displayText"),
             child(popup(field), "yearSelect").property("displayText"))
@@ -165,7 +208,7 @@ def press(window, key, times=1):
 def test_clicking_the_field_opens_this_month_and_typing_still_works(ui):
     page = ui()
     click(page.window, page.start)
-    wait_until(lambda: is_open(page.start))
+    opened(page, page.start)
     assert page.start.hasActiveFocus()  # 焦點留在欄位上
     assert shown_month(page.start) == ("November", "2026")  # 欄位是空的：今天那個月
     assert qml(child(popup(page.start), "monthGrid"), "month === Calendar.November && year === 2026")
@@ -185,7 +228,7 @@ def test_clicking_the_field_opens_this_month_and_typing_still_works(ui):
 def test_a_wrong_date_in_the_field_opens_on_today(ui, text):
     page = ui()
     page.start.setProperty("text", text)
-    qml(page.start, "openCalendar(false)")
+    open_calendar(page, page.start)
     assert shown_month(page.start) == ("November", "2026")
     assert not any(qml(cell(page.start, f"2026-11-{day:02d}"), "selected") for day in range(1, 31))
     assert qml(page.start, f'parse("{text}") === null')
@@ -193,7 +236,7 @@ def test_a_wrong_date_in_the_field_opens_on_today(ui, text):
 
 def test_week_starts_on_sunday_and_today_is_marked(ui):
     page = ui()
-    qml(page.start, "openCalendar(false)")
+    open_calendar(page, page.start)
     row = child(popup(page.start), "dayOfWeekRow")
     labels = sorted((item.mapToScene(QPointF(0, 0)).x(), item.property("text")) for item in items(row)
                     if item.property("shortName"))
@@ -220,7 +263,7 @@ def test_today_follows_the_computers_local_date_when_not_fixed(ui):
     from datetime import date
 
     page = ui(today="")
-    qml(page.start, "openCalendar(false)")
+    open_calendar(page, page.start)
     now = date.today()
     assert qml(page.start, "format(todayDate())") == now.isoformat()
     assert child(cell(page.start, now.isoformat()), "todayMark").isVisible()
@@ -231,24 +274,24 @@ def test_today_follows_the_computers_local_date_when_not_fixed(ui):
 def test_clicking_a_day_picks_it_like_typing(ui):
     page = ui()
     click(page.window, page.start)
-    wait_until(lambda: is_open(page.start))
+    opened(page, page.start)
     click(page.window, cell(page.start, "2026-11-12"))
     assert page.start.property("text") == "2026-11-12"
     assert not is_open(page.start) and page.start.hasActiveFocus()  # 焦點回到欄位
     assert edits(page.window) == ["from:2026-11-12"]  # 和打字一樣：頁面清掉這一格的錯誤
 
     click(page.window, page.start)  # 再打開：停在選好的那一天
-    wait_until(lambda: is_open(page.start))
+    opened(page, page.start)
     assert qml(cell(page.start, "2026-11-12"), "selected")
     assert qml(cell(page.start, "2026-11-12"), "Accessible.name") == "Thursday, November 12, 2026, selected"
 
 
 def test_today_and_clear(ui):
     page = ui()
-    qml(page.start, "openCalendar(false)")
+    open_calendar(page, page.start)
     click(page.window, child(popup(page.start), "todayOption"))
     assert page.start.property("text") == TODAY and not is_open(page.start)
-    qml(page.start, "openCalendar(false)")
+    open_calendar(page, page.start)
     click(page.window, child(popup(page.start), "clearOption"))
     assert page.start.property("text") == "" and not is_open(page.start)  # 空的是不限
     assert edits(page.window) == ["from:" + TODAY, "from:"]
@@ -263,7 +306,7 @@ def test_today_and_clear(ui):
 ], ids=["last-7-days", "last-7-days-february", "last-7-days-new-year", "this-month", "this-month-first-day"])
 def test_a_range_fills_both_fields_through_range_chosen(ui, today, option, expected):
     page = ui(today=today)
-    qml(page.start, "openCalendar(false)")
+    open_calendar(page, page.start)
     click(page.window, child(popup(page.start), option))
     assert ranges(page.window) == [expected]
     assert f"{page.start.property('text')}..{page.end.property('text')}" == expected
@@ -273,7 +316,7 @@ def test_a_range_fills_both_fields_through_range_chosen(ui, today, option, expec
 
 def test_range_options_only_where_the_page_asks_for_them(ui):
     page = ui()
-    qml(page.end, "openCalendar(false)")
+    open_calendar(page, page.end)
     assert not child(popup(page.end), "last7DaysOption").isVisible()
     assert not child(popup(page.end), "thisMonthOption").isVisible()
     assert child(popup(page.end), "todayOption").isVisible() and child(popup(page.end), "clearOption").isVisible()
@@ -282,9 +325,9 @@ def test_range_options_only_where_the_page_asks_for_them(ui):
 def test_an_end_date_picked_before_the_start_date_is_still_a_range_error(ui):
     """結束日早於開始日：選出來的字串照樣被 Python 的檢查擋下來（錯誤在 To 下面，Search 不送出）。"""
     page = ui()
-    qml(page.start, "openCalendar(false)")
+    open_calendar(page, page.start)
     click(page.window, cell(page.start, "2026-11-12"))
-    qml(page.end, "openCalendar(false)")
+    open_calendar(page, page.end)
     click(page.window, cell(page.end, "2026-11-03"))
     start, end = page.start.property("text"), page.end.property("text")
     assert (start, end) == ("2026-11-12", "2026-11-03")
@@ -296,7 +339,7 @@ def test_an_end_date_picked_before_the_start_date_is_still_a_range_error(ui):
 def test_month_steps_and_selects_change_the_month_shown(ui):
     page = ui()
     page.start.setProperty("text", "2026-01-31")
-    qml(page.start, "openCalendar(false)")
+    open_calendar(page, page.start)
     content = popup(page.start)
     click(page.window, child(content, "previousMonthButton"))
     assert shown_month(page.start) == ("December", "2025")  # 跨年
@@ -308,6 +351,7 @@ def test_month_steps_and_selects_change_the_month_shown(ui):
     month = child(content, "monthSelect")
     click(page.window, month)
     wait_until(lambda: qml(month, "popup.opened"))
+    drawn(page.window)  # 清單的列也是畫之前才排好
     assert qml(month, "popup.height") <= 320  # 12 個月放不下時清單自己捲動
     options = qml(month, "popup.contentItem")
     wait_until(lambda: any(item.property("text") == "April" for item in items(options)))
@@ -325,7 +369,7 @@ def test_month_steps_and_selects_change_the_month_shown(ui):
 
 def test_year_select_offers_ten_years_back_and_the_year_shown(ui):
     page = ui()
-    qml(page.start, "openCalendar(false)")
+    open_calendar(page, page.start)
     years = qml(child(popup(page.start), "yearSelect"), "options.map(option => option.text).join(',')")
     assert years.split(",") == [str(year) for year in range(2016, 2028)]
     page.start.setProperty("text", "2001-05-05")
@@ -384,7 +428,7 @@ def test_escape_closes_without_changing_and_focus_returns(ui):
     assert page.start.property("text") == "2026-11-12" and edits(page.window) == []
 
     click(page.window, page.start)  # 焦點在欄位上時，Esc 也是關掉月曆
-    wait_until(lambda: is_open(page.start))
+    opened(page, page.start)
     press(page.window, Qt.Key.Key_Escape)
     assert not is_open(page.start) and page.start.hasActiveFocus()
 
@@ -418,12 +462,12 @@ def test_space_picks_and_tab_moves_through_the_calendar(ui):
 def test_the_calendar_closes_when_focus_or_a_click_goes_elsewhere(ui):
     page = ui()
     click(page.window, page.start)
-    wait_until(lambda: is_open(page.start))
+    opened(page, page.start)
     page.other.forceActiveFocus()  # Tab 走了
     wait_until(lambda: not is_open(page.start))
 
     click(page.window, page.start)
-    wait_until(lambda: is_open(page.start))
+    opened(page, page.start)
     click(page.window, page.end)  # 點了另一個日期欄：這個收起來、那個打開
     wait_until(lambda: not is_open(page.start) and is_open(page.end))
     assert page.end.hasActiveFocus()
@@ -436,6 +480,6 @@ def test_the_calendar_closes_when_focus_or_a_click_goes_elsewhere(ui):
 def test_the_calendar_icon_opens_the_calendar_with_focus_on_the_days(ui):
     page = ui()
     click(page.window, child(page.start, "calendarButton"))
-    wait_until(lambda: is_open(page.start))
+    opened(page, page.start)
     wait_until(child(popup(page.start), "monthGrid").hasActiveFocus)
     assert qml(child(page.start, "calendarButton"), "focusPolicy === Qt.NoFocus")  # 不多一個 Tab 停點
