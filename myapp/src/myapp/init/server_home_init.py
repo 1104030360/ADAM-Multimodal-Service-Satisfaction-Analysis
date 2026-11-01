@@ -21,6 +21,7 @@ import pyaudio
 from pathlib import Path
 from myapp.db_lane import DbLane
 from myapp.notifications import Notifier, user_message
+from myapp.pending_saves import PendingSaveStore
 from myapp.services import AppServices
 from myapp.tasks import TaskRunner
 from myapp.ui_prefs import UiPrefs
@@ -342,6 +343,7 @@ class DeviceFinder(QObject):
       等 SCAN_DELAY_MS 讓「Looking for cameras and microphones…」畫出來，再探測。
     - startRecording() 打開錄影視窗（同時只有一個）。停止錄影之後的上傳、寫資料庫由 RecordingSaver 在背景做，
       屬於這裡（和外殼活得一樣久），不屬於視窗：視窗關了也會做完（UX-08、ENG-03）。
+    - 上次沒存完的錄影（T26）：launch() 時 restore_saves() 從本機讀回這個帳號的，交給 RecordingSaver，一樣可以 Retry。
     - 結束程式前（UX-09、UX-29）：外殼的 Exit 按鈕和 onClosing 呼叫 stopRecording()，再看 uploadCount 決定要不要問。
       ⌘Q 不會經過 onClosing（T20），所以錄影中、存檔中時用 QuitGuard 在 app 上攔 QEvent.Quit，改發 quitRequested。
     """
@@ -365,7 +367,7 @@ class DeviceFinder(QObject):
         self._status = "idle"
         self._error_technical = ""
         self._recorder = None  # 開著的錄影視窗
-        self._saver = None  # 第一次錄影時才建立（要有 AppServices）
+        self._saver = None  # 要有 AppServices 才能建立：第一次錄影時，或登入時有沒存完的錄影（T26）
         self._quit_allowed = False
 
     @Property(list, notify=camerasChanged)
@@ -433,6 +435,17 @@ class DeviceFinder(QObject):
     @property
     def recorder(self):
         return self._recorder
+
+    def restore_saves(self):
+        """launch()：這個帳號上次沒存完的錄影放回存檔清單，每一筆跳一則附 Retry 的通知（T26）。只讀本機的設定。
+
+        沒有的話不建立 RecordingSaver，照舊等第一次錄影：它接著 app、TaskRunner、Notifier 的 signal，
+        被 gc 在背景執行緒收掉時要拿 GIL，多一個就多一個卡死的機會（T26 第 6 節）。
+        """
+        account_id = self.server_home.getID()
+        if not PendingSaveStore().load(account_id):
+            return []
+        return self.saver.restore(account_id)
 
     @Slot(int, int, int)
     def startRecording(self, cam0_index, cam1_index, mic_index):
@@ -1021,12 +1034,14 @@ class ServerHome(QObject):
         return self._account_name
 
     def start(self):
-        """launch() 呼叫：帳號名稱、各頁的資料、監看要看的服務都在 db lane 載入，GUI 執行緒不碰網路。"""
+        """launch() 呼叫：帳號名稱、各頁的資料、監看要看的服務都在 db lane 載入，GUI 執行緒不碰網路。
+        上次沒存完的錄影從本機的設定讀回來，每一筆跳一則附 Retry 的通知（T26）。"""
         self.loadAccountName()
         self.serviceScoreManager.refresh()
         self.serviceModel.refresh()
         if self.watcher is not None:
             self.watcher.start()
+        self.deviceFinder.restore_saves()
 
     def stop(self):
         """外殼關掉時：停止監看，清掉 Dock 的徽章。"""

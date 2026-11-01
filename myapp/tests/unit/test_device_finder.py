@@ -3,7 +3,9 @@
 F2：建立時不探測（以前登入時就把鏡頭都打開一次）；打開錄影頁才探測，結果留著，可以重新探測（UX-13、ENG-06）。
 F3：同時只開一個錄影視窗；錄好之後的存檔（RecordingSaver）屬於這裡；結束前要不要問（uploadCount）、
 ⌘Q 的 QuitGuard 只在錄影中或存檔中才裝上（UX-09、UX-29）。
+T26：登入時 restore_saves() 把這個帳號上次沒存完的錄影放回 RecordingSaver。
 """
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import cv2
@@ -14,8 +16,9 @@ from myapp.init import server_home_init
 from myapp.init.record_widget import QuitGuard
 from myapp.init.server_home_init import DeviceFinder
 from myapp.notifications import Notifier
+from myapp.pending_saves import PendingSave, PendingSaveStore
 from myapp.tasks import TaskRunner
-from tests.integration.helpers import wait_until
+from tests.integration.helpers import toasts, wait_until
 
 STAFF = SimpleNamespace(getID=lambda: "acc-1")  # 只需要 getID() 的假 ServerHome
 
@@ -245,3 +248,21 @@ def test_saved_recording_refreshes_the_analysis_lists(staff):
     finder._saved("S20261031093000")
     assert staff.refreshed == [True]
     DeviceFinder(STAFF)._saved("S20261031093000")  # 沒有 serviceModel 的 ServerHome：不做事
+
+
+def test_login_puts_back_the_staffs_unfinished_saves(staff):
+    """launch() 的 start() 呼叫 restore_saves()：這個帳號上次沒存完的錄影放回 RecordingSaver，附 Retry（T26）。"""
+    start = datetime(2026, 10, 30, 12, 0, 0)
+    store = PendingSaveStore()
+    store.put(PendingSave("S20261030121500", "acc-2", ("/x/a.avi", "/x/b.avi", "/x/c.wav"), start, None, "upload"))
+    finder = DeviceFinder(staff)
+    assert finder.restore_saves() == [] and finder._saver is None  # 只有別人的：照舊等第一次錄影才建立
+    store.put(PendingSave("S20261030120000", "acc-1", ("/gone/a.avi", "/gone/b.avi", "/gone/c.wav"), start,
+                          start + timedelta(minutes=5), "database", ("s3://b/a.avi", "s3://b/b.avi", "s3://b/c.wav")))
+    changes = []
+    finder.uploadsChanged.connect(lambda: changes.append(finder.uploadCount))
+    [job] = finder.restore_saves()
+    assert job.service_id == "S20261030120000" and finder.saver.job("S20261030120000") is job
+    assert finder.uploadCount == 0 and changes == [0]  # 等著 Retry，不算「還在存」：結束時不必問
+    assert not QuitGuard.instance().blocking(finder)
+    assert [toast["actionId"] for toast in toasts(staff.services.notifier)] == ["retry-upload:S20261030120000"]

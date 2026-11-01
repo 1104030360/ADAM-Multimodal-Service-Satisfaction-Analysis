@@ -4,12 +4,14 @@
 - 進度在狀態列和同一則通知上就地更新；成功有 Analyze，失敗留著檔案、可以重試（UX-10、DS-21、DS-23、DS-34、DS-52）
 - 鏡頭、麥克風出問題時在原地說明（UX-11）；錄影中是不閃的紅點、經過時間、每秒最多 4 次的音量（UX-12）
 - 關掉視窗、結束程式時先停止並存檔（UX-09）；⌘Q 由 QuitGuard 攔下來（UX-29）
+- 還沒存完的記在本機，重開 app 之後同一個帳號還能 Retry；檔案不見了就說明存不了（T26）
 真的 MySQL、moto 和 QML 外殼的整段流程在 tests/integration/test_upload_flow.py。
 """
 import gc
 import os
 import threading
 import wave
+from dataclasses import replace
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -24,10 +26,11 @@ import tests.fakes
 from myapp import storage
 from myapp.db_lane import DbLane
 from myapp.init import record_widget
-from myapp.init.record_widget import (FAILED, FINISHING, SAVED, QuitGuard, Recording, RecordingSaver, RecordWidget,
-                                      failure_detail, file_number, format_elapsed, level_from_peak, reduce_motion,
-                                      transfer_text)
+from myapp.init.record_widget import (FAILED, FINISHING, SAVED, SAVING, UPLOADING, QuitGuard, Recording,
+                                      RecordingSaver, RecordWidget, failure_detail, file_number, format_elapsed,
+                                      level_from_peak, reduce_motion, transfer_text)
 from myapp.notifications import Notifier
+from myapp.pending_saves import PendingSave, PendingSaveStore
 from myapp.services import AppServices
 from myapp.tasks import TaskRunner
 from myapp.ui_prefs import MOTION_FULL, MOTION_REDUCE, UiPrefs
@@ -137,6 +140,23 @@ def widget(open_window):
     return open_window()
 
 
+@pytest.fixture
+def restart(services):
+    """結束 app 再開一次（T26）：舊的背景工作取消（main.py 的 aboutToQuit），換新的背景服務和 RecordingSaver。
+    本機的設定（QSettings）、假資料庫、假上傳都是同一份。回傳 (新的 services, 新的 saver)。"""
+    started = []
+
+    def restart_app():
+        services.tasks.shutdown()
+        new = AppServices(TaskRunner(), Notifier(), DbLane(), UiPrefs())
+        started.append(new)
+        return new, RecordingSaver(new)
+
+    yield restart_app
+    for new in started:
+        new.tasks.shutdown()
+
+
 def record(widget, frames=3, chunks=3):
     """錄一段：開始 → 等假鏡頭、假麥克風把資料給完 → 停止。回傳這一段的 Recording。"""
     widget.start_recording()
@@ -161,6 +181,15 @@ def status(widget):
 def only_toast(notifier):
     [toast] = toasts(notifier)
     return toast
+
+
+def pending(account_id="acc-1"):
+    """本機記著、還沒存完的錄影（T26）。每次新建一個 store：和重開 app 之後讀到的一樣。"""
+    return PendingSaveStore().load(account_id)
+
+
+def uploaded_urls(recording):
+    return tuple(f"s3://adam-test/{key}" for key in recording.keys)
 
 
 # ── 停止 → 背景存檔 ────────────────────────────────────────────────────────────
@@ -311,6 +340,7 @@ def test_missing_file_is_not_offered_a_retry(widget, saver, uploads, services):
     assert toast["detail"] == "File not found on this computer. It may have been moved or deleted."
     assert toast["actionId"] == "" and not widget.status_bar.button.isVisibleTo(widget)
     assert saver.retry("S19990101000000") is False  # 不認得的服務
+    assert pending() == []  # 重開 app 之後也不會再問（T26）
 
 
 def test_other_actions_and_repeat_retries_are_ignored(widget, saver, uploads, services):
@@ -339,6 +369,168 @@ def test_analyze_in_the_recorder_is_the_same_as_the_toast_action(widget, saver, 
     assert toasts(services.notifier) == []  # 那則「Saved」也關掉了，和按通知上的 Analyze 一樣
     assert not widget.status_bar.button.isEnabled()  # 不能連按送兩次
     assert saver.request_analyze(sid) is False
+
+
+# ── 重開 app 之後還能重試（T26）──────────────────────────────────────────────
+
+def test_a_save_is_remembered_on_this_computer_until_it_is_saved(widget, saver, services, uploads):
+    widget.start_recording()
+    recording = widget.current
+    sid = recording.service_id
+    uploads.hold(f"video/{sid}_cam0.avi")
+    wait_until(lambda: recording.frames_written >= 3 and recording.audio_chunks >= 3)
+    widget.stop_recording()
+    job = wait_for(saver, recording, UPLOADING)
+    [remembered] = pending()  # 一開始存檔就記下來：app 中途結束也還在
+    assert (remembered.service_id, remembered.account_id, remembered.stage, remembered.urls) == (sid, "acc-1", "upload",
+                                                                                              None)
+    assert remembered.files == tuple(recording.files)
+    assert (remembered.start_time, remembered.end_time) == (recording.start_time, recording.end_time)
+
+    hold = threading.Event()
+    services.tasks.submit("db", "test:hold", lambda token, report: hold.wait(5))  # db lane 卡住：停在寫資料庫之前
+    try:
+        uploads.release()
+        wait_until(lambda: job.state == SAVING)
+        [remembered] = pending()  # 三個檔案都上傳了：之後只要寫資料庫
+        assert (remembered.stage, remembered.urls) == ("database", uploaded_urls(recording))
+    finally:
+        hold.set()
+    wait_for(saver, recording, SAVED)
+    assert pending() == []  # 存好就刪掉
+
+
+def test_failed_upload_is_offered_again_after_a_restart(widget, saver, uploads, database, restart):
+    uploads.errors = [S3_DOWN]
+    recording = record(widget)
+    sid = recording.service_id
+    wait_for(saver, recording, FAILED)
+    assert [item.stage for item in pending()] == ["upload"]
+
+    services, saver = restart()  # 結束 app，同一個帳號再登入
+    [job] = saver.restore("acc-1")
+    assert job.service_id == sid and job.state == FAILED and not job.in_flight and saver.in_flight() == []
+    toast = only_toast(services.notifier)  # 和失敗時同一種通知：常駐的錯誤＋Retry
+    assert (toast["severity"], toast["title"], toast["detail"], toast["timeoutMs"]) == (
+        "error", f"{sid} wasn't saved", "The upload didn't finish. The recording is still on this computer.", 0)
+    assert (toast["actionId"], toast["actionLabel"]) == (f"retry-upload:{sid}", "Retry")
+    assert database.calls == []
+
+    services.notifier.trigger(toast["toastId"])  # 通知上的 Retry
+    wait_until(lambda: job.state == SAVED)
+    assert uploads.keys == recording.keys  # 從頭上傳三個檔案（上次在第一個檔案就失敗了）
+    assert job.attempt == 2
+    assert database.calls[1][1] == (sid, "acc-1", recording.start_time, recording.end_time, 1)
+    assert [statement for statement, _ in database.calls].count("COMMIT") == 1
+    assert only_toast(services.notifier)["title"] == f"Saved {sid}"
+    assert pending() == []
+
+
+def test_database_failure_is_offered_again_and_only_the_database_is_retried(widget, saver, uploads, database,
+                                                                           restart):
+    database.fail_on = "sp_insert_audio_storage"
+    recording = record(widget)
+    sid = recording.service_id
+    wait_for(saver, recording, FAILED)
+    [remembered] = pending()
+    assert (remembered.stage, remembered.urls) == ("database", uploaded_urls(recording))
+
+    database.fail_on = None
+    for path in recording.files:
+        os.remove(path)  # 檔案都上傳了：本機的檔案不在了也存得好
+    services, saver = restart()
+    [job] = saver.restore("acc-1")
+    toast = only_toast(services.notifier)
+    assert (toast["title"], toast["detail"], toast["actionLabel"]) == (
+        f"{sid} wasn't saved", "The files uploaded, but the database couldn't be updated. Retry to finish saving.", "Retry")
+    calls = len(database.calls)
+    assert saver.retry(sid) is True
+    wait_until(lambda: job.state == SAVED)
+    assert len(uploads.keys) == 3  # 沒有重傳
+    assert [args[1:3] for _, args in database.calls[calls + 2:calls + 5]] == [
+        (os.path.basename(path), url) for path, url in zip(recording.files, uploaded_urls(recording))]
+    assert pending() == []
+
+
+def test_save_cut_off_by_quitting_is_offered_after_a_restart(widget, saver, uploads, restart):
+    widget.start_recording()
+    recording = widget.current
+    sid = recording.service_id
+    uploads.hold(f"video/{sid}_cam1.avi")
+    wait_until(lambda: recording.frames_written >= 3 and recording.audio_chunks >= 3)
+    widget.stop_recording()
+    wait_until(lambda: saver.job(sid).file_number == 2)
+
+    services, saver = restart()  # Quit Anyway：aboutToQuit 的 tasks.shutdown() 取消上傳
+    uploads.release()
+    [job] = saver.restore("acc-1")
+    assert only_toast(services.notifier)["detail"] == "The upload didn't finish. The recording is still on this computer."
+    assert saver.retry(sid) is True
+    wait_until(lambda: job.state == SAVED)
+    assert pending() == []
+
+
+def test_restart_drops_a_save_whose_files_are_gone(widget, saver, uploads, restart):
+    uploads.errors = [S3_DOWN]
+    recording = record(widget)
+    sid = recording.service_id
+    wait_for(saver, recording, FAILED)
+    os.remove(recording.audio_file)  # 例如有人清掉了 ~/audio
+
+    services, saver = restart()
+    assert saver.restore("acc-1") == [] and saver.job(sid) is None
+    toast = only_toast(services.notifier)
+    assert (toast["severity"], toast["title"], toast["detail"], toast["timeoutMs"]) == (
+        "error", f"{sid} can't be saved", "The recording is no longer on this computer. It may have been moved or deleted.",
+        0)
+    assert (toast["actionId"], toast["actionLabel"]) == ("", "")  # 重試也一樣：不給 Retry
+    assert pending() == []  # 紀錄刪掉了，下次登入不會再說一次
+
+
+def test_only_this_accounts_saves_are_offered_and_only_once(restart):
+    start = datetime(2026, 10, 30, 12, 0, 0)
+    mine = PendingSave("S20261030120000", "acc-1", ("/gone/video/a.avi", "/gone/video/b.avi", "/gone/audio/c.wav"),
+                       start, start + timedelta(minutes=5), "database",
+                       ("s3://adam-test/video/a.avi", "s3://adam-test/video/b.avi", "s3://adam-test/audio/c.wav"))
+    theirs = replace(mine, service_id="S20261030121500", account_id="acc-2")
+    store = PendingSaveStore()
+    store.put(mine)
+    store.put(theirs)
+
+    services, saver = restart()
+    assert [job.service_id for job in saver.restore("acc-1")] == ["S20261030120000"]
+    assert saver.restore("acc-1") == []  # 已經放回來了：不會再跳一則
+    assert [toast["title"] for toast in toasts(services.notifier)] == ["S20261030120000 wasn't saved"]
+    assert pending("acc-2") == [theirs]  # 別人的留著，等那個人登入
+
+
+def test_database_write_that_already_happened_counts_as_saved(widget, saver, services, uploads, database):
+    """上次 COMMIT 成功了，但結果回來之前 app 就結束了：Retry 會撞到主鍵（1062）。是這個帳號自己的，就算存好了。"""
+    database.fail_on = "sp_insert_service"
+    database.error = mysql.connector.errors.IntegrityError(msg="Duplicate entry for key 'tbl_service.PRIMARY'",
+                                                           errno=1062, sqlstate="23000")
+    database.rows = [{"account_id": "acc-1"}]
+    recording = record(widget)
+    sid = recording.service_id
+    wait_for(saver, recording, SAVED)
+    assert database.calls == [("START TRANSACTION", ()),
+                              (record_widget.INSERT_SERVICE_SQL, (sid, "acc-1", recording.start_time,
+                                                                  recording.end_time, 1)),
+                              ("ROLLBACK", ()), (record_widget.SERVICE_OWNER_SQL, (sid,))]  # 不再寫一次
+    assert only_toast(services.notifier)["title"] == f"Saved {sid}"
+    assert pending() == []
+
+
+@pytest.mark.parametrize("rows", [[{"account_id": "acc-2"}], []], ids=["another-account", "gone"])
+def test_service_id_taken_by_someone_else_still_fails(widget, saver, services, uploads, database, rows):
+    database.fail_on = "sp_insert_service"
+    database.error = mysql.connector.errors.IntegrityError(msg="Duplicate entry", errno=1062, sqlstate="23000")
+    database.rows = rows  # 別台電腦在同一秒開始錄影（db_schema.sql 的 tbl_service 說明）
+    recording = record(widget)
+    wait_for(saver, recording, FAILED)
+    assert only_toast(services.notifier)["detail"] == (
+        "The files uploaded, but the database couldn't be updated. Retry to finish saving.")
+    assert [item.stage for item in pending()] == ["database"]  # Retry 一樣只寫資料庫
 
 
 # ── 裝置的問題（UX-11）────────────────────────────────────────────────────────
@@ -480,6 +672,7 @@ def test_write_error_fails_the_save_with_its_reason(widget, saver, services, upl
     wait_for(saver, recording, FAILED)
     assert uploads.keys == []  # 檔案不完整：不上傳
     assert only_toast(services.notifier)["detail"] == "Not enough disk space. Free up space on this computer, then try again."
+    assert pending() == []  # 重開 app 之後也一樣不上傳不完整的檔案（T26）
 
 
 def test_recording_threads_that_do_not_finish_fail_the_save(widget, saver, services, monkeypatch):
@@ -506,6 +699,7 @@ def test_saves_started_while_the_app_quits_are_not_left_in_flight(widget, saver,
     job = saver.job(recording.service_id)
     assert job.state == FAILED and not job.in_flight and saver.in_flight() == []
     assert job.error_detail == "The app is closing. The recording is still on this computer."
+    assert [(item.service_id, item.stage) for item in pending()] == [(recording.service_id, "upload")]  # 下次登入再問
     recording.wait(5)
     saver._finish_files()
 

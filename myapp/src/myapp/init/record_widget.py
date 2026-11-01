@@ -8,6 +8,8 @@
      一次 sp_insert_audio_storage，用 execute("CALL …")，共 6 個往返（以前在 GUI 執行緒新開連線、callproc，20 個）。
   3. 通知用同一個 key 就地更新（DS-21）：進度 → "Saved <sid>"（動作 Analyze，交給送出分析的流程）
      或 "<sid> wasn't saved"（動作 Retry，這裡自己處理）。失敗時本機的檔案留著（UX-10）。
+  4. 還沒存完的記在本機（myapp/pending_saves.py，T26）：開始存檔、上傳完、失敗時寫入，存好就刪掉。
+     下一次同一個帳號登入時 restore() 放回來，跳一樣的 "<sid> wasn't saved"＋Retry，從停下來的那一步繼續。
 - `RecordWidget`：錄影視窗。狀態列照 DS-34；鏡頭、麥克風出問題時在原地說明，不跳對話框（UX-11）；
   錄影中是不閃的紅點、經過時間和音量（UX-12）。停止後馬上可以錄下一段，不必等上傳（DS-34）。
 - `QuitGuard`：⌘Q 不會經過 QML 外殼的 onClosing（app 是 QApplication，結束時只問 QWidget 視窗；T20 實測），
@@ -36,6 +38,7 @@ from PySide6.QtSvg import QSvgRenderer
 
 from myapp import storage
 from myapp.notifications import DISK_FULL, FILE_NOT_FOUND, NO_PERMISSION, user_message
+from myapp.pending_saves import PendingSave, PendingSaveStore
 from myapp.theme import RECORD_WINDOW, TOKENS
 from myapp.ui_prefs import MOTION_FULL, MOTION_REDUCE
 
@@ -154,6 +157,13 @@ def failure_detail(error, stage):
     if title in (FILE_NOT_FOUND.title, NO_PERMISSION.title, DISK_FULL.title):  # 本機檔案的問題：照 ENG-12 的說明
         return f"{title}. {detail}"
     return _tr("%1. The recording is still on this computer.", title)
+
+
+def restored_detail(stage):
+    """重開 app 之後，上次沒存完的那一筆的內文（T26）。當時的原因可能已經不成立了（例如網路好了），只講停在哪一步。"""
+    if stage == "database":
+        return failure_detail(None, stage)
+    return _tr("The upload didn't finish. The recording is still on this computer.")
 
 
 def reduce_motion(ui_prefs):
@@ -296,6 +306,15 @@ class Recording:
         self.audio_error = None  # 麥克風的問題（錄影照常）
         self.write_error = None  # 寫檔失敗（例如磁碟滿了）：這一段不能上傳
         self._peak = 0
+
+    @classmethod
+    def restored(cls, pending):
+        """重開 app 之後讀回來的一段（PendingSave，T26）：檔案早就寫好了，沒有錄影執行緒，路徑用記下來的。"""
+        recording = cls(pending.service_id, pending.account_id, (), None, pending.start_time)
+        recording.video_files, recording.audio_file = list(pending.files[:2]), pending.files[2]
+        recording.end_time = pending.end_time
+        recording._stop.set()
+        return recording
 
     @property
     def files(self):
@@ -505,23 +524,43 @@ def upload_recording(job, token, report):
 INSERT_SERVICE_SQL = "CALL sp_insert_service(%s, %s, %s, %s, %s, @insert_service_result)"
 INSERT_VIDEO_SQL = "CALL sp_insert_video_storage(%s, %s, %s, %s)"
 INSERT_AUDIO_SQL = "CALL sp_insert_audio_storage(%s, %s, %s, %s)"
+SERVICE_OWNER_SQL = "SELECT account_id FROM tbl_service WHERE service_id = %s"
+DUPLICATE_KEY = 1062  # ER_DUP_ENTRY
 
 
 def save_recording(db, recording, urls, uploaded_at):
     """在 db lane 執行：同一個交易寫服務（狀態 1）、兩支影片、一個音訊。中間失敗就整筆不算（DbLane 會 rollback）。
 
     6 個往返：START TRANSACTION、4 個 CALL、COMMIT。
+    重試時這一段可能已經在資料庫裡了：上次 COMMIT 成功，但結果還沒回來 app 就結束了（Quit Anyway、當掉），
+    重開之後的 Retry 會撞到主鍵（T26）。同一個帳號的同一個 service_id 就當作已經存好，不再寫一次（多 2 個往返）；
+    別人的（兩台電腦在同一秒開始錄影）照樣失敗。
     """
     service_id = recording.service_id
     names = [os.path.basename(path) for path in recording.files]
     with db.cursor(dictionary=True) as cursor:  # 登入後已經建好的那一種 cursor：不必多一次建立時的 PING（T16）
         cursor.execute("START TRANSACTION")
-        cursor.execute(INSERT_SERVICE_SQL,
-                       (service_id, recording.account_id, recording.start_time, recording.end_time, 1))
+        try:
+            cursor.execute(INSERT_SERVICE_SQL,
+                           (service_id, recording.account_id, recording.start_time, recording.end_time, 1))
+        except Exception as error:
+            if getattr(error, "errno", None) != DUPLICATE_KEY or not _saved_before(cursor, recording):
+                raise
+            logger.info("%s is already in the database; not saving it again", service_id)
+            return
         for name, url in zip(names[:2], urls[:2]):
             cursor.execute(INSERT_VIDEO_SQL, (service_id, name, url, uploaded_at))
         cursor.execute(INSERT_AUDIO_SQL, (service_id, names[2], urls[2], uploaded_at))
         cursor.execute("COMMIT")
+
+
+def _saved_before(cursor, recording):
+    """撞到主鍵時：是不是這個帳號自己上次寫好的那一筆。先 ROLLBACK，交易不能開著；服務和檔案是同一個交易寫的，
+    所以有服務就有三個檔案的紀錄。"""
+    cursor.execute("ROLLBACK")
+    cursor.execute(SERVICE_OWNER_SQL, (recording.service_id,))
+    row = cursor.fetchone()
+    return row is not None and row["account_id"] == recording.account_id
 
 
 class RecordingSaver(QtCore.QObject):
@@ -529,6 +568,7 @@ class RecordingSaver(QtCore.QObject):
 
     屬於 app，不屬於錄影視窗：視窗關了、或已經在錄下一段，還是會做完。結果用同一個 key 的通知就地更新。
     services 是 AppServices；on_saved(service_id) 在寫好資料庫之後呼叫（DeviceFinder 用它重新整理分析頁）。
+    還沒存完的記在本機（PendingSaveStore，T26），重開 app 之後由 restore() 放回來，一樣可以 Retry。
     """
 
     changed = QtCore.Signal(str)        # service_id：這一筆的狀態或進度變了
@@ -539,6 +579,7 @@ class RecordingSaver(QtCore.QObject):
         self.services = services
         self._on_saved = on_saved
         self._jobs = {}  # service_id → SaveJob
+        self._pending = PendingSaveStore()
         services.tasks.progressed.connect(self._on_progress)
         services.notifier.actionTriggered.connect(self._on_action)
         QtCore.QCoreApplication.instance().aboutToQuit.connect(self._finish_files)
@@ -551,11 +592,41 @@ class RecordingSaver(QtCore.QObject):
         return [job for job in self._jobs.values() if job.in_flight]
 
     def add(self, recording):
-        """停止錄影之後呼叫：在背景等檔案寫完、上傳、寫資料庫。"""
+        """停止錄影之後呼叫：在背景等檔案寫完、上傳、寫資料庫。先記在本機：app 中途結束，下次登入還能 Retry。"""
         job = SaveJob(recording)
         self._jobs[recording.service_id] = job
+        self._remember(job, "upload")
         self._upload(job)
         return job
+
+    def restore(self, account_id):
+        """登入時（launch()）：這個帳號上次沒存完的錄影放回來，每一筆跳一則和失敗時一樣的通知（Retry，T26）。
+
+        Retry 從停下來的那一步繼續：還沒上傳完的重傳三個檔案，已經上傳的只寫資料庫。
+        還沒上傳、檔案又不在這台電腦上了：刪掉紀錄，說明存不了（沒有 Retry）。回傳放回來的 SaveJob。
+        """
+        restored = []
+        for pending in self._pending.load(account_id):
+            service_id = pending.service_id
+            if service_id in self._jobs:  # 已經放回來過了
+                continue
+            recording = Recording.restored(pending)
+            missing = [path for path in recording.files if not os.path.exists(path)]
+            if pending.stage == "upload" and missing:
+                logger.warning("%s can't be saved: %s no longer exist", service_id, missing)
+                self._pending.remove(service_id)
+                self.services.notifier.notify(
+                    "error", _tr("%1 can't be saved", service_id),
+                    _tr("The recording is no longer on this computer. It may have been moved or deleted."),
+                    UPLOAD_KEY.format(service_id))
+                continue
+            job = SaveJob(recording, state=FAILED, urls=list(pending.urls) if pending.urls else None,
+                          error_title=_tr("%1 wasn't saved", service_id), error_detail=restored_detail(pending.stage))
+            self._jobs[service_id] = job
+            self._show_failure(job)
+            self._emit(job)
+            restored.append(job)
+        return restored
 
     def retry(self, service_id):
         """失敗之後重試（通知或錄影視窗的 Retry）。檔案都上傳過了就只寫資料庫（DS-52「Retry to finish saving」）。"""
@@ -606,6 +677,7 @@ class RecordingSaver(QtCore.QObject):
     def _uploaded(self, job, urls):
         job.urls = list(urls)
         job.done = job.total
+        self._remember(job, "database")  # 三個檔案都上傳了：之後（重開 app 也是）只要寫資料庫
         self._save(job)
 
     def _save(self, job):
@@ -625,6 +697,7 @@ class RecordingSaver(QtCore.QObject):
     def _saved(self, job):
         service_id = job.service_id
         job.state = SAVED
+        self._pending.remove(service_id)
         job.toast_id = self.services.notifier.notify(
             "success", _tr("Saved %1", service_id), _tr("Video and audio uploaded."), UPLOAD_KEY.format(service_id),
             ANALYZE_ACTION.format(service_id), _tr("Analyze"))
@@ -640,10 +713,26 @@ class RecordingSaver(QtCore.QObject):
         job.error_title = _tr("%1 wasn't saved", service_id)
         job.error_detail = failure_detail(error, stage)
         job.retryable = not isinstance(error, FileNotFoundError)  # 檔案不見了，重試也一樣
+        if job.retryable and job.recording.write_error is None:
+            self._remember(job, stage)
+        else:  # 檔案不見了，或沒寫完整（不上傳不完整的檔案，T20 第 4 節）：重開 app 之後也存不了
+            self._pending.remove(service_id)
+        self._show_failure(job)
+        self._emit(job)
+
+    def _show_failure(self, job):
+        """「<sid> wasn't saved」：常駐的錯誤通知，能重試的附 Retry（retry-upload:<sid>，CONTRACTS §4）。"""
+        service_id = job.service_id
         job.toast_id = self.services.notifier.notify(
             "error", job.error_title, job.error_detail, UPLOAD_KEY.format(service_id),
             RETRY_PREFIX + service_id if job.retryable else "", _tr("Retry") if job.retryable else "")
-        self._emit(job)
+
+    def _remember(self, job, stage):
+        """記在本機（T26）：app 中途結束或當掉，下次同一個帳號登入時還能 Retry。stage 是 Retry 要從哪一步開始。"""
+        recording = job.recording
+        self._pending.put(PendingSave(job.service_id, recording.account_id, tuple(recording.files),
+                                      recording.start_time, recording.end_time, stage,
+                                      tuple(job.urls) if job.urls else None))
 
     def _not_submitted(self, job, key):
         # 只會發生在結束程式的途中（TaskRunner 已經 shutdown）：記成失敗，不算在進行中

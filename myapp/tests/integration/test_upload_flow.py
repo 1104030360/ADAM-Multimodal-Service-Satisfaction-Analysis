@@ -5,18 +5,27 @@ moto 的 S3、測試用的 MySQL。鏡頭和麥克風是假的。
 - 主視窗的通知用同一個 key 就地更新：進度 → Saved（Analyze）或 wasn't saved（Retry）（DS-21、DS-52）
 - 失敗時檔案留著，Retry 之後存好（UX-10）
 - 上傳中按 Quit、關掉主視窗、⌘Q 都先問（UX-29、DS-28）；錄影中關掉錄影視窗會停止並存檔（UX-09）
+- 沒存完的（失敗、或存到一半結束 app）重開之後同一個帳號登入還有 Retry；檔案不見了就說明存不了（T26）
 """
 import os
 import threading
+from datetime import datetime, timedelta
 
 import botocore.exceptions
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QObject
+from PySide6.QtQml import QQmlApplicationEngine
 
 from myapp import storage
+from myapp.db_lane import DbLane
 from myapp.init import record_widget, server_home_init
 from myapp.init.record_widget import FAILED, SAVED, SAVING, UPLOADING, QuitGuard
 from myapp.init.server_home_init import ANALYSIS_KEY, LAUNCH_KEYS
+from myapp.notifications import Notifier
+from myapp.pending_saves import PendingSave, PendingSaveStore
+from myapp.services import CLOSE_DB_KEY, AppServices
+from myapp.tasks import TaskRunner
+from myapp.ui_prefs import UiPrefs
 from tests.fakes import ticking_clock
 from tests.integration.helpers import STAFF_ID, qml, toasts, unused_port, wait_until
 
@@ -91,6 +100,36 @@ def staff(engine, services, s3, gate, monkeypatch):
     yield home, window, finder
     if finder.recorder is not None:
         finder.recorder.close()  # 錄影中的會先停止；預覽的計時器也停掉
+
+
+def quit_app(services):
+    """和結束 app 一樣：關掉資料庫連線，取消還在跑的背景工作（main.py 的 aboutToQuit，上傳就停在那裡）。"""
+    if services.close_db():
+        wait_until(lambda: not services.tasks.isBusy(CLOSE_DB_KEY))
+    services.tasks.shutdown()
+
+
+@pytest.fixture
+def relaunch(db):
+    """重開 app、同一個帳號再登入（T26）：新的 engine 和背景服務，本機的設定（QSettings）是同一份。
+    relaunch(舊的 services) 先結束上一次；回傳 (home, 外殼視窗, services)。"""
+    opened = []
+
+    def relaunch_app(old_services=None):
+        if old_services is not None:
+            quit_app(old_services)
+        engine = QQmlApplicationEngine()
+        services = AppServices(TaskRunner(), Notifier(), DbLane(), UiPrefs())
+        opened.append((engine, services))
+        home = server_home_init.launch(engine, STAFF_ID, services)
+        wait_until(lambda: not any(services.tasks.isBusy(key) for key in LAUNCH_KEYS))
+        return home, engine.rootObjects()[-1], services
+
+    yield relaunch_app
+    for engine, services in opened:
+        quit_app(services)
+        engine.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def record(recorder, started=None):
@@ -357,3 +396,102 @@ def test_activate_brings_the_recording_window_back_instead_of_opening_another(st
     recorder.button_stop_recording.click()
     assert activate.property("text") == "Activate"
     wait_until(lambda: finder.uploadCount == 0)  # 存完才結束這個測試
+
+
+# ── 重開 app 之後還能重試（T26）──────────────────────────────────────────────
+
+def test_failed_upload_is_offered_again_after_a_restart(staff, services, db, s3, gate, relaunch,
+                                                        no_network_on_gui_thread):
+    home, window, finder = staff
+    gate.errors = [S3_DOWN]
+    recording = record(finder.recorder)
+    sid = recording.service_id
+    wait_until(lambda: job_of(finder, recording).state == FAILED)
+
+    home, window, services = relaunch(services)  # 結束 app，同一個帳號再登入
+    [toast] = toasts(services.notifier)  # 和失敗時同一種通知：常駐的錯誤＋Retry
+    assert (toast["severity"], toast["title"], toast["detail"], toast["timeoutMs"]) == (
+        "error", f"{sid} wasn't saved", "The upload didn't finish. The recording is still on this computer.", 0)
+    assert (toast["actionId"], toast["actionLabel"]) == (f"retry-upload:{sid}", "Retry")
+    wait_until(lambda: shown_toasts(window) and shown_toasts(window)[0]["actionLabel"] == "Retry")
+    assert shown_toasts(window)[0]["title"] == f"{sid} wasn't saved"
+
+    qml(window.findChild(QObject, "toastHost"), f"trigger({toast['toastId']})")  # 按通知上的 Retry
+    job = home.deviceFinder.saver.job(sid)
+    wait_until(lambda: job.state == SAVED, describe=lambda: (job.state, job.error_detail))
+    assert db.rows("SELECT service_status FROM tbl_service WHERE service_id = %s", (sid,)) == [(1,)]
+    assert sorted(obj["Key"] for obj in s3.list_objects_v2(Bucket="adam-test")["Contents"]) == sorted(recording.keys)
+    assert toasts(services.notifier)[0]["title"] == f"Saved {sid}"
+    assert PendingSaveStore().load(STAFF_ID) == []
+    model = home.serviceModel.notAnalyzedModel  # 存好之後一樣重新整理分析頁
+    wait_until(lambda: [row["serviceId"] for row in model.rows()] == [sid])
+
+
+def test_quitting_mid_upload_is_offered_at_the_next_login(staff, services, db, s3, gate, relaunch,
+                                                          no_network_on_gui_thread):
+    home, window, finder = staff
+    recording = record(finder.recorder, started=lambda sid: gate.hold(f"video/{sid}_cam1.avi"))
+    sid = recording.service_id
+    job = job_of(finder, recording)
+    wait_until(lambda: job.state == UPLOADING and job.done == job.sizes[0])  # 第 1 個檔案傳完、停在第 2 個
+    finder.allowQuit()  # Quit Anyway（對話框在 test_quit_while_uploading_asks_first_from_exit_close_and_cmd_q）
+
+    home, window, services = relaunch(services)  # aboutToQuit 的 tasks.shutdown() 取消上傳；再登入一次
+    gate.release()
+    [toast] = toasts(services.notifier)
+    assert (toast["title"], toast["detail"], toast["actionLabel"]) == (
+        f"{sid} wasn't saved", "The upload didn't finish. The recording is still on this computer.", "Retry")
+    services.notifier.trigger(toast["toastId"])
+    job = home.deviceFinder.saver.job(sid)
+    wait_until(lambda: job.state == SAVED, describe=lambda: (job.state, job.error_detail))
+    assert db.rows("SELECT service_status FROM tbl_service WHERE service_id = %s", (sid,)) == [(1,)]
+    assert PendingSaveStore().load(STAFF_ID) == []
+
+
+def test_database_write_that_happened_before_quitting_is_not_written_twice(db, relaunch, no_network_on_gui_thread):
+    """上次 COMMIT 成功了，但結果回來之前 app 就結束了（Quit Anyway、當掉）：資料庫已經有這一筆，本機的紀錄還在。
+    重開之後的 Retry 撞到主鍵（真的 MySQL 的 1062），是這個帳號自己的那一筆，就當作存好了。"""
+    sid, start = "S20261030120000", datetime(2026, 10, 30, 12, 0, 0)
+    keys = (f"video/{sid}_cam0.avi", f"video/{sid}_cam1.avi", f"audio/{sid}_audio.wav")
+    urls = tuple(f"s3://adam-test/{key}" for key in keys)
+    db.add_service(sid, start, status=1)
+    for url in urls[:2]:
+        db.add_media(sid, "video", url)
+    db.add_media(sid, "audio", urls[2])
+    PendingSaveStore().put(PendingSave(sid, STAFF_ID, tuple(f"/Users/staff/{key}" for key in keys), start,
+                                       start + timedelta(minutes=5), "database", urls))
+
+    home, window, services = relaunch()
+    [toast] = toasts(services.notifier)
+    assert toast["detail"] == "The files uploaded, but the database couldn't be updated. Retry to finish saving."
+    services.notifier.trigger(toast["toastId"])
+    job = home.deviceFinder.saver.job(sid)
+    wait_until(lambda: job.state == SAVED, describe=lambda: (job.state, job.error_detail))
+    assert toasts(services.notifier)[0]["title"] == f"Saved {sid}"
+    assert db.rows("SELECT COUNT(*) FROM tbl_service WHERE service_id = %s", (sid,)) == [(1,)]
+    assert db.rows("SELECT COUNT(*) FROM tbl_video_storage WHERE service_id = %s", (sid,)) == [(2,)]
+    assert db.rows("SELECT COUNT(*) FROM tbl_audio_storage WHERE service_id = %s", (sid,)) == [(1,)]
+    assert PendingSaveStore().load(STAFF_ID) == []
+
+
+def test_login_drops_saves_whose_files_are_gone_and_keeps_other_staffs(db, relaunch, tmp_path,
+                                                                       no_network_on_gui_thread):
+    start = datetime(2026, 10, 30, 12, 0, 0)
+    gone = PendingSave("S20261030120000", STAFF_ID, tuple(str(tmp_path / "video" / name) for name in
+                                                          ("a.avi", "b.avi", "c.wav")),
+                       start, start + timedelta(minutes=5), "upload")  # 例如有人清掉了 ~/video
+    theirs = PendingSave("S20261030121500", "another-staff", gone.files, start, None, "upload")
+    PendingSaveStore().put(gone)
+    PendingSaveStore().put(theirs)
+
+    home, window, services = relaunch()
+    [toast] = toasts(services.notifier)
+    assert (toast["severity"], toast["title"], toast["detail"], toast["actionLabel"]) == (
+        "error", "S20261030120000 can't be saved",
+        "The recording is no longer on this computer. It may have been moved or deleted.", "")
+    wait_until(lambda: shown_toasts(window) and shown_toasts(window)[0]["title"] == "S20261030120000 can't be saved")
+    assert shown_toasts(window)[0]["actionLabel"] == ""  # 沒有 Retry
+    assert home.deviceFinder.saver.job("S20261030120000") is None
+    assert PendingSaveStore().load(STAFF_ID) == []  # 紀錄刪掉了，下次登入不會再說一次
+    assert PendingSaveStore().load("another-staff") == [theirs]  # 別人的留著
+    assert db.rows("SELECT COUNT(*) FROM tbl_service") == [(0,)]

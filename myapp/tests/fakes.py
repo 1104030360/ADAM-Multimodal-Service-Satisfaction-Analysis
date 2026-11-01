@@ -128,9 +128,10 @@ def ticking_clock(start=datetime(2026, 10, 30, 12, 0, 0)):
 class FakeDatabase:
     """取代 mysql.connector.connect()：記下每一句 SQL／預存程序，可以指定查詢結果或讓某一句失敗。"""
 
-    def __init__(self, rows=(), fail_on=None):
+    def __init__(self, rows=(), fail_on=None, error=None):
         self.rows = list(rows)  # fetchone()／fetchall() 回傳的資料
         self.fail_on = fail_on  # SQL 或預存程序名稱裡含有這段文字就丟 mysql.connector.Error
+        self.error = error  # fail_on 那一句丟的例外（例如帶 errno 的）；None 是沒有 errno 的 mysql.connector.Error
         self.calls = []  # (SQL 或預存程序名稱, 參數)
         self.connections = []
 
@@ -182,7 +183,7 @@ class _FakeCursor:
     def _run(self, statement, params):
         self.database.calls.append((statement, params))
         if self.database.fail_on and self.database.fail_on in statement:
-            raise mysql.connector.Error(f"fake error in {statement}")
+            raise self.database.error or mysql.connector.Error(f"fake error in {statement}")
 
     def stored_results(self):  # 預存程序的結果集
         return [self]
