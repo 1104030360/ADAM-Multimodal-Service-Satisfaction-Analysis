@@ -1,4 +1,7 @@
-"""啟動與登入（main.py、login.qml）：密碼比對雜湊，依帳號等級開服務人員端或管理員端。"""
+"""啟動與登入（main.py、login.qml）：在背景比對雜湊，依帳號等級開服務人員端或管理員端（F2）。
+
+忙碌、焦點、連不上資料庫這些回饋的細節在 test_staff_feedback.py。
+"""
 import errno
 import importlib.metadata
 from pathlib import Path
@@ -11,7 +14,8 @@ from PySide6.QtGui import QGuiApplication
 from myapp import main
 from myapp.database import DatabaseConnector
 from myapp.main import MainWindow
-from tests.integration.helpers import STAFF_NAME, qml, toasts
+from myapp.services import CLOSE_DB_KEY
+from tests.integration.helpers import STAFF_NAME, qml, toasts, wait_until
 
 pytestmark = pytest.mark.integration
 
@@ -25,14 +29,17 @@ def login_form(engine, db):
     engine.load(QUrl.fromLocalFile(str(LOGIN_QML)))
     window = engine.rootObjects()[0]
     qml(window, "stackView.replace(loginComponent)")
+    wait_until(lambda: not qml(window, "stackView.busy"))
     yield qml(window, "stackView.currentItem")
-    del controller
+    if controller.services.close_db():  # db lane 的連線只能在 db lane 上關
+        wait_until(lambda: not controller.tasks.isBusy(CLOSE_DB_KEY))
+    controller.tasks.shutdown()
 
 
 def submit(form, username, password):
     qml(form, "username_textfield").setProperty("text", username)
     qml(form, "password_textfield").setProperty("text", password)
-    qml(form, "mouseArea.clicked(null)")  # 按 Login；MouseArea 的 clicked 要一個滑鼠事件參數，給 null
+    qml(form, "loginButton.clicked()")  # 按 Log In
 
 
 @pytest.mark.parametrize("username, password, title, name", [
@@ -41,10 +48,11 @@ def submit(form, username, password):
 ], ids=["staff", "admin"])
 def test_login_opens_home_for_account_level(engine, login_form, username, password, title, name):
     submit(login_form, username, password)
+    wait_until(lambda: len(engine.rootObjects()) == 2)  # 驗證在背景，結果回來才開主畫面
     login_window, home = engine.rootObjects()
     assert not login_window.isVisible()
     assert home.title() == title
-    assert qml(home, "username.text") == name  # 側邊欄顯示登入者的名字
+    wait_until(lambda: qml(home, "username.text") == name)  # 側邊欄顯示登入者的名字
 
 
 @pytest.mark.parametrize("username, password", [
@@ -53,8 +61,10 @@ def test_login_opens_home_for_account_level(engine, login_form, username, passwo
 ], ids=["wrong-password", "unknown-user"])
 def test_failed_login_stays_on_login_window(engine, login_form, username, password):
     submit(login_form, username, password)
+    wait_until(lambda: qml(login_form, "error_message.text") != "")
+    assert qml(login_form, "error_message.text") == "Incorrect username or password. Try again."
+    assert qml(login_form, "error_row.visible")
     assert len(engine.rootObjects()) == 1
-    assert qml(login_form, "error_message.visible")
 
 
 class FakeApplication:
@@ -80,11 +90,14 @@ class FakeApplication:
         return 0
 
 
-def test_main_opens_login_window_and_cleans_up_on_quit(engine, db, monkeypatch, capsys):
+def test_main_opens_login_window_without_touching_the_database(engine, db, monkeypatch, capsys,
+                                                               no_network_on_gui_thread):
     # main() 讀套件資訊；用 briefcase dev 執行時才會有，這裡直接給
     monkeypatch.setattr(importlib.metadata, "metadata", lambda name: {"Formal-Name": "myapp"})
     monkeypatch.setattr(main, "QtWidgets", SimpleNamespace(QApplication=FakeApplication))
     monkeypatch.setattr(main, "QtQml", SimpleNamespace(QQmlApplicationEngine=lambda: engine))  # 測試結束時一起刪掉
+    dotenv_calls = []
+    monkeypatch.setattr(main, "load_dotenv", lambda: dotenv_calls.append(True))  # 測試不讀 .env
     windows, at_load = [], {}
 
     class RecordingMainWindow(MainWindow):  # 留住 main() 建立的物件，測試才看得到
@@ -105,7 +118,9 @@ def test_main_opens_login_window_and_cleans_up_on_quit(engine, db, monkeypatch, 
     assert exited.value.code == 0, capsys.readouterr().out
     login_window = engine.rootObjects()[0]
     assert login_window.title() == "Welcome to ADAM" and login_window.isVisible()
-    assert not DatabaseConnector()._connection.is_connected()  # 用 _connection：.connection 會重新連線
+    # 啟動時不連資料庫（UX-01、ENG-02）：舊的共用連線沒有建立，DbLane 也還沒連；.env 由 main() 自己讀
+    assert DatabaseConnector._instance is None
+    assert dotenv_calls == [True]
 
     [window] = windows
     assert at_load["tasks"] is window.tasks and at_load["notifier"] is window.notifier
@@ -115,3 +130,12 @@ def test_main_opens_login_window_and_cleans_up_on_quit(engine, db, monkeypatch, 
     # 沒給 on_err 的背景工作失敗時，跳出一則通知
     window.tasks.failed.emit("export", OSError(errno.ENOSPC, "No space left on device"))
     assert [toast["title"] for toast in toasts(window.notifier)] == ["Not enough disk space"]
+
+
+def test_quitting_closes_the_shared_connection_only_if_it_was_opened(db):
+    DatabaseConnector.close_shared()  # 沒建立過：不會為了關而連線
+    assert DatabaseConnector._instance is None
+    connector = DatabaseConnector()  # 例如明細頁下載時建立的
+    assert connector.connection.is_connected()
+    DatabaseConnector.close_shared()
+    assert not connector._connection.is_connected()  # 用 _connection：.connection 會重新連線

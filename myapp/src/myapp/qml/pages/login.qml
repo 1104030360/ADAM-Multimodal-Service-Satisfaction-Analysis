@@ -3,6 +3,7 @@ import QtQuick 2.15
 import QtQuick.Controls.Basic 2.15
 import QtQuick.Layouts 1.15
 import QtQuick.Window 2.15
+import "../components"
 
 Window {
     id: login_window
@@ -10,7 +11,7 @@ Window {
     width: 1024
     height: 768
     title: "Welcome to ADAM"
-    color: "#0B0C0E" // 和開場畫面的底色一樣，淡入時不會先閃白
+    color: Theme.chromeWindow // 和開場畫面的底色一樣，淡入時不會先閃白
 
     StackView {
         id: stackView
@@ -18,6 +19,8 @@ Window {
 
         // StackView 會自己把頁面調整成和它一樣大，頁面不要再綁 parent 的大小或設 anchors
         initialItem: Item {
+            id: splash
+
             Image {
                 id: logo
                 source: "../../images/logo.jpg"
@@ -43,15 +46,57 @@ Window {
                 repeat: false
                 onTriggered: {
                     console.log("Timer triggered")
-                    stackView.replace(loginComponent) // 动画结束后切换页面
+                    if (stackView.currentItem === splash) // 已經換過（例如測試直接換頁）就不再換，表單不會被重建
+                        stackView.replace(loginComponent) // 动画结束后切换页面
                 }
             }
         }
 
         Component {
             id: loginComponent
+
+            // 登入表單（DS-31、UX-01～03）：按 Log In 或在任一欄按 Enter 送出，在背景驗證（mainWindow.logIn）。
+            // 驗證中按鈕忙碌、欄位唯讀；結果由 mainWindow 的三個 signal 帶回來：
+            // 成功就開主畫面；帳號或密碼不正確、連不上資料庫，各有自己的說明和焦點位置。
             Rectangle {
+                id: loginForm
                 color: "transparent" // 背景透明以显示背景图片
+
+                function submit() {
+                    if (loginButton.busy)
+                        return
+                    error_message.text = "" // 上一次的錯誤清掉
+                    mainWindow.logIn(username_textfield.text, password_textfield.text)
+                }
+
+                StackView.onActivated: username_textfield.forceActiveFocus() // 一進來就能打帳號
+
+                Connections {
+                    target: mainWindow
+
+                    function onLoginSucceeded(accountId, accountLevel) {
+                        if (accountLevel === "1") {
+                            mainWindow.launchServerHome(accountId)
+                        } else {
+                            mainWindow.launchAdminHome(accountId)
+                        }
+                        login_window.close()
+                    }
+
+                    function onLoginRejected() {
+                        error_message.text = qsTr("Incorrect username or password. Try again.")
+                        password_textfield.forceActiveFocus() // 可以直接重打密碼
+                        password_textfield.selectAll()
+                    }
+
+                    function onLoginFailed(reason) {
+                        // 密碼沒錯，不清掉；焦點留在按鈕上，按 Enter 就重試
+                        error_message.text = reason === "offline"
+                            ? qsTr("Can't connect to the database. Check your network and try again.")
+                            : qsTr("Can't log in because of a database problem. Contact your administrator.")
+                        loginButton.forceActiveFocus(Qt.TabFocusReason)
+                    }
+                }
 
                 Image {
                     id: login_image
@@ -66,10 +111,10 @@ Window {
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width * 0.4
                     height: parent.height * 0.6
-                    opacity: 0.78
-                    color: "#0E1013"
-                    radius: 20
-                    border.color: "#596069"
+                    opacity: Theme.chromePanelOpacity
+                    color: Theme.chromePanel
+                    radius: Theme.radiusL
+                    border.color: Theme.chromeBorder
                     border.width: 1
                 }
 
@@ -77,17 +122,18 @@ Window {
                     id: logo_text
                     anchors.horizontalCenter: parent.horizontalCenter
                     // letterSpacing 也會加在最後一個字母後面，字會往左偏 16 / 2 = 8 px，這裡移回中間
-                    anchors.horizontalCenterOffset: 8
+                    anchors.horizontalCenterOffset: Theme.wordmarkSpacing / 2
                     y: login_rectangle.y + 50
                     width: 203
                     height: 60
-                    color: "#F3F4F6"
+                    color: Theme.chromeTitle
                     text: qsTr("ADAM")
-                    font.pixelSize: 60
+                    font.pixelSize: Theme.fontDisplay
                     horizontalAlignment: Text.AlignHCenter
                     font.family: "Helvetica Neue"
                     font.weight: Font.Light
-                    font.letterSpacing: 16 // 和開場畫面的細字、寬字距一致
+                    font.letterSpacing: Theme.wordmarkSpacing // 和開場畫面的細字、寬字距一致
+                    Accessible.ignored: true
                 }
 
                 TextField {
@@ -96,17 +142,20 @@ Window {
                     y: logo_text.y + logo_text.height + 60
                     width: 300
                     height: 36
-                    leftPadding: 16 // 文字不要貼到圓角
+                    leftPadding: Theme.spaceM // 文字不要貼到圓角
                     placeholderText: qsTr("Username")
-                    font.pixelSize: 18
-                    color: "#ECEEF1"
-                    placeholderTextColor: "#8E959F"
+                    font.pixelSize: Theme.fontBodyLarge
+                    color: Theme.chromeText
+                    placeholderTextColor: Theme.chromeTextMuted
                     selectionColor: "#4B515A"
                     selectedTextColor: "#FFFFFF"
+                    readOnly: loginButton.busy // 驗證中唯讀但不停用，字不會變灰（DS-31）
+                    Accessible.name: qsTr("Username") // placeholder 不能當標籤用
+                    onAccepted: loginForm.submit()
                     background: Rectangle {
-                        color: "#17191D"
-                        radius: 18
-                        border.color: username_textfield.activeFocus ? "#A9B0BA" : "#606770"
+                        color: Theme.chromeField
+                        radius: height / 2
+                        border.color: username_textfield.activeFocus ? Theme.chromeFocus : Theme.chromeFieldBorder
                         border.width: 1
                     }
                 }
@@ -117,72 +166,82 @@ Window {
                     y: username_textfield.y + username_textfield.height + 40
                     width: 300
                     height: 36
-                    leftPadding: 16
+                    leftPadding: Theme.spaceM
                     placeholderText: qsTr("Password")
-                    font.pixelSize: 18
+                    font.pixelSize: Theme.fontBodyLarge
                     echoMode: TextInput.Password // 隐藏输入的密码
-                    color: "#ECEEF1"
-                    placeholderTextColor: "#8E959F"
+                    color: Theme.chromeText
+                    placeholderTextColor: Theme.chromeTextMuted
                     selectionColor: "#4B515A"
                     selectedTextColor: "#FFFFFF"
+                    readOnly: loginButton.busy
+                    Accessible.name: qsTr("Password")
+                    onAccepted: loginForm.submit()
                     background: Rectangle {
-                        color: "#17191D"
-                        radius: 18
-                        border.color: password_textfield.activeFocus ? "#A9B0BA" : "#606770"
+                        color: Theme.chromeField
+                        radius: height / 2
+                        border.color: password_textfield.activeFocus ? Theme.chromeFocus : Theme.chromeFieldBorder
                         border.width: 1
                     }
                 }
 
-                Rectangle {
-                    id: button
+                // 按下就擋住第二次點擊；300 ms 後才換成「Logging in…」和旋轉圖示（DS-24）
+                BusyButton {
+                    id: loginButton
+                    objectName: "loginButton"
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: password_textfield.y + password_textfield.height + 50
                     width: 200
-                    height: 50
-                    // 顏色只由這個綁定決定；在 onPressed 裡寫 button.color = ... 會把綁定拆掉，hover 的顏色就會卡住
-                    color: mouseArea.pressed ? "#C3C8CF" : (mouseArea.containsMouse ? "#FFFFFF" : "#E6E8EB")
-                    radius: 10
+                    large: true
+                    variant: "chrome"
+                    font.pixelSize: Theme.fontBody
+                    text: qsTr("Log In")
+                    busyText: qsTr("Logging in…")
+                    busy: mainWindow ? mainWindow.loggingIn : false
+                    onClicked: loginForm.submit()
+                    Keys.onReturnPressed: loginForm.submit()
+                    Keys.onEnterPressed: loginForm.submit()
+                }
 
-                    MouseArea {
-                        id: mouseArea
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        hoverEnabled: true
+                // 錯誤說明：按鈕下方，左右各留 40 px，太長就排成兩行，圖示對齊第一行（DS-31）
+                Item {
+                    id: error_row
+                    x: login_rectangle.x + 40
+                    y: loginButton.y + loginButton.height + 20
+                    width: login_rectangle.width - 80
+                    height: error_message.height
+                    visible: error_message.text !== ""
+                    Accessible.role: Accessible.AlertMessage
+                    Accessible.name: error_message.text
 
-                        onClicked: {
-                            console.log("Login button clicked")
-                            var result = mainWindow.checkLogin(username_textfield.text, password_textfield.text)
-                            if (result.success) {
-                                console.log("Login successful, account level: " + result.account_level + ", account ID: " + result.account_id)
-                                if (result.account_level === "1") {
-                                    mainWindow.launchServerHome(result.account_id)
-                                } else {
-                                    mainWindow.launchAdminHome(result.account_id)
-                                }
-                                login_window.close()
-                            } else {
-                                console.log("Login failed")
-                                error_message.text = "Login failed, please try again."
-                                error_message.visible = true
+                    Row {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        spacing: 6
+
+                        Image {
+                            y: (20 - height) / 2
+                            width: 14
+                            height: 14
+                            sourceSize: Qt.size(14, 14)
+                            source: "../components/icons/circle-alert_errorOnDark.svg"
+                            Accessible.ignored: true
+                        }
+
+                        Text {
+                            id: error_message
+                            objectName: "loginError"
+                            width: Math.min(implicitWidth, error_row.width - 20)
+                            color: Theme.errorOnDark
+                            font.pixelSize: Theme.fontCaption
+                            lineHeight: 20
+                            lineHeightMode: Text.FixedHeight
+                            wrapMode: Text.Wrap
+                            onTextChanged: {
+                                if (text !== "")
+                                    Accessible.announce(text, Accessible.Assertive) // 不搖晃，用唸的
                             }
                         }
                     }
-
-                    Text {
-                        text: "Login"
-                        anchors.centerIn: parent
-                        color: "#0E1013"
-                        font.pixelSize: 16
-                        font.weight: Font.DemiBold
-                    }
-                }
-
-                Text {
-                    id: error_message
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    y: button.y + button.height + 20
-                    color: "#FF9A90"
-                    visible: false
                 }
             }
         }

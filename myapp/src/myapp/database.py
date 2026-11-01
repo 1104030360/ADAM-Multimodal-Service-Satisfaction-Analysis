@@ -5,6 +5,21 @@ from dotenv import load_dotenv
 from myapp.passwords import verify_password
 
 
+def verify_login(db, username, password):
+    """登入（F2）：在 db lane 的工作裡執行，db 是 DbLane。
+
+    `CALL sp_get_login` 1 個往返；PBKDF2 比對約 50 ms，會釋放 GIL，所以也留在 db lane，不回 GUI 執行緒算。
+    帳號或密碼不對回傳 None；對了回傳 {"accountId", "accountLevel"}（都是字串，login.qml 用 === "1" 判斷）。
+    連不上資料庫、SQL 錯誤都直接丟例外，由呼叫端分辨「連不上」和「其他錯誤」（UX-01）。
+    """
+    with db.cursor(dictionary=True) as cursor:
+        cursor.execute("CALL sp_get_login(%s)", (username,))
+        user = cursor.fetchone()
+    if user is None or not verify_password(password, user["account_password"]):
+        return None
+    return {"accountId": str(user["account_id"]), "accountLevel": str(user["account_level"])}
+
+
 def connection_config():
     """MySQL 連線設定，全部從環境變數讀取。DatabaseConnector 和錄影視窗共用這一份。"""
     config = dict(
@@ -21,7 +36,15 @@ def connection_config():
 
 
 class DatabaseConnector:
+    """舊的共用連線（單例，在 GUI 執行緒用）。F2 起登入和服務人員端都改走 db lane；
+    轉換期間只剩還沒搬的地方在用（MediaService、管理員端），第三波之後拿掉。"""
     _instance = None
+
+    @classmethod
+    def close_shared(cls):
+        """程式結束時：有建立過共用連線才關，不會為了關而新開一條。"""
+        if cls._instance is not None:
+            cls._instance.close_connection()
 
     def __new__(cls, *args, **kwargs):
         if not cls._instance:

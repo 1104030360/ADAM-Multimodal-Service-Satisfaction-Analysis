@@ -3,37 +3,38 @@ My first application
 """
 
 import importlib.metadata
+import logging
 import sys
-
-from PySide6 import QtWidgets, QtQml
 from pathlib import Path
-from PySide6.QtCore import QUrl, QObject, Slot
-from myapp.database import DatabaseConnector
+
+from dotenv import load_dotenv
+from PySide6 import QtWidgets, QtQml
+from PySide6.QtCore import QUrl, QObject, Property, Signal, Slot
+from myapp.database import DatabaseConnector, verify_login
 from myapp.init import server_home_init, admin_home_init
 from myapp.db_lane import DbLane
-from myapp.notifications import Notifier
+from myapp.notifications import Notifier, user_message
 from myapp.services import AppServices
 from myapp.tasks import TaskRunner
 from myapp.ui_prefs import UiPrefs
 
+logger = logging.getLogger(__name__)
 
-class DatabaseConnectorWrapper(QObject):
-    def __init__(self):
-        super().__init__()
-        print("Initializing DatabaseConnectorWrapper")
-        self.db_connector = DatabaseConnector()
-        if self.db_connector.connection:
-            print("DatabaseConnectorWrapper initialized successfully")
-        else:
-            print("Failed to initialize DatabaseConnectorWrapper")
-
-    @Slot(str, str, result='QVariantMap')
-    def checkLogin(self, username, password):
-        result = self.db_connector.check_login(username, password)
-        return result
+LOGIN_KEY = "login"  # TaskRunner 的 key：同時只會有一個登入（ENG-14）
 
 
 class MainWindow(QObject):
+    """登入視窗的 Python 端（QML 的 mainWindow）。
+
+    F2：啟動時不連資料庫，登入在 db lane 背景驗證（UX-01、ENG-02、ENG-06）。QML 呼叫 logIn()，
+    結果從三個 signal 回來：登入成功、帳號或密碼不正確、連不上資料庫（或其他錯誤）。
+    """
+
+    loggingInChanged = Signal()
+    loginSucceeded = Signal(str, str)  # accountId, accountLevel（字串，"1" 是服務人員）
+    loginRejected = Signal()           # 帳號或密碼不正確
+    loginFailed = Signal(str)          # "offline"：連不上資料庫；"error"：其他錯誤（例如資料庫設定錯了）
+
     def __init__(self, engine):
         super().__init__()
         self.engine = engine
@@ -42,13 +43,12 @@ class MainWindow(QObject):
         self.tasks = TaskRunner(self)
         self.notifier = Notifier(self)
         self.ui_prefs = UiPrefs(self)
-        # 登入後的畫面共用這一份；db lane 的連線只有一條（ENG-10），程式結束時隨行程關閉
+        # 登入和登入後的畫面共用這一份；db lane 的連線只有一條（ENG-10），第一次用到時才連
         self.services = AppServices(self.tasks, self.notifier, DbLane(), self.ui_prefs)
         self.tasks.failed.connect(self._on_task_failed)  # 沒給 on_err 的工作失敗時，跳一則通知
-        self.db_connector_wrapper = DatabaseConnectorWrapper()
+        self.tasks.busyChanged.connect(self._on_busy_changed)
         context = self.engine.rootContext()
         context.setContextProperty("mainWindow", self)
-        context.setContextProperty("DatabaseConnector", self.db_connector_wrapper)
         context.setContextProperty("tasks", self.tasks)
         context.setContextProperty("notifier", self.notifier)
         context.setContextProperty("uiPrefs", self.ui_prefs)
@@ -56,10 +56,32 @@ class MainWindow(QObject):
     def _on_task_failed(self, key, error):
         self.notifier.fromException(error)
 
-    @Slot(str, str, result='QVariantMap')
-    def checkLogin(self, username, password):
-        result = self.db_connector_wrapper.checkLogin(username, password)
-        return result
+    def _on_busy_changed(self, key, busy):
+        if key == LOGIN_KEY:
+            self.loggingInChanged.emit()
+
+    @Property(bool, notify=loggingInChanged)
+    def loggingIn(self):
+        return self.tasks.isBusy(LOGIN_KEY)
+
+    @Slot(str, str, result=bool)
+    def logIn(self, username, password):
+        """在 db lane 驗證帳號密碼。回傳 False 表示上一次登入還沒結束（防重複送出）。"""
+        return self.tasks.submit("db", LOGIN_KEY,
+                                 lambda token, report: verify_login(self.services.db, username, password),
+                                 on_ok=self._login_done, on_err=self._login_error)
+
+    def _login_done(self, account):
+        if account is None:
+            self.loginRejected.emit()
+        else:
+            self.loginSucceeded.emit(account["accountId"], account["accountLevel"])
+
+    def _login_error(self, error):
+        # 登入視窗沒有外殼，錯誤留在表單裡，不跳 toast（ENG-15、DS-20）。能重試的就是連不上（ENG-12）
+        retryable = user_message(error)[3]
+        logger.warning("login failed: %r", error)
+        self.loginFailed.emit("offline" if retryable else "error")
 
     @Slot(str)
     def launchServerHome(self, account_id):
@@ -73,6 +95,8 @@ class MainWindow(QObject):
 def main():
     try:
         print("Starting application")
+        # DbLane 第一次連線時才讀 DB_*；以前是 DatabaseConnector 建立時順便讀 .env，現在啟動時不連資料庫，要自己讀
+        load_dotenv()
         app_module = sys.modules["__main__"].__package__
         metadata = importlib.metadata.metadata(app_module)
         QtWidgets.QApplication.setApplicationName(metadata["Formal-Name"])
@@ -108,7 +132,7 @@ def main():
 
         def on_app_about_to_quit():
             main_window.tasks.shutdown()  # 先取消背景工作，不等它們結束（ENG-14）
-            main_window.db_connector_wrapper.db_connector.close_connection()
+            DatabaseConnector.close_shared()  # 還沒搬到 db lane 的地方（明細頁、管理員端）用過的舊連線
 
         app.aboutToQuit.connect(on_app_about_to_quit)
 

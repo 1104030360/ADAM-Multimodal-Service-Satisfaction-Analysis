@@ -2,6 +2,7 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import QtQuick.Window 2.15
+import "../components"
 
 Window {
     id: window
@@ -10,6 +11,10 @@ Window {
     height: 1080
     title: "Server Home"
     visibility: "FullScreen"
+
+    // 動態設定寫進 Theme 單例（ENG-18）；程式結束時 context property 會先被刪掉，要先判斷是否為 null
+    Binding { target: Theme; property: "motionMode"; value: uiPrefs ? uiPrefs.motionMode : 0 }
+    Binding { target: Theme; property: "animationScale"; value: uiPrefs ? uiPrefs.animationScale : 1 }
 
     Rectangle {
         id: sidebar
@@ -44,7 +49,12 @@ Window {
 
             Text {
                 id: username
-                text: serverHome ? serverHome.getAccountName() : ""
+                text: serverHome ? serverHome.accountName : ""  // 在 db lane 載入，到了就更新
+                // 名字還沒載入時也先留一行，下面的按鈕不會跳（Column 會跳過寬或高是 0 的項目，所以寬度也要固定）
+                width: parent.width
+                height: 30
+                elide: Text.ElideRight
+                verticalAlignment: Text.AlignVCenter
                 font.pixelSize: 24
                 color: "#ffffff"
                 horizontalAlignment: Text.AlignHCenter
@@ -141,7 +151,7 @@ Window {
                     onClicked: {
                         console.log("Home clicked")
                         mainContentLoader.source = "../../qml/pages/server_home_button.qml"
-                        serverHome.onLoadHome()  // Call the function to reload data
+                        serverHome.onLoadHome()  // 在背景重新載入；舊的分數留著、變淡
                     }
                 }
             }
@@ -323,9 +333,8 @@ Window {
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
                         console.log("Analysis clicked")
-                        serverHome.onLoadAnalysis()  // Call the function to reload data
-                        mainContentLoader.source = "../../qml/pages/analysis.qml"
-                        
+                        mainContentLoader.source = "../../qml/pages/analysis.qml"  // 先換頁
+                        serverHome.onLoadAnalysis()  // 清單在背景重新整理（1 個往返）
                     }
                 }
             }
@@ -708,5 +717,14 @@ Window {
                 item.setWindow(window)
             }
         }
+    }
+
+    // 通知堆疊：內容區右下角，距邊 24（DS-21）。延伸到底部的清單用 toastHost.occupiedHeight 當 bottomMargin
+    ToastHost {
+        id: toastHost
+        objectName: "toastHost"
+        center: notifier
+        x: window.width - width - Theme.spaceXL
+        y: window.height - height - Theme.spaceXL
     }
 }
