@@ -28,7 +28,8 @@ class Database:
             return cursor.fetchall()
 
     def add_account(self, account_id, username, name, level="1"):
-        self.execute("INSERT INTO tbl_account VALUES (%s, %s, 'not-a-hash', %s, %s, NULL)",
+        self.execute("INSERT INTO tbl_account (account_id, account_username, account_password, account_name, "
+                     "account_level) VALUES (%s, %s, 'not-a-hash', %s, %s)",
                      (account_id, username, name, level))
 
     def add_service(self, service_id, start, status=3, account_id=STAFF_ID):

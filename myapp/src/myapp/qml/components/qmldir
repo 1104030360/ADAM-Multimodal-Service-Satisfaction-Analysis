@@ -15,3 +15,11 @@ PageHeader 1.0 PageHeader.qml
 ServiceSearchField 1.0 ServiceSearchField.qml
 StatTile 1.0 StatTile.qml
 ScoreBars 1.0 ScoreBars.qml
+SettingsSection 1.0 SettingsSection.qml
+SettingsGroup 1.0 SettingsGroup.qml
+SettingsOption 1.0 SettingsOption.qml
+SettingsDivider 1.0 SettingsDivider.qml
+SettingsAccount 1.0 SettingsAccount.qml
+SettingsGeneral 1.0 SettingsGeneral.qml
+SettingsDevices 1.0 SettingsDevices.qml
+SettingsHelp 1.0 SettingsHelp.qml

@@ -24,7 +24,7 @@ from tests.integration.latency_proxy import db_proxy  # noqa: F401  fixture：ap
 
 SCHEMA = Path(__file__).resolve().parents[3] / "docs" / "rebuild" / "db_schema.sql"
 MYSQL_IMAGE = "mysql:8.4"
-TABLES = ["tbl_text_storage", "tbl_charts_storage", "tbl_audio_storage", "tbl_video_storage",
+TABLES = ["tbl_report", "tbl_text_storage", "tbl_charts_storage", "tbl_audio_storage", "tbl_video_storage",
           "tbl_service_score", "tbl_service", "tbl_account"]
 
 
@@ -98,7 +98,9 @@ def db(mysql_server, seed_accounts, monkeypatch):
         database.execute(f"TRUNCATE TABLE {table}")
     database.execute("SET FOREIGN_KEY_CHECKS = 1")
     with connection.cursor() as cursor:
-        cursor.executemany("INSERT INTO tbl_account VALUES (%s, %s, %s, %s, %s, %s)", seed_accounts)
+        # 欄位數照 schema（new-feature 加了 account_photo_key）：SELECT * 拿到幾欄就放回幾欄
+        cursor.executemany(f"INSERT INTO tbl_account VALUES ({', '.join(['%s'] * len(seed_accounts[0]))})",
+                           seed_accounts)
     yield database
     connection.close()
 
