@@ -438,7 +438,7 @@ def test_analysis_refresh_updates_rows_in_place(engine, services, db, no_network
     [old_row] = rows_of(view, "serviceRow")
     pointer = shiboken6.getCppPointer(old_row)[0]
     db.add_service("S20261030130000", "2026-10-30 13:00:00", status=1)  # 新錄好的一筆
-    QMetaObject.invokeMethod(find(page, "refreshTimer"), "triggered")  # 15 秒的自動更新（第三波換成監看）
+    qml(window, "serviceModel.refresh()")  # 錄影存好之後的重新整理（頁面的 15 秒計時器在第三波換成監看）
     wait_until(lambda: len(rows_of(view, "serviceRow")) == 2)
     first, second = rows_of(view, "serviceRow")
     assert cell(first, "serviceIdCell") == "S20261030130000"
@@ -465,10 +465,9 @@ def test_analysis_first_load_failure_shows_retry(engine, services, db, monkeypat
 def test_auto_refresh_failure_keeps_the_list_and_warns_once(engine, services, db, monkeypatch):
     db.add_service("S20261030120000", "2026-10-30 12:00:00", status=1)
     window, page = open_analysis(engine, services)
-    timer = find(page, "refreshTimer")
     restore = cut_database(services, db, monkeypatch)
-    for _ in range(2):  # 斷線期間每 15 秒失敗一次：警告只有一則
-        QMetaObject.invokeMethod(timer, "triggered")
+    for _ in range(2):  # 斷線期間重新整理失敗兩次：警告只有一則
+        qml(window, "serviceModel.refresh()")
         wait_until(lambda: not services.tasks.isBusy(ANALYSIS_KEY))
     [warning] = toasts(services.notifier)
     assert (warning["severity"], warning["title"], warning["detail"], warning["count"]) == (
@@ -477,7 +476,7 @@ def test_auto_refresh_failure_keeps_the_list_and_warns_once(engine, services, db
     assert len(rows_of(find(page, "notAnalyzedList"), "serviceRow")) == 1
 
     restore()
-    QMetaObject.invokeMethod(timer, "triggered")
+    qml(window, "serviceModel.refresh()")
     wait_until(lambda: not services.tasks.isBusy(ANALYSIS_KEY))
     assert toasts(services.notifier) == []  # 恢復後警告自己消失
 

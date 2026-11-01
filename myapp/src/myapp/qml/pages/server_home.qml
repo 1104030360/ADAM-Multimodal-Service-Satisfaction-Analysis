@@ -719,6 +719,17 @@ Window {
         }
     }
 
+    // 通知上的「View Results」（open-analysis:<sid>）：換到分析頁、選 Completed、標出那一列（UX-17、ENG-15）
+    Connections {
+        target: serverHome
+        function onOpenAnalysisRequested(serviceId) {
+            mainContentLoader.source = "../../qml/pages/analysis.qml"
+            const page = mainContentLoader.item
+            if (page && typeof page.showService === "function")
+                page.showService(serviceId)
+        }
+    }
+
     // 通知堆疊：內容區右下角，距邊 24（DS-21）。延伸到底部的清單用 toastHost.occupiedHeight 當 bottomMargin
     ToastHost {
         id: toastHost

@@ -24,6 +24,7 @@ from myapp.notifications import Notifier, user_message
 from myapp.services import AppServices
 from myapp.tasks import TaskRunner
 from myapp.ui_prefs import UiPrefs
+from myapp.watcher import POLL_KEY as WATCHER_KEY, AnalysisWatcher, DockAttention
 from .record_widget import RecordWidget
 from myapp import storage
 import shutil
@@ -39,8 +40,10 @@ ACCOUNT_NAME_KEY = "staff:account-name"
 HOME_SCORES_KEY = "staff:home-scores"
 ANALYSIS_KEY = "staff:analysis"
 SEARCH_KEY = "staff:search"
-LAUNCH_KEYS = (ACCOUNT_NAME_KEY, HOME_SCORES_KEY, ANALYSIS_KEY)  # launch() 在背景載入的三件事
-ANALYSIS_REFRESH_TOAST_KEY = "analysis-refresh"  # 分析頁自動更新失敗的警告（同一次斷線只跳一則）
+# launch() 在背景載入的四件事：帳號名稱、首頁分數、分析清單、監看要看的服務（ENG-16）
+LAUNCH_KEYS = (ACCOUNT_NAME_KEY, HOME_SCORES_KEY, ANALYSIS_KEY, WATCHER_KEY)
+# 「Can't refresh analysis status」：清單的重新整理和監看的查詢共用這一則（同一次斷線只跳一則）
+ANALYSIS_REFRESH_TOAST_KEY = "analysis-refresh"
 
 _FIRST_ROLE = int(Qt.ItemDataRole.UserRole)
 
@@ -773,7 +776,7 @@ class ServiceScoreManager(QObject):
             self.busyChanged.emit()
 
 
-# ---------------------------------------------------------------- 分析頁（ENG-05、UX-19～21）
+# ---------------------------------------------------------------- 分析頁（ENG-05、UX-19～21）、送出分析（UX-18）
 
 # 三個分頁一次查完（以前 3 個查詢、12 個往返）：重新整理 = 1 個往返
 ANALYSIS_SQL = """
@@ -786,7 +789,44 @@ ORDER BY s.service_start DESC, s.service_id DESC
 # 狀態只會往前走（1 → 2 → 3）：分析服務可能已經寫好 3，不能被這裡蓋回 2
 MARK_SENT_SQL = "UPDATE tbl_service SET service_status = 2 WHERE service_id = %s AND service_status < 2"
 SERVICE_ROLES = ("serviceId", "startTime", "endTime", "status", "staffScore", "customerScore", "waitingSince",
-                 "failed")
+                 "failed", "sending")
+ANALYZE_TIMEOUT = (3, 10)  # (連線逾時, 讀取逾時)，單位是秒；分析服務收到請求就回 200，不等分析做完
+REFRESH_RETRY_S = 15       # 已經有資料、重新整理失敗時，幾秒後自己再試（DS-52「Retrying in 15 seconds.」）
+
+
+def analyze_key(service_id):
+    """送出分析：io lane 的 POST，也是「送出的結果」那一則通知（CONTRACTS §4）。"""
+    return f"analyze:{service_id}"
+
+
+def mark_key(service_id):
+    """收到 200 之後：db lane 把狀態改成 2、重新整理清單。"""
+    return f"analysis:mark:{service_id}"
+
+
+def outcome_key(service_id):
+    """監看發現的「分析完成」「分析失敗」那一則通知。"""
+    return f"analysis:{service_id}"
+
+
+def post_analysis(url, service_id):
+    """在 io lane 執行：請分析服務分析這一筆（ENG-05）。分析服務收到就回 200，不等分析做完。
+
+    連不到、逾時丟 requests 的例外；200 以外的狀態碼丟 requests.HTTPError（ENG-12：分析服務回應錯誤）。
+    """
+    if not url:
+        raise RuntimeError("ANALYZE_API_URL is not set")
+    response = requests.post(url, json={"service_id": service_id}, timeout=ANALYZE_TIMEOUT)
+    if response.status_code != 200:
+        raise requests.HTTPError(f"analysis service returned HTTP {response.status_code}", response=response)
+
+
+def toast_reason(error):
+    """toast 的內文：原因，加上下一步的第一句（DS-21：內文最多兩行），例如
+    「Can't reach the analysis service. Check your network and try again.」（DS-52）。"""
+    _, title, detail, _ = user_message(error)
+    next_step = detail.split(". ")[0].rstrip(".")
+    return f"{title}. {next_step}." if next_step else f"{title}."
 
 
 def list_services(db, account_id, mark_sent=None):
@@ -799,20 +839,25 @@ def list_services(db, account_id, mark_sent=None):
 
 
 class ServiceModel(QObject):
-    """分析頁（analysis.qml）的三個清單：completedModel、analyzingModel、notAnalyzedModel（RowListModel）。
+    """分析頁（analysis.qml）的三個清單：completedModel、analyzingModel、notAnalyzedModel（RowListModel），
+    送出分析，以及分析狀態的通知（DS-52）。
 
-    - status：loading（還沒有資料）、ready、error；busy 是重新整理中。已經有資料時重新整理失敗，清單留著，
-      改跳一則警告（DS-52「自動更新失敗」），恢復後自己關掉。
+    - status：loading（還沒有資料）、ready、error；busy 是重新整理中。
+    - 清單什麼時候重新整理：launch()、按側邊欄的 Analysis、錄影存好之後（refresh()）、監看發現狀態變了、
+      送出分析之後。頁面不再自己每 15 秒重新整理（ENG-16：由 app 層的 AnalysisWatcher 監看）。
+    - 已經有資料時「更新不到」（重新整理或監看的查詢失敗）：清單留著，只跳一則警告（DS-52），恢復後自己關掉；
+      重新整理失敗時 15 秒後自己再試。第一次載入就失敗才是區塊錯誤（DS-27）。
     - waitingSince：分析中的服務從什麼時候開始等（epoch ms）。資料庫沒有送出時間（UX-19），
-      所以是這個 app 送出的時間；不是這裡送的，就是這次執行第一次看到它在分析中的時間（T18）。
-    - failed：這次執行看過它是 2、後來又變回 1（分析服務失敗時會這樣做，D4、DS-22）。
-    - analyzeService()：送出分析的 POST 照舊在 GUI 執行緒（第三波才搬到 io lane）；收到 200 之後，
-      改狀態和重新整理清單在 db lane 一起做。
+      所以是分析服務收到這個 app 送出的時間；不是這裡送的，就是這次執行第一次看到它在分析中的時間（T18）。
+    - failed：這次執行看過它是 2、後來又變回 1，或監看看到 2 → 1（分析服務失敗時會這樣做，D4、DS-22）。
+    - sending：送出中（POST 加上改狀態），那一列的按鈕忙碌（DS-24）。
+    - analyzeService()：POST 在 io lane；收到 200 之後在 db lane 改狀態、重新整理清單。結果用 toast 告訴使用者。
     """
 
     statusChanged = Signal()
     busyChanged = Signal()
     errorChanged = Signal()
+    analysisSent = Signal(str)  # 送出成功（分析服務收到了、狀態也改成 2）：監看從這裡開始看這一筆
 
     def __init__(self, services, account_id):
         super(ServiceModel, self).__init__()
@@ -825,10 +870,17 @@ class ServiceModel(QObject):
         self._busy = False
         self._error_detail = self._error_technical = ""
         self._failure_count = 0
+        self._rows = []  # 上一次查到的清單：送出中的狀態改變時重新套用
         self._last_status = {}  # 上一次看到的狀態
         self._waiting_since = {}
         self._failed = set()
-        self._refresh_warning = 0  # 自動更新失敗那一則警告的 toastId
+        self._sending = set()
+        self._refresh_warning = 0  # 「Can't refresh analysis status」那一則的 toastId
+        self._toast_ids = {}  # 通知的 key → toastId：Notifier 只能用 toastId 關掉
+        self._retry = QTimer(self)  # 已經有資料、重新整理失敗時，過一會兒自己再試
+        self._retry.setSingleShot(True)
+        self._retry.setInterval(REFRESH_RETRY_S * 1000)
+        self._retry.timeout.connect(self.refresh)
 
     @Property(QObject, constant=True)
     def completedModel(self):
@@ -864,39 +916,69 @@ class ServiceModel(QObject):
 
     @Slot()
     def refresh(self):
-        """在 db lane 重新整理三個清單（1 個往返）。上一次還沒回來就不再送。"""
+        """在 db lane 重新整理三個清單（1 個往返）。上一次還沒回來就不再送，而且不會漏掉更新：
+        db lane 只有一條執行緒、依序執行，所以呼叫者剛做完的資料庫工作（監看的查詢、錄影寫入、改狀態）
+        如果排在還沒回來的那一次後面，結果不會先回來；還沒回來的那一次一定查得到它。"""
         db, account_id = self.services.db, self.account_id
         if self.services.tasks.submit("db", ANALYSIS_KEY, lambda token, report: list_services(db, account_id),
                                       on_ok=self._loaded, on_err=self._failed_to_load):
             self._set_busy(True)
 
+    @Slot(str, str, result=int)
+    def indexOfService(self, tab, service_id):
+        """service_id 在分頁 tab（completed、analyzing、notAnalyzed）的第幾列，沒有是 -1。分析頁捲到那一列用。"""
+        rows = {"completed": self._completed, "analyzing": self._analyzing,
+                "notAnalyzed": self._not_analyzed}.get(tab)
+        ids = [row["serviceId"] for row in rows.rows()] if rows is not None else []
+        return ids.index(service_id) if service_id in ids else -1
+
     def _loaded(self, rows):
+        self._took(rows)
+        self._set_busy(False)
+
+    def _took(self, rows):
+        """拿到最新的清單（重新整理，或送出分析之後）：套用，清掉錯誤和「更新不到」的警告。"""
         self._apply(rows)
         if self._failure_count:
             self._failure_count = 0
             self.errorChanged.emit()
         self._set_status("ready")
-        self._set_busy(False)
-        if self._refresh_warning:  # 恢復了：自動更新失敗的警告自己關掉
-            self.services.notifier.dismiss(self._refresh_warning)
-            self._refresh_warning = 0
+        self._retry.stop()
+        self.refresh_recovered()
 
     def _failed_to_load(self, error):
         logger.warning("loading the analysis lists failed: %r", error)
         self._set_busy(False)
-        if self._status == "ready":
-            if not self._refresh_warning:  # 同一次斷線只跳一則
-                cause = user_message(error)[1]
-                self._refresh_warning = self.services.notifier.notify(
-                    "warning", "Can't refresh analysis status", f"{cause}. Retrying in 15 seconds.",
-                    ANALYSIS_REFRESH_TOAST_KEY)
+        if self._status == "ready":  # 清單留著，只跳一則警告；過一會兒自己再試
+            self.refresh_failed(error, REFRESH_RETRY_S)
+            self._retry.start()
             return
         self._error_detail, self._error_technical = error_text(error)
         self._failure_count += 1
         self.errorChanged.emit()
         self._set_status("error")
 
+    def refresh_failed(self, error, retry_in):
+        """分析狀態更新不到（清單的重新整理，或監看的查詢；retry_in 秒後會再試）。
+
+        已經有資料時只跳一則警告（同一次斷線不管失敗幾次、從哪裡失敗都只有一則），恢復後自己關掉；
+        還沒有資料時由分析頁的區塊錯誤說明（DS-27），不跳通知。
+        """
+        if self._status != "ready" or self._refresh_warning:
+            return
+        cause = user_message(error)[1]
+        self._refresh_warning = self.services.notifier.notify(
+            "warning", "Can't refresh analysis status", f"{cause}. Retrying in {retry_in} seconds.",
+            ANALYSIS_REFRESH_TOAST_KEY)
+
+    def refresh_recovered(self):
+        """又查得到了（清單或監看）：「更新不到」的警告自己關掉。"""
+        if self._refresh_warning:
+            self.services.notifier.dismiss(self._refresh_warning)
+            self._refresh_warning = 0
+
     def _apply(self, rows):
+        self._rows = rows
         now = time.time() * 1000
         groups = {1: [], 2: [], 3: []}
         statuses = {}
@@ -916,6 +998,7 @@ class ServiceModel(QObject):
                 "customerScore": score_or_none(row["customer_total"]),
                 "waitingSince": self._waiting_since.setdefault(service_id, now) if status == 2 else 0.0,
                 "failed": service_id in self._failed,
+                "sending": service_id in self._sending,
             })
         self._last_status = statuses
         self._waiting_since = {sid: since for sid, since in self._waiting_since.items() if statuses.get(sid) == 2}
@@ -924,44 +1007,82 @@ class ServiceModel(QObject):
         self._analyzing.replace(groups[2])
         self._not_analyzed.replace(groups[1])
 
+    # ------------------------------------------------------------ 送出分析（UX-18、ENG-05、ENG-14）
+
     @Slot(str, result=bool)
     def analyzeService(self, service_id):
-        if not self.analyze_service(service_id):
-            print(f"Failed to analyze service {service_id}")
+        """送出分析：POST 在 io lane，收到 200 之後在 db lane 把狀態改成 2、重新整理清單。
+        整段期間那一列的按鈕忙碌；結果用 toast 告訴使用者。回傳 False 表示這一筆已經在送了（防重複送出）。"""
+        if service_id in self._sending:
             return False
-        self._waiting_since[service_id] = time.time() * 1000  # 從現在開始等
-        db, account_id = self.services.db, self.account_id
-        self.services.tasks.submit(
-            "db", f"staff:analyze:{service_id}",
-            lambda token, report: list_services(db, account_id, mark_sent=service_id),
-            on_ok=self._sent, on_err=lambda error: self._send_not_recorded(service_id, error))
+        url = os.getenv("ANALYZE_API_URL", "")
+        if not self.services.tasks.submit("io", analyze_key(service_id),
+                                          lambda token, report: post_analysis(url, service_id),
+                                          on_ok=lambda result: self._posted(service_id),
+                                          on_err=lambda error: self._not_sent(service_id, error)):
+            return False
+        # 上一次的「送不出去」「分析失敗」都過時了：使用者重新送出
+        self._close_toast(analyze_key(service_id))
+        self._close_toast(outcome_key(service_id))
+        self._set_sending(service_id, True)
         return True
 
-    def _sent(self, rows):
-        self._apply(rows)
-        self._set_status("ready")
+    def _posted(self, service_id):
+        """分析服務收到了：在 db lane 把狀態改成 2，順便重新整理清單（2 個往返）。"""
+        posted_at = time.time() * 1000  # 從分析服務收到的時候開始等
+        db, account_id = self.services.db, self.account_id
+        if not self.services.tasks.submit("db", mark_key(service_id),
+                                          lambda token, report: list_services(db, account_id, mark_sent=service_id),
+                                          on_ok=lambda rows: self._marked(service_id, posted_at, rows),
+                                          on_err=lambda error: self._not_sent(service_id, error)):
+            self._set_sending(service_id, False)  # TaskRunner 已經關了（程式正在結束）
 
-    def _send_not_recorded(self, service_id, error):
-        # 分析服務已經收到了；只是狀態沒改成 2，這一列會留在 Not Analyzed，再按一次 Analyze 就好
-        logger.warning("marking %s as sent failed: %r", service_id, error)
-        self.services.notifier.fromException(error, key=f"analyze:{service_id}")
+    def _marked(self, service_id, posted_at, rows):
+        self._waiting_since[service_id] = posted_at
+        self._sending.discard(service_id)
+        self._took(rows)  # 那一列移到 Analyzing（DS-24：按鈕跟著那一列換掉）
+        self._show_toast("info", "Sent for analysis",
+                         f"{service_id} is being analyzed. You'll be notified when it's done.", analyze_key(service_id))
+        self.analysisSent.emit(service_id)
 
-    def analyze_service(self, service_id):
-        url = os.getenv('ANALYZE_API_URL')
-        payload = {'service_id': service_id}
+    def _not_sent(self, service_id, error):
+        """POST 失敗，或分析服務收到了、但狀態沒改成 2：那一列回到 Analyze（或 Retry），跳常駐的錯誤（DS-20）。
+        重送沒關係：狀態只會往前走，分析服務也不會把同一筆排兩次（ENG-14）。"""
+        logger.warning("sending %s for analysis failed: %r", service_id, error)
+        self._set_sending(service_id, False)
+        retryable = user_message(error)[3]
+        self._show_toast("error", "Couldn't send for analysis", toast_reason(error), analyze_key(service_id),
+                         f"retry-analyze:{service_id}" if retryable else "", "Retry" if retryable else "")
 
-        try:
-            # (連線逾時, 讀取逾時)，單位是秒；分析服務收到請求就會立刻回 200，不會等分析做完
-            response = requests.post(url, json=payload, timeout=(3, 10))
-            if response.status_code == 200:
-                print(f"Request for service_id {service_id} was successfully received by the server.")
-                return True
-            else:
-                print(f"Server returned error status: {response.status_code}. The service_id might not have been processed.")
-                return False
-        except Exception as e:
-            print(f"Request failed: {e}")
-            return False
+    def _set_sending(self, service_id, sending):
+        if sending:
+            self._sending.add(service_id)
+        else:
+            self._sending.discard(service_id)
+        self._apply(self._rows)  # 只有那一列的 sending 變了：清單只發那一列的 dataChanged
+
+    # ------------------------------------------------------------ 監看發現狀態變了（ENG-16、UX-17）
+
+    def analysis_finished(self, service_id):
+        """2 → 3：成功 toast＋View Results，清單在背景重新整理（不管在哪一頁都會更新）。"""
+        self._show_toast("success", "Analysis complete", f"Scores and charts for {service_id} are ready.",
+                         outcome_key(service_id), f"open-analysis:{service_id}", "View Results")
+        self.refresh()
+
+    def analysis_failed(self, service_id):
+        """2 → 1（分析服務失敗時把狀態改回 1，D4）：那一列標成 Failed、按鈕變成 Retry，跳常駐的錯誤＋Retry。"""
+        self._failed.add(service_id)
+        self._show_toast("error", "Analysis failed", f"{service_id} couldn't be analyzed. You can send it again.",
+                         outcome_key(service_id), f"retry-analyze:{service_id}", "Retry")
+        self.refresh()
+
+    def _show_toast(self, severity, title, detail, key, action_id="", action_label=""):
+        self._toast_ids[key] = self.services.notifier.notify(severity, title, detail, key, action_id, action_label)
+
+    def _close_toast(self, key):
+        toast_id = self._toast_ids.pop(key, 0)
+        if toast_id:
+            self.services.notifier.dismiss(toast_id)
 
     def _set_status(self, status):
         if status != self._status:
@@ -978,9 +1099,14 @@ class ServiceModel(QObject):
 
 class ServerHome(QObject):
     """服務人員端的外殼（server_home.qml 的 serverHome）。services 是 AppServices；
-    只有直接建立、不經過 launch() 時（例如測試明細頁的下載）可以是 None。"""
+    只有直接建立、不經過 launch() 時（例如測試明細頁的下載）可以是 None，這時沒有監看。
+
+    分析完成的通知（ENG-16、ENG-17）：watcher 看到狀態變了，serviceModel 跳 toast，清單和首頁分數在背景重新整理；
+    app 不在前景時 Dock 圖示跳動、加上徽章。通知上分析的動作（analyze:、retry-analyze:、open-analysis:）也在這裡接。
+    """
 
     accountNameChanged = Signal()
+    openAnalysisRequested = Signal(str)  # View Results：外殼換到分析頁、選 Completed、標出那一列
 
     def __init__(self, account_id, services=None):
         super().__init__()
@@ -991,6 +1117,9 @@ class ServerHome(QObject):
         self.deviceFinder = DeviceFinder(self)  # 不在這裡探測：打開錄影頁時才做
         self.serviceScoreManager = ServiceScoreManager(services, account_id)
         self.serviceModel = ServiceModel(services, account_id)
+        self.shell_window = None  # 外殼視窗（launch() 設定）：app 不在前景時讓 Dock 圖示跳動
+        self.attention = DockAttention(self)
+        self.watcher = None if services is None else self._watch(services)
         self.serviceManager = ServiceManager(services, account_id)
         self.chartsModel = ChartsModel()
         self.mediaModel = MediaModel()
@@ -1001,10 +1130,58 @@ class ServerHome(QObject):
         return self._account_name
 
     def start(self):
-        """launch() 呼叫：帳號名稱和各頁的資料都在 db lane 載入，GUI 執行緒不碰網路。"""
+        """launch() 呼叫：帳號名稱、各頁的資料、監看要看的服務都在 db lane 載入，GUI 執行緒不碰網路。"""
         self.loadAccountName()
         self.serviceScoreManager.refresh()
         self.serviceModel.refresh()
+        if self.watcher is not None:
+            self.watcher.start()
+
+    def stop(self):
+        """外殼關掉時：停止監看，清掉 Dock 的徽章。"""
+        if self.watcher is not None:
+            self.watcher.stop()
+        self.attention.clear()
+        self.shell_window = None
+
+    def _watch(self, services):
+        """建立分析完成的監看（ENG-16），接上清單、通知和 Dock。"""
+        watcher = AnalysisWatcher(services.tasks, services.db, self.account_id, self)
+        self.serviceModel.analysisSent.connect(watcher.add)
+        watcher.finished.connect(self._analysis_finished)
+        watcher.failed.connect(self._analysis_failed)
+        watcher.pollFailed.connect(self._watch_failed)
+        watcher.pollSucceeded.connect(self.serviceModel.refresh_recovered)
+        services.notifier.actionTriggered.connect(self._on_action)
+        return watcher
+
+    def _analysis_finished(self, service_id):
+        self.serviceModel.analysis_finished(service_id)
+        self.serviceScoreManager.refresh()  # 首頁的分數：舊的留著、變淡，新的到了再換（DS-33）
+        self.attention.request(self.shell_window)
+
+    def _analysis_failed(self, service_id):
+        self.serviceModel.analysis_failed(service_id)
+        self.attention.request(self.shell_window)
+
+    def _watch_failed(self, error):
+        self.serviceModel.refresh_failed(error, self.watcher.interval())
+
+    def _on_action(self, action_id, toast_id):
+        """通知上的動作。只處理分析的（CONTRACTS §4）；其他的（例如 retry-upload:）不認得就不管。"""
+        kind, _, service_id = action_id.partition(":")
+        if not service_id:
+            return
+        if kind in ("analyze", "retry-analyze"):  # 錄影存好的「Analyze」、送不出去或分析失敗的「Retry」
+            self.serviceModel.analyzeService(service_id)
+        elif kind == "open-analysis":
+            self.openAnalysis(service_id)
+
+    @Slot(str)
+    def openAnalysis(self, service_id):
+        """「View Results」：外殼換到分析頁、選 Completed、標出那一列（UX-17）。和側邊欄一樣，換頁時重新整理清單。"""
+        self.serviceModel.refresh()
+        self.openAnalysisRequested.emit(service_id)
 
     @Slot()
     def loadAccountName(self):
@@ -1114,11 +1291,13 @@ def launch(engine, account_id, services=None):
     # 剛載入的外殼（第 0 個是登入視窗，UX-04）。外殼自己也設了 FullScreen
     window = engine.rootObjects()[-1]
     window.showFullScreen()
+    home.shell_window = window
 
     # setContextProperty 不會留住 Python 物件（PySide6 6.12 實測）：home 和各頁的模型只被自己的循環參照留著，
     # 下一次 gc 就會被刪掉，QML 拿到 null。destroyed 的連線留著 closed，closed 的預設值留著 home，
-    # 所以 home 和外殼活得一樣久
-    def closed(keep_alive=home):
+    # 所以 home 和外殼活得一樣久。destroyed 會把被刪掉的物件當第一個參數傳進來，所以預設值放在 * 後面
+    def closed(*destroyed, keep_alive=home):
+        keep_alive.stop()  # 外殼關了：不再監看
         if standalone:
             services.tasks.shutdown()
 

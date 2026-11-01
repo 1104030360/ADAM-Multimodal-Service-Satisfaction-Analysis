@@ -5,17 +5,22 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../components"
 
-// 分析頁（UX-19～21、ENG-05、ENG-08）。三個分頁的清單是 serviceModel 的增量模型：
+// 分析頁（UX-17～21、ENG-05、ENG-08、ENG-16）。三個分頁的清單是 serviceModel 的增量模型：
 // 重新整理只有 1 個往返，在背景執行；資料沒變的列不會重建，捲動位置也不會跳。
 // - 分頁顯示數量；每個分頁沒有資料時有空狀態（DS-26），第一次載入失敗時是區塊錯誤（DS-27）
 // - 每一列有狀態標籤（DS-22）；分析中的列顯示已經等了多久；沒有分數顯示「—」，不顯示 -1
-// - 送出分析（Analyze）的 POST 還在 GUI 執行緒，失敗時跳對話框：第三波改成背景送出、在那一列顯示
+// - Analyze 在背景送出：送出期間那一列的按鈕忙碌（Sending…），結果用 toast 說（DS-24、DS-52）；
+//   送不出去時按鈕恢復，不跳對話框（DS-20）
+// - 這一頁不再自己每 15 秒重新整理：分析完成或失敗由 app 層的監看發現（ENG-16），清單跟著更新
+// - 通知上的「View Results」換到這一頁：選 Completed、標出那一列（showService）
 Page {
     id: analysisPage
     title: qsTr("Analysis")
 
     readonly property var vm: typeof serviceModel !== "undefined" ? serviceModel : null
     property string selectedTab: "notAnalyzed"     // 剛錄好的服務在這裡，是要動作的分頁（UX-19）
+    property string highlightedServiceId: ""       // View Results 標出的那一列（靜止的底色，不閃，DS-42）
+    property bool revealPending: false              // 那一列還沒捲進畫面（清單可能還在重新整理）
     property double now: Date.now()
     readonly property bool loading: !vm || vm.status === "loading"
     readonly property bool failed: vm !== null && vm.status === "error"
@@ -47,19 +52,33 @@ Page {
     }
 
     function analyze(serviceId) {
-        if (!vm.analyzeService(serviceId))
-            analyzeFailedDialog.open()
+        if (vm)
+            vm.analyzeService(serviceId)    // 結果用 toast 說；送出期間那一列的按鈕忙碌
     }
 
-    // 每 15 秒重新整理一次（背景、1 個往返）。第三波換成 app 層的監看（ENG-16）
-    Timer {
-        objectName: "refreshTimer"
-        interval: 15000
-        running: true
-        repeat: true
-        onTriggered: {
-            if (analysisPage.vm)
-                analysisPage.vm.refresh()
+    // 外殼收到「View Results」時呼叫：選 Completed、標出那一列，捲到看得到的地方
+    function showService(serviceId) {
+        selectedTab = "completed"
+        highlightedServiceId = serviceId
+        revealPending = true
+        Qt.callLater(revealHighlighted)
+    }
+
+    function revealHighlighted() {
+        if (!revealPending || !vm)
+            return
+        const index = vm.indexOfService("completed", highlightedServiceId)
+        if (index < 0)
+            return      // 清單還在重新整理：那一列到了再捲（下面的 Connections）
+        revealPending = false
+        completedTable.view.positionViewAtIndex(index, ListView.Contain)
+    }
+
+    Connections {
+        target: analysisPage.vm ? analysisPage.vm.completedModel : null
+        function onCountChanged() {
+            if (analysisPage.revealPending)
+                Qt.callLater(analysisPage.revealHighlighted)
         }
     }
 
@@ -178,17 +197,20 @@ Page {
         required property var customerScore
         required property real waitingSince
         required property bool failed
+        required property bool sending          // 送出分析中（POST 加上改狀態）
         required property string kind
 
         readonly property string scores: analysisPage.scoreText(staffScore) + " / " + analysisPage.scoreText(customerScore)
         readonly property string waiting: kind === "analyzing" ? analysisPage.waitingText(waitingSince) : ""
+        readonly property bool highlighted: serviceId === analysisPage.highlightedServiceId
 
         height: 50
-        color: index % 2 === 0 ? Theme.surfaceAlt : Theme.contentBg
-        border.color: Theme.divider
+        color: highlighted ? Theme.infoTint : index % 2 === 0 ? Theme.surfaceAlt : Theme.contentBg
+        border.color: highlighted ? Theme.infoOnLight : Theme.divider
         border.width: 1
         // 狀態寫進那一列的名稱（DS-22：標籤本身不給螢幕閱讀器）
         Accessible.role: Accessible.Row
+        Accessible.selected: highlighted
         Accessible.name: [serviceId, chip.label, kind === "completed" ? qsTr("staff / customer %1").arg(scores) : waiting]
                          .filter(part => part !== "").join(", ")
 
@@ -239,10 +261,12 @@ Page {
                     active: row.kind === "notAnalyzed"
                     sourceComponent: BusyButton {
                         objectName: "analyzeButton"
-                        width: 120
+                        width: Math.max(120, implicitWidth)     // 放得下「Sending…」和旋轉圖示，換字時不變寬
                         height: 36
+                        busy: row.sending       // 一按就擋住第二次點擊；300 ms 後才換字（DS-24）
                         text: row.failed ? qsTr("Retry") : qsTr("Analyze")
-                        Accessible.name: text + ", " + row.serviceId
+                        busyText: qsTr("Sending…")
+                        Accessible.name: (busyShown ? busyText : text) + ", " + row.serviceId
                         onClicked: {
                             if (busy)
                                 return
@@ -383,6 +407,7 @@ Page {
         }
 
         ServiceTable {
+            id: completedTable
             objectName: "completedTable"
             anchors.fill: parent
             kind: "completed"
@@ -412,22 +437,6 @@ Page {
             titles: [qsTr("Service ID"), qsTr("Start Time"), qsTr("End Time"), qsTr("Status"), qsTr("Action")]
             emptyTitle: qsTr("No services to analyze")
             emptyDescription: qsTr("New recordings appear here after they're saved.")
-        }
-    }
-
-    // 送出失敗：第三波改成那一列原地顯示＋toast（DS-20），這裡先只把文字改成英文
-    Dialog {
-        id: analyzeFailedDialog
-        objectName: "analyzeFailedDialog"
-        anchors.centerIn: parent
-        modal: true
-        title: qsTr("Couldn't send for analysis")
-        standardButtons: Dialog.Ok
-
-        Label {
-            width: 360
-            wrapMode: Text.WordWrap
-            text: qsTr("Can't reach the analysis service. Check your network and try again.")
         }
     }
 }
