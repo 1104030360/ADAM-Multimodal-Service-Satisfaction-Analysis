@@ -1146,7 +1146,7 @@ def test_theme_sizes_and_layers_match_the_design_system(harness):
     assert {name: theme(window, name) for name in expected} == expected
 
 
-def test_qmldir_declares_theme_as_singleton_and_the_twenty_four_components():
+def test_qmldir_declares_theme_as_singleton_and_the_twenty_five_components():
     lines = (COMPONENTS / "qmldir").read_text(encoding="utf-8").splitlines()
     assert lines == ["singleton Theme 1.0 Theme.qml"] + [
         f"{name} 1.0 {name}.qml" for name in ("Toast", "ToastHost", "StatusChip", "TransferProgress", "BusyButton",
@@ -1155,7 +1155,7 @@ def test_qmldir_declares_theme_as_singleton_and_the_twenty_four_components():
                                                "ServiceSearchField", "StatTile", "ScoreBars", "SettingsSection",
                                                "SettingsGroup", "SettingsOption", "SettingsDivider",
                                                "SettingsAccount", "SettingsGeneral", "SettingsDevices",
-                                               "SettingsHelp")]
+                                               "SettingsHelp", "DeviceSelect")]
 
 
 def test_component_qml_files_use_crlf():

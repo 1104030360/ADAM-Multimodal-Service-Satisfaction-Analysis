@@ -20,7 +20,7 @@ from moto import mock_aws
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
-from myapp import storage
+from myapp import devices, storage
 from myapp.database import DatabaseConnector
 from tests.fakes import FakeCameras, FakeMicrophone
 
@@ -101,6 +101,15 @@ def microphone(monkeypatch):
     fake = FakeMicrophone()
     monkeypatch.setattr(pyaudio, "PyAudio", fake)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def media_devices(cameras, microphone, monkeypatch):
+    """AVFoundation 的鏡頭清單和相機、麥克風權限也換成假的（myapp/devices.py，T41）：不讀這台電腦真的裝置。
+    清單、權限由 cameras（FakeCameras.listed、access）和 microphone（FakeMicrophone.access）決定。"""
+    monkeypatch.setattr(devices, "av_video_devices", cameras.av_devices)
+    monkeypatch.setattr(devices, "media_access",
+                        lambda kind: cameras.access if kind == "video" else microphone.access)
 
 
 @pytest.fixture

@@ -18,5 +18,6 @@ Item {
         window: page.window
         prefs: uiPrefs
         notificationsAvailable: true    // 服務人員端才有分析完成的通知（S2）
+        devices: typeof deviceFinder !== "undefined" && deviceFinder ? deviceFinder.setup : null  // 設備設定（T41）
     }
 }

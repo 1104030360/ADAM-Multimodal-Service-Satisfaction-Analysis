@@ -9,6 +9,7 @@ Item {
     property var window: null       // 外殼的視窗（頁面的 setWindow）
     property var prefs: null        // UiPrefs（context property uiPrefs）；程式結束時可能先變成 null
     property bool notificationsAvailable: false // 服務人員端：General 顯示分析完成通知、Dock 跳動的選項（S2）
+    property var devices: null      // 設備設定（deviceFinder.setup，T41）：只有服務人員端給；null 時不顯示 Devices
 
     Flickable {
         anchors.fill: parent
@@ -42,6 +43,7 @@ Item {
                 objectName: "deviceSettings"
                 width: parent.width
                 window: root.window
+                devices: root.devices
             }
 
             SettingsHelp {

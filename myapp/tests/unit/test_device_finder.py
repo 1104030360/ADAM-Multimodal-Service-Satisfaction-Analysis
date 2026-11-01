@@ -12,6 +12,7 @@ import cv2
 import pytest
 from PySide6.QtCore import QCoreApplication, QObject, Signal
 
+from myapp import devices
 from myapp.init import server_home_init
 from myapp.init.record_widget import QuitGuard
 from myapp.init.server_home_init import DeviceFinder
@@ -103,7 +104,7 @@ def scanned(finder):
 
 def test_nothing_is_probed_until_the_record_page_asks(camera_opens, microphone, monkeypatch):
     audio_inits = []
-    monkeypatch.setattr(server_home_init.pyaudio, "PyAudio", lambda: audio_inits.append(1) or microphone)
+    monkeypatch.setattr(devices.pyaudio, "PyAudio", lambda: audio_inits.append(1) or microphone)
     finder = DeviceFinder(STAFF)
     assert (finder.status, finder.cameras, finder.microphones) == ("idle", [], [])
     assert camera_opens == [] and audio_inits == []  # 登入時不開鏡頭、不初始化音訊（UX-02）
@@ -112,11 +113,21 @@ def test_nothing_is_probed_until_the_record_page_asks(camera_opens, microphone, 
     assert finder.status == "scanning"  # 先讓「Looking for…」畫出來，下一輪事件才探測
     assert camera_opens == []
     wait_until(lambda: finder.status == "ready")
-    assert camera_opens == list(range(10)) and audio_inits == [1]
+    # AVFoundation 列得出兩支，就只試開這兩支（以前一律試開 0～9 號，T41）
+    assert camera_opens == [0, 1] and audio_inits == [1]
 
     finder.ensureScanned()  # 再回到錄影頁：用上次的結果
     QCoreApplication.processEvents()
-    assert len(camera_opens) == 10 and finder.status == "ready"
+    assert len(camera_opens) == 2 and finder.status == "ready"
+
+
+def test_without_the_avfoundation_list_cameras_zero_to_nine_are_tried(cameras, camera_opens):
+    """不是 macOS（或列不出 AVFoundation 的清單）：和以前一樣試開 0～9 號，名稱是編號，認不出身分。"""
+    cameras.listed = None
+    finder = scanned(DeviceFinder(STAFF))
+    assert camera_opens == list(range(10))
+    assert finder.cameras == ["Camera 0", "Camera 1"]
+    assert [camera.uid for camera in finder.camera_infos] == ["", ""]
 
 
 def test_camera_list_has_only_cameras_that_open(cameras, microphone):

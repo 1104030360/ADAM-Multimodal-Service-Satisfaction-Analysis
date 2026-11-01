@@ -17,10 +17,11 @@ import requests
 import os
 from PySide6.QtCore import QCoreApplication, QLocale, QObject, Property, Qt, QSettings, QTimer, QUrl, Signal, Slot
 from datetime import datetime
-import pyaudio
 from pathlib import Path
+from myapp import devices
 from myapp.account import AccountProfile, AccountSelfService
 from myapp.db_lane import DbLane
+from myapp.device_setup import IN_USE_FINISHING, IN_USE_RECORDER, IN_USE_RECORDING, DeviceSetup
 from myapp.diagnostics import HelpCenter
 from myapp.home_dashboard import HomeDashboard
 from myapp.notifications import Notifier, user_message
@@ -31,9 +32,8 @@ from myapp.services import AppServices
 from myapp.tasks import TaskRunner
 from myapp.ui_prefs import UiPrefs, open_settings
 from myapp.watcher import POLL_KEY as WATCHER_KEY, AnalysisWatcher, DockAttention
-from .record_widget import SAVE_ROLES, SAVED, QuitGuard, RecordingSaver, RecordWidget
+from .record_widget import FINISHING, SAVE_ROLES, SAVED, QuitGuard, RecordingSaver, RecordWidget
 from .session import ShellSession
-import cv2
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -319,33 +319,7 @@ class ServiceManager(QObject):
 
 
 # ---------------------------------------------------------------- 錄影頁：鏡頭和麥克風（UX-13、UX-14、ENG-06）
-
-def probe_cameras():
-    """試開 0～9 號鏡頭，回傳（清單文字, 鏡頭編號）。要在 GUI 執行緒呼叫，原因見 DeviceFinder。"""
-    names, ids = [], []
-    for camera_id in range(10):
-        cap = cv2.VideoCapture(camera_id)
-        if cap.isOpened():
-            names.append(_tr("Camera %1", camera_id))  # 使用編號代替名稱
-            ids.append(camera_id)
-            cap.release()  # 釋放攝影機
-    return names, ids
-
-
-def probe_microphones():
-    """有輸入聲道的音訊裝置，回傳（名稱, PyAudio 裝置編號）。"""
-    audio = pyaudio.PyAudio()
-    try:
-        names, ids = [], []
-        for device_index in range(audio.get_host_api_info_by_index(0).get("deviceCount")):
-            info = audio.get_device_info_by_host_api_device_index(0, device_index)
-            if info.get("maxInputChannels") > 0:
-                names.append(info.get("name"))
-                ids.append(info.get("index", device_index))
-        return names, ids
-    finally:
-        audio.terminate()  # 以前沒有 terminate（ENG-06）；PortAudio 有參照計數，不影響錄影視窗自己的那一份
-
+# 探測、裝置的身分、這台電腦存的裝置設定在 myapp/devices.py；設定頁的設備設定與測試在 myapp/device_setup.py（T41）
 
 SAVED_ROWS_KEPT = 5  # Saving 卡片上最多留幾筆已經存好的（最新的幾筆；還在存的、沒存好的全部留著）
 
@@ -411,6 +385,10 @@ class DeviceFinder(QObject):
     - saves：錄影頁 Saving 卡片的清單（SavesModel，UD9、T29），列出每一段的存檔，通知關掉之後還看得到。
     - 結束程式前（UX-09、UX-29）：外殼的 Exit 按鈕和 onClosing 呼叫 stopRecording()，再看 uploadCount 決定要不要問。
       ⌘Q 不會經過 onClosing（T20），所以錄影中、存檔中時用 QuitGuard 在 app 上攔 QEvent.Quit，改發 quitRequested。
+    - 裝置的身分與存的設定（new-feature S4，T41）：探測時認出每支鏡頭（AVFoundation 的 uniqueID）、每支麥克風
+      （名稱＋host API），把這台電腦存的設定對到這次的清單：startSelection 是錄影頁一開始的選擇，setupState 是
+      ok／changed／missing（後兩種錄影頁要使用者先確認角色）。setup 是設定頁的設備設定（DeviceSetup）。
+    - devicesInUse：錄影視窗開著、錄影中、檔案還在寫時，設定頁不打開預覽搶鏡頭（T41）。
     """
 
     camerasChanged = Signal()
@@ -419,6 +397,8 @@ class DeviceFinder(QObject):
     recordingChanged = Signal()  # 錄影視窗開始或停止錄影
     uploadsChanged = Signal()  # 背景存檔的筆數或 bytes 變了
     quitRequested = Signal()  # ⌘Q（或其他 QEvent.Quit）被擋下來了：外殼要問使用者
+    setupChanged = Signal()  # 存的裝置設定、或它對到這次清單的結果變了（T41）
+    devicesInUseChanged = Signal()  # 錄影視窗打開、關掉，開始、停止錄影，檔案寫完（T41）
 
     SCAN_DELAY_MS = 50
 
@@ -435,6 +415,14 @@ class DeviceFinder(QObject):
         self._saver = None  # 要有 AppServices 才能建立：第一次錄影時，或登入時有沒存完的錄影（T26）
         self._saves = SavesModel(self)  # 一開始就有（空的），RecordingSaver 建立時接上
         self._quit_allowed = False
+        # 裝置的身分與這台電腦存的設定（T41）：讀本機的設定，不探測
+        self._camera_scan = devices.CameraScan()
+        self._microphone_infos = []
+        self._setup_store = devices.DeviceSetupStore()
+        self._saved_setup = self._setup_store.load()
+        self._resolution = self._unchecked()
+        self._devices_in_use = ""
+        self._setup = DeviceSetup(self, self._setup_store, parent=self)
 
     @Property(list, notify=camerasChanged)
     def cameras(self):
@@ -467,27 +455,139 @@ class DeviceFinder(QObject):
 
     def _scan(self):
         try:
-            cameras, camera_ids = probe_cameras()
-            microphones, microphone_ids = probe_microphones()
+            scan = devices.probe_cameras()
+            microphone_infos = devices.probe_microphones()
         except Exception as error:  # 例如 PortAudio 初始化失敗：顯示區塊錯誤，可以重試
             logger.exception("device probe failed")
             self._error_technical = f"{type(error).__name__}: {error}"
             self._set_status("error")
             return
         self._error_technical = ""
-        self._camera_ids, self._microphone_ids = camera_ids, microphone_ids
-        if cameras != self._cameras:
+        # 清單比的是身分，不只是名稱：兩支同名的鏡頭換了插孔，名稱一樣、身分不一樣，錄影頁也要重新選
+        cameras_changed = scan.cameras != self._camera_scan.cameras
+        microphones_changed = microphone_infos != self._microphone_infos
+        self._camera_scan, self._microphone_infos = scan, microphone_infos
+        self._camera_ids = [camera.index for camera in scan.cameras]
+        self._microphone_ids = [mic.index for mic in microphone_infos]
+        cameras = devices.display_names([camera.name for camera in scan.cameras])
+        microphones = devices.display_names([mic.name for mic in microphone_infos])
+        setup_changed = self._resolve_setup()  # 錄影頁收到 camerasChanged 時，startSelection 已經是新的
+        if cameras_changed or cameras != self._cameras:
             self._cameras = cameras
             self.camerasChanged.emit()
-        if microphones != self._microphones:
+        if microphones_changed or microphones != self._microphones:
             self._microphones = microphones
             self.microphonesChanged.emit()
+        if setup_changed:
+            self.setupChanged.emit()
         self._set_status("ready")
 
     def _set_status(self, status):
         if status != self._status:
             self._status = status
             self.statusChanged.emit()
+
+    # ------------------------------------------------------------ 裝置的身分與存的設定（new-feature S4，T41）
+
+    @Property(str, notify=statusChanged)
+    def cameraAccess(self):
+        """上次探測時的相機權限（devices.ACCESS_*）：錄影頁找不到鏡頭時，分得出是沒接還是沒有權限。"""
+        return self._camera_scan.access
+
+    @Property(list, notify=statusChanged)
+    def unavailableCameras(self):
+        """列得出來、但上次探測打不開的鏡頭名稱（別的 app 正在用、沒有回應）。"""
+        return list(self._camera_scan.unavailable)
+
+    @Property(str, notify=setupChanged)
+    def setupState(self):
+        """none、unchecked（有存、還沒探測）、ok、changed、missing（devices.SETUP_*）。"""
+        return self._resolution.state
+
+    @Property("QVariantMap", notify=setupChanged)
+    def startSelection(self):
+        """錄影頁一開始的選擇：{customer, staff, microphone} 是下拉選單的位置，-1 表示沒有。"""
+        return self._resolution.selection()
+
+    @Property(list, notify=setupChanged)
+    def setupMissing(self):
+        """存的裝置沒接的角色（customer、staff、microphone）。"""
+        return list(self._resolution.missing)
+
+    @Property(list, notify=setupChanged)
+    def setupUnconfirmed(self):
+        """認不出身分、要使用者確認的角色。"""
+        return list(self._resolution.unconfirmed)
+
+    @Property("QVariantMap", notify=setupChanged)
+    def savedSetup(self):
+        """存的設定的裝置名稱 {customer, staff, microphone}；沒有存過是空的。"""
+        saved = self._saved_setup
+        if saved is None:
+            return {}
+        return {role: getattr(saved, role).shown for role in devices.ROLES}
+
+    @Property(QObject, constant=True)
+    def setup(self):
+        """設定頁的設備設定與測試（DeviceSetup）。"""
+        return self._setup
+
+    @Property(str, notify=devicesInUseChanged)
+    def devicesInUse(self):
+        """錄影在用鏡頭和麥克風的原因：recording、recorder（錄影視窗開著，預覽在用鏡頭）、finishing
+        （停止了，檔案還在寫），或空字串。設定頁這時不打開預覽。"""
+        return self._devices_in_use
+
+    @property
+    def camera_infos(self):
+        return self._camera_scan.cameras
+
+    @property
+    def microphone_infos(self):
+        return list(self._microphone_infos)
+
+    @property
+    def resolution(self):
+        return self._resolution
+
+    @property
+    def saved_setup(self):
+        return self._saved_setup
+
+    def reload_setup(self):
+        """設定頁存好之後：重新讀存的設定，對到目前的清單，通知錄影頁和設定頁。"""
+        self._saved_setup = self._setup_store.load()
+        if self._status == "ready":
+            self._resolve_setup()
+        else:
+            self._resolution = self._unchecked()
+        self.setupChanged.emit()
+
+    def _unchecked(self):
+        saved = self._saved_setup
+        return devices.Resolution(devices.SETUP_UNCHECKED if saved is not None else devices.SETUP_NONE, saved=saved)
+
+    def _resolve_setup(self):
+        """存的設定對到這次的清單；回傳結果有沒有變。"""
+        resolution = devices.resolve(self._saved_setup, self._camera_scan.cameras, self._microphone_infos,
+                                     self._camera_scan.identified)
+        changed = resolution != self._resolution or resolution.saved is not self._resolution.saved
+        self._resolution = resolution
+        return changed
+
+    def _update_devices_in_use(self):
+        recorder = self._recorder
+        if recorder is not None and recorder.recording:
+            in_use = IN_USE_RECORDING
+        elif recorder is not None:
+            in_use = IN_USE_RECORDER
+        elif any(job.state == FINISHING for job in self._in_flight()):
+            in_use = IN_USE_FINISHING
+        else:
+            in_use = ""
+        if in_use != self._devices_in_use:
+            self._devices_in_use = in_use
+            self.devicesInUseChanged.emit()
 
     # ------------------------------------------------------------ 錄影視窗與存檔（F3）
 
@@ -530,6 +630,7 @@ class DeviceFinder(QObject):
             return
         if recorder is not None:
             recorder.close()
+        self._setup.closeSetup()  # 設備設定的預覽不和錄影視窗搶鏡頭（T41）
         account_id = self.server_home.getID()  # Retrieve the account_id dynamically
         # QML 傳的是下拉選單的位置，換成真正的裝置編號；名稱顯示在狀態列（DS-34）
         widget = RecordWidget(self._camera_ids[cam0_index], self._camera_ids[cam1_index],
@@ -540,6 +641,7 @@ class DeviceFinder(QObject):
         widget.closed.connect(lambda: self._forget(widget))
         self._recorder = widget
         widget.show()
+        self._update_devices_in_use()
 
     def _forget(self, widget):
         if self._recorder is widget:
@@ -616,11 +718,13 @@ class DeviceFinder(QObject):
     def _recording_changed(self, recording=None):
         self.recordingChanged.emit()
         self._update_quit_guard()
+        self._update_devices_in_use()
 
     @Slot()
     def _uploads_changed(self):
         self.uploadsChanged.emit()
         self._update_quit_guard()
+        self._update_devices_in_use()
 
     def _saved(self, service_id):
         """寫好資料庫了：分析頁的 Not Analyzed 清單重新整理（CONTRACTS §4 的跨流程呼叫）。"""
@@ -1402,6 +1506,7 @@ class ServerHome(QObject):
             self.watcher.stop()
         self.serviceModel.stop()
         self.reportsModel.stop()
+        self.deviceFinder.setup.closeSetup()  # 設備設定還開著的話，放開鏡頭和麥克風（T41）
         self.attention.clear()
         self._session.stop()
         self.shell_window = None

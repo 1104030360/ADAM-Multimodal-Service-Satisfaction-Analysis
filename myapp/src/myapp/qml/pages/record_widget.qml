@@ -10,6 +10,9 @@ import "../components"
 // - Devices 卡片：三張裝置卡（顧客鏡頭、員工鏡頭、麥克風），各有一個下拉選單和一句「對著誰」。
 //   打開這一頁才探測裝置（UX-13、ENG-06），結果留著；Scan Again 重新探測。探測中、裝置不夠（空狀態）、
 //   探測失敗（區塊錯誤）都畫在卡片裡。員工鏡頭預設選第二支；兩支相同時欄位框變紅、下面說明，Open Recorder 停用。
+// - 一開始的選擇來自設定頁存的裝置設定（deviceFinder.startSelection，T41），這一頁照舊可以換、可以重新探測。
+//   存的設定對不上（裝置拔插過、認不出身分、存的裝置沒接）時，卡片上說明哪裡不同，按 Confirm Devices 才能開錄影視窗：
+//   不會默默換成另一支鏡頭。沒有相機權限時，空狀態說明去哪裡打開。
 // - Open Recorder 打開錄影視窗（QtWidgets 的 RecordWidget，PLAN D5）。同時只開一個：錄影中再按是帶回最前面。
 // - Saving 卡片（UD9、T29）：deviceFinder.saves 的每一段存檔。上傳中有第幾個檔案、MB、百分比和進度條；
 //   存好的有 Analyze，沒存好的有原因和 Retry，都和通知上的同一個動作。沒有任何存檔時不顯示這張卡片。
@@ -26,13 +29,40 @@ Item {
     readonly property bool formShown: status === "ready" && enoughDevices
     readonly property bool sameCamera: cam0ComboBox.currentIndex === cam1ComboBox.currentIndex
     readonly property bool recording: finder ? finder.recording : false
+    // 存的裝置設定（T41）：changed、missing 時要先確認角色。rolesConfirmed 是這一次的確認，清單或設定一變就重來
+    readonly property string setupState: finder ? finder.setupState : "none"
+    property bool rolesConfirmed: false
+    readonly property bool needsConfirmation: formShown && !rolesConfirmed
+                                              && (setupState === "changed" || setupState === "missing")
+    readonly property string cameraAccess: finder ? finder.cameraAccess : "unknown"
+    readonly property bool cameraAccessOff: cameraAccess === "denied" || cameraAccess === "restricted"
     // 通知疊在內容區的右下角：捲到底時，最後一列可以捲到通知上面（和分析頁的清單一樣）
     readonly property int toastClearance: typeof toastHost !== "undefined" && toastHost ? toastHost.occupiedHeight : 0
 
+    // 一開始的選擇：存的裝置設定對到這次清單的位置；沒存過（或那個角色找不到）時照舊選前兩支鏡頭、第一支麥克風
     function resetSelection() {
-        cam0ComboBox.currentIndex = 0
-        cam1ComboBox.currentIndex = cameraCount > 1 ? 1 : 0     // 預設就是兩支不同的鏡頭
-        micComboBox.currentIndex = 0
+        const start = finder ? finder.startSelection : null
+        cam0ComboBox.currentIndex = start && start.customer >= 0 ? start.customer : 0
+        cam1ComboBox.currentIndex = start && start.staff >= 0 ? start.staff : (cameraCount > 1 ? 1 : 0)  // 兩支不同的鏡頭
+        micComboBox.currentIndex = start && start.microphone >= 0 ? start.microphone : 0
+        rolesConfirmed = false
+    }
+
+    function roleName(role) {
+        return role === "customer" ? qsTr("customer camera") : role === "staff" ? qsTr("staff camera") : qsTr("microphone")
+    }
+
+    // 存的裝置設定對不上時的說明（T41）：哪一個沒接，或認不出哪支是哪支
+    function setupNoticeText() {
+        if (!finder)
+            return ""
+        const saved = finder.savedSetup
+        const lines = finder.setupMissing.map(role => qsTr("The saved %1, %2, isn't connected.")
+                                              .arg(roleName(role)).arg(saved[role] || ""))
+        if (lines.length === 0)
+            lines.push(qsTr("The connected devices changed since the device setup was saved, so the app can't tell which device is which."))
+        lines.push(qsTr("Check the choices below, then confirm."))
+        return lines.join(" ")
     }
 
     // 「Found 2 cameras and 1 microphone.」
@@ -61,7 +91,11 @@ Item {
     Connections {
         target: recordPage.finder
         function onCamerasChanged() { recordPage.resetSelection() }
-        function onMicrophonesChanged() { micComboBox.currentIndex = 0 }
+        function onMicrophonesChanged() {
+            const start = recordPage.finder.startSelection
+            micComboBox.currentIndex = start && start.microphone >= 0 ? start.microphone : 0
+        }
+        function onSetupChanged() { recordPage.resetSelection() }
     }
 
     // ── 卡片的標題和一句說明
@@ -87,104 +121,6 @@ Item {
             color: Theme.textMuted
             font.pixelSize: Theme.fontCaption
             wrapMode: Text.Wrap
-        }
-    }
-
-    // ── 深色的下拉選單：欄位底 field、框線 fieldBorder（錯誤時 errorOnDark）、鍵盤焦點框 focusOnDark、深色的清單
-    component DeviceSelect: ComboBox {
-        id: select
-
-        property bool invalid: false
-
-        implicitHeight: Theme.controlHeight
-        leftPadding: 14
-        rightPadding: 14 + Theme.iconS + 10
-        font.pixelSize: Theme.fontCaption
-        focusPolicy: Qt.StrongFocus
-
-        contentItem: Text {
-            text: select.displayText
-            font: select.font
-            color: select.enabled ? Theme.textPrimary : Theme.textDisabled
-            verticalAlignment: Text.AlignVCenter
-            elide: Text.ElideRight
-        }
-
-        indicator: Image {
-            x: select.width - width - 14
-            y: (select.height - height) / 2
-            width: Theme.iconS
-            height: Theme.iconS
-            sourceSize: Qt.size(Theme.iconS, Theme.iconS)
-            source: "../components/icons/chevron-down_iconNeutral.svg"
-            Accessible.ignored: true
-        }
-
-        background: Rectangle {
-            implicitWidth: 200
-            implicitHeight: Theme.controlHeight
-            radius: 12
-            color: Theme.field
-            border.width: select.invalid ? 2 : 1
-            border.color: select.invalid ? Theme.errorOnDark : Theme.fieldBorder
-
-            Rectangle {     // 鍵盤焦點框（DS-30）：2 px、往外 2 px；滑鼠點的不畫
-                visible: select.visualFocus
-                anchors.fill: parent
-                anchors.margins: -4
-                radius: parent.radius + 4
-                color: "transparent"
-                border.color: Theme.focusOnDark
-                border.width: 2
-            }
-        }
-
-        delegate: ItemDelegate {
-            id: option
-            required property int index
-            required property string modelData
-
-            width: ListView.view ? ListView.view.width : 0
-            height: 40
-            leftPadding: 10
-            highlighted: select.highlightedIndex === index
-            Accessible.name: modelData
-
-            contentItem: Text {
-                text: option.modelData
-                font: select.font
-                color: Theme.textPrimary
-                verticalAlignment: Text.AlignVCenter
-                elide: Text.ElideRight
-            }
-
-            background: Rectangle {
-                radius: 8
-                color: option.highlighted || option.down ? Theme.tile : "transparent"
-            }
-        }
-
-        popup: Popup {
-            y: select.height + 4
-            width: select.width
-            implicitHeight: Math.min(contentItem.implicitHeight + topPadding + bottomPadding, 280)
-            padding: 4
-
-            contentItem: ListView {
-                clip: true
-                implicitHeight: contentHeight
-                model: select.popup.visible ? select.delegateModel : null
-                currentIndex: select.highlightedIndex
-                boundsBehavior: Flickable.StopAtBounds
-                ScrollIndicator.vertical: ScrollIndicator {}
-            }
-
-            background: Rectangle {
-                radius: 12
-                color: Theme.card
-                border.color: Theme.fieldBorder
-                border.width: 1
-            }
         }
     }
 
@@ -383,10 +319,16 @@ Item {
                         Layout.fillWidth: true
                         Layout.bottomMargin: Theme.spaceS
                         visible: recordPage.status === "ready" && !recordPage.enoughDevices
-                        title: recordPage.cameraCount === 0 ? qsTr("No cameras found")
+                        // 一支鏡頭都沒有時，分得出是沒有權限、還沒允許，還是沒接（T41）
+                        title: recordPage.cameraCount === 0 && recordPage.cameraAccessOff ? qsTr("Camera access is off")
+                             : recordPage.cameraCount === 0 ? qsTr("No cameras found")
                              : recordPage.cameraCount === 1 ? qsTr("Only one camera found")
                              : qsTr("No microphone found")
-                        description: recordPage.cameraCount === 0 ? qsTr("Connect the customer and staff cameras, then scan again.")
+                        description: recordPage.cameraCount === 0 && recordPage.cameraAccessOff
+                                     ? qsTr("Turn on Camera for this app in System Settings > Privacy & Security > Camera, then scan again.")
+                                   : recordPage.cameraCount === 0 && recordPage.cameraAccess === "undetermined"
+                                     ? qsTr("Allow camera access when macOS asks, then scan again.")
+                                   : recordPage.cameraCount === 0 ? qsTr("Connect the customer and staff cameras, then scan again.")
                                    : recordPage.cameraCount === 1 ? qsTr("Recording needs a customer camera and a staff camera. Connect another camera, then scan again.")
                                    : qsTr("Connect a microphone, then scan again.")
                         actionText: qsTr("Scan Again")
@@ -398,6 +340,76 @@ Item {
                         Layout.fillWidth: true
                         spacing: Theme.spaceL
                         visible: recordPage.formShown
+
+                        // 存的裝置設定對不上（T41）：說明哪裡不同，確認之後才能開錄影視窗
+                        Rectangle {
+                            objectName: "setupNotice"
+                            Layout.fillWidth: true
+                            visible: recordPage.needsConfirmation
+                            implicitHeight: noticeRow.implicitHeight + 2 * Theme.spaceM
+                            radius: Theme.radiusTile
+                            color: Theme.warningTint
+                            border.color: Theme.tileBorder
+                            border.width: 1
+                            Accessible.role: Accessible.AlertMessage
+                            Accessible.name: noticeTitle.text
+                            Accessible.description: noticeText.text
+
+                            RowLayout {
+                                id: noticeRow
+                                x: Theme.spaceM
+                                y: Theme.spaceM
+                                width: parent.width - 2 * Theme.spaceM
+                                spacing: Theme.spaceM
+
+                                Image {
+                                    Layout.alignment: Qt.AlignTop
+                                    Layout.preferredWidth: Theme.iconM
+                                    Layout.preferredHeight: Theme.iconM
+                                    sourceSize: Qt.size(Theme.iconM, Theme.iconM)
+                                    source: "../components/icons/triangle-alert_warningOnDark.svg"
+                                    Accessible.ignored: true
+                                }
+
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 4
+
+                                    Text {
+                                        id: noticeTitle
+                                        text: qsTr("Check the devices")
+                                        color: Theme.textTitle
+                                        font.pixelSize: Theme.fontInput
+                                        font.weight: Font.DemiBold
+                                        Accessible.ignored: true
+                                    }
+
+                                    Text {
+                                        id: noticeText
+                                        objectName: "setupNoticeText"
+                                        Layout.fillWidth: true
+                                        text: recordPage.setupNoticeText()
+                                        color: Theme.textSecondary
+                                        font.pixelSize: Theme.fontCaption
+                                        wrapMode: Text.Wrap
+                                        Accessible.ignored: true
+                                    }
+                                }
+
+                                BusyButton {
+                                    id: confirmDevicesButton
+                                    objectName: "confirmDevicesButton"
+                                    Layout.alignment: Qt.AlignVCenter
+                                    text: qsTr("Confirm Devices")
+                                    Accessible.description: qsTr("Use the cameras and microphone chosen below for this recording.")
+                                    onActiveFocusChanged: if (activeFocus) recordPage.ensureVisible(confirmDevicesButton)
+                                    onClicked: {
+                                        recordPage.rolesConfirmed = true
+                                        cam0ComboBox.forceActiveFocus(Qt.TabFocusReason)    // 按鈕不見了，焦點留在卡片裡
+                                    }
+                                }
+                            }
+                        }
 
                         // 一排最多三張，每張至少 260 寬；窄的時候換行（設計稿的 auto-fit）
                         GridLayout {
@@ -475,7 +487,8 @@ Item {
                                 iconSource: "../components/icons/video_actionPrimaryText.svg"
                                 // 錄影中：按下去是把錄影視窗帶回最前面，不會開第二個
                                 text: recordPage.recording ? qsTr("Show Recorder") : qsTr("Open Recorder")
-                                enabled: !recordPage.sameCamera     // 選項不合法時停用，原因寫在欄位下方
+                                // 選項不合法、或存的裝置設定還沒確認時停用，原因寫在欄位下方、上面的說明
+                                enabled: !recordPage.sameCamera && !recordPage.needsConfirmation
                                 onActiveFocusChanged: if (activeFocus) recordPage.ensureVisible(openRecorderButton)
                                 onClicked: recordPage.finder.startRecording(cam0ComboBox.currentIndex,
                                                                             cam1ComboBox.currentIndex,
@@ -487,6 +500,8 @@ Item {
                                 Layout.fillWidth: true
                                 text: recordPage.recording
                                       ? qsTr("Recording is in progress in the recorder window.")
+                                      : recordPage.needsConfirmation
+                                      ? qsTr("Confirm the devices above to open the recorder.")
                                       : qsTr("The recorder opens in its own window. Recording starts when you press Start Recording there.")
                                 color: Theme.textMuted
                                 font.pixelSize: Theme.fontSmall

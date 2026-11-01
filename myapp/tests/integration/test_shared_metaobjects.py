@@ -61,7 +61,7 @@ def test_staff_home_objects_keep_the_class_metaobject(engine, services):
     objects = app_objects(home, services.tasks, services.notifier, services.ui_prefs)
     assert {"ServerHome", "DeviceFinder", "RecordingSaver", "SavesModel", "ServiceModel", "AnalysisWatcher",
             "DockAttention", "MediaModel", "ChartsModel", "AccountProfile",
-            "AccountSelfService", "ShellSession"} <= {type(obj).__name__ for obj in objects}
+            "AccountSelfService", "ShellSession", "DeviceSetup"} <= {type(obj).__name__ for obj in objects}
     assert with_dynamic_slots(objects) == {}
 
 

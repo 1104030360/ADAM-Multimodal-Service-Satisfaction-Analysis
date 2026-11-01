@@ -132,6 +132,54 @@ def test_staff_quit_dialog_has_no_warnings(engine, services, qml_warnings, monke
         recorder.close()
 
 
+def test_device_setup_in_every_state_has_no_warnings(engine, services, qml_warnings, cameras, microphone):
+    """設定頁的設備設定（T41）：預覽和音量、存的設定對不上、同一支鏡頭、打不開的鏡頭、沒有權限、裝置不夠、
+    探測中、存好的摘要，以及錄影頁的「Check the devices」。"""
+    from myapp import devices
+    from myapp.devices import CameraInfo, MicrophoneInfo
+
+    cameras.connected = (0, 1, 2)
+    cameras.frames = 10 ** 6
+    cameras.frame_interval = 0.01
+    cameras.size = (320, 240)
+    microphone.chunks = 10 ** 6
+    microphone.chunk_interval = 0.005
+    microphone.sample = 9000
+    devices.DeviceSetupStore().save(devices.saved_setup(
+        [CameraInfo(0, "Camera 0", "uid-old"), CameraInfo(1, "Camera 1", "fake-camera-1")],
+        [MicrophoneInfo(0, "MacBook 麥克風", "Core Audio")], 0, 1, 0))
+    home = server_home_init.launch(engine, STAFF_ID, services)
+    window = engine.rootObjects()[0]
+    show_page(window, "record_widget.qml")
+    wait_until(lambda: qml(window, "mainContentLoader.item.needsConfirmation"))  # 存的 0 號身分不見了
+    show_page(window, "server_setting_button.qml")
+    page = qml(window, "mainContentLoader.item")
+    section = page.findChild(QObject, "deviceSettings")
+    setup = home.deviceFinder.setup
+    qml(section, "openSetup()")
+    wait_until(lambda: setup.customerFrame != "" and setup.staffFrame != "" and setup.microphoneState == "live")
+    cameras.connected = (0, 1)  # 2 號被別的 app 拿走：Scan Again 之後列在 Not available
+    setup.rescan()
+    wait_until(lambda: setup.customerFrame != "" and qml(section, "formShown"))
+    setup.selectStaffCamera(0)  # 同一支鏡頭
+    wait_until(lambda: setup.staffPreview == "same")
+    settle()
+    cameras.access, cameras.connected = "denied", ()
+    setup.rescan()
+    wait_until(lambda: setup.cameraAccess == "denied")
+    settle()
+    cameras.access, cameras.connected = "granted", (0,)
+    setup.rescan()
+    wait_until(lambda: setup.status == "ready" and len(setup.cameras) == 1)
+    cameras.connected = (0, 1)
+    setup.rescan()
+    wait_until(lambda: setup.status == "ready" and len(setup.cameras) == 2 and setup.customerFrame != "")
+    assert setup.save()
+    settle()
+    del page, section
+    assert qml_warnings == []
+
+
 @pytest.mark.parametrize("page", ADMIN_PAGES)
 def test_admin_page_has_no_warnings(engine, services, qml_warnings, page):
     admin_home_init.launch(engine, ADMIN_ID, services)
