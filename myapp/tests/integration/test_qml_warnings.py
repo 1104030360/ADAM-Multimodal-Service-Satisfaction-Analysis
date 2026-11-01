@@ -1,11 +1,12 @@
 """打開每個畫面時，QML engine 都不該發出警告：綁定錯誤、找不到圖片、樣式不支援自訂、錨點衝突、binding loop。"""
+import threading
 import time
 from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QObject, QUrl
 
-from myapp import main
+from myapp import main, storage
 from myapp.init import admin_home_init, server_home_init
 from myapp.main import MainWindow
 from tests.integration.helpers import ADMIN_ID, STAFF_ID, qml, wait_until
@@ -81,6 +82,37 @@ def test_staff_shell_shows_every_severity_as_a_toast_without_warnings(engine, se
     assert qml(page, "listBottomMargin") == qml(host, "occupiedHeight")
     settle()
     assert qml_warnings == []
+
+
+def test_staff_quit_dialog_has_no_warnings(engine, services, qml_warnings, monkeypatch):
+    """錄影中按 Exit：停止並存檔，上傳還沒完成就跳出確認（F3，UX-29）。對話框放在側邊欄的 Exit 按鈕裡。"""
+    uploading, release = threading.Event(), threading.Event()
+
+    def stuck_upload(local_path, key, token=None, report=None):  # 測試放行之前，上傳一直沒有完成
+        uploading.set()
+        while not release.wait(0.01):
+            token.raise_if_cancelled()
+        raise ConnectionError("upload stopped by the test")
+
+    monkeypatch.setattr(storage, "upload_with_progress", stuck_upload)
+    home = server_home_init.launch(engine, STAFF_ID, services)
+    window = engine.rootObjects()[0]
+    show_page(window, "record_widget.qml")
+    wait_until(lambda: qml(window, "deviceFinder.status") == "ready")
+    finder = home.deviceFinder
+    finder.startRecording(0, 1, 0)
+    recorder = finder.recorder
+    try:
+        recorder.start_recording()
+        qml(window, "mouseArea4.clicked(null)")
+        wait_until(lambda: uploading.is_set() and qml(window.findChild(QObject, "quitDialog"), "opened"))
+        wait_for_staff_data(services)
+        settle()
+        assert qml_warnings == []
+    finally:
+        release.set()  # 上傳失敗收尾：不留下還在存的錄影（QuitGuard 才會拿掉）
+        wait_until(lambda: finder.uploadCount == 0)
+        recorder.close()
 
 
 @pytest.mark.parametrize("page", ADMIN_PAGES)

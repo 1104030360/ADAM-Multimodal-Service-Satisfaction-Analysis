@@ -9,7 +9,8 @@ import "../components"
 // - 打開這一頁才探測裝置（以前登入時就把 0～9 號鏡頭都打開一次），結果留著；「Scan Again」重新探測。
 // - 探測中、找不到足夠的裝置（空狀態）、探測失敗（區塊錯誤）各有自己的畫面。
 // - 員工鏡頭預設選第二支；兩支相同時顯示欄位錯誤，Activate 停用。
-// - Activate 打開的錄影視窗（RecordWidget）留給第三波。
+// - Activate 打開錄影視窗（QtWidgets 的 RecordWidget，F3）。同時只開一個：錄影中再按是把它帶回最前面，
+//   按鈕的字也跟著改；錄好之後的上傳在背景進行，結果在主視窗的通知（UX-08、DS-34）。
 Item {
     id: recordPage
     anchors.fill: parent
@@ -166,7 +167,8 @@ Item {
             Layout.topMargin: Theme.spaceL
             variant: "primary"
             large: true
-            text: qsTr("Activate")
+            // 錄影中：按下去是把錄影視窗帶回最前面，不會開第二個
+            text: recordPage.finder && recordPage.finder.recording ? qsTr("Show Recording Window") : qsTr("Activate")
             enabled: !recordPage.sameCamera     // 選項不合法時停用，原因寫在欄位下方
             onClicked: {
                 if (busy)

@@ -12,6 +12,11 @@ Window {
     title: "Server Home"
     visibility: "FullScreen"
 
+    // 關掉主視窗（紅色按鈕、⌘W）和按 Exit 一樣：錄影中先停止並存檔，還有錄影在存時先問（UX-29、DS-28）。
+    // ⌘Q 不會經過這裡（app 是 QApplication，結束時只問 QWidget 視窗；T20）：錄影中、存檔中時 deviceFinder 向
+    // QuitGuard 登記，攔下來之後從 deviceFinder.quitRequested 走同一條路
+    onClosing: (close) => { if (!exitButton.requestQuit()) close.accepted = false }
+
     // 動態設定寫進 Theme 單例（ENG-18）；程式結束時 context property 會先被刪掉，要先判斷是否為 null
     Binding { target: Theme; property: "motionMode"; value: uiPrefs ? uiPrefs.motionMode : 0 }
     Binding { target: Theme; property: "animationScale"; value: uiPrefs ? uiPrefs.animationScale : 1 }
@@ -610,12 +615,75 @@ Window {
                 }
             }           
 
-            // Exit Button
+            // Exit Button：結束前先問（UX-29、DS-28）。錄影中先停止並存檔（UX-09）；還有錄影在收尾、上傳或寫資料庫時
+            // 跳確認，預設是 Keep Uploading；沒有就直接結束（和以前一樣）。視窗的 onClosing、⌘Q（quitRequested）也走這裡
             Rectangle {
+                id: exitButton
+                objectName: "exitButton"
                 width: parent.width
                 height: 50
                 color: "#444444"
                 radius: 10
+
+                readonly property var finder: typeof deviceFinder !== "undefined" ? deviceFinder : null
+                property bool quitting: false
+
+                // 回傳 true 表示可以結束（onClosing 用）
+                function requestQuit() {
+                    if (quitting)
+                        return true
+                    if (finder)
+                        finder.stopRecording()
+                    if (finder && finder.uploadCount > 0) {
+                        window.raise()      // 在錄影視窗按 ⌘Q 時，對話框在主視窗上
+                        window.requestActivate()
+                        if (!quitDialog.opened)
+                            quitDialog.open()
+                        return false
+                    }
+                    quitNow()
+                    return true
+                }
+
+                function quitNow() {
+                    quitting = true
+                    if (finder)
+                        finder.allowQuit()  // 接下來的 QEvent.Quit 不再攔
+                    serverHome.clearDir()
+                    Qt.quit() // 退出應用程式
+                }
+
+                Connections {
+                    target: exitButton.finder
+                    function onQuitRequested() { exitButton.requestQuit() }
+                    function onUploadsChanged() {
+                        // 問的時候都存好（或失敗）了：沒有東西會丟，不必再問；要結束再按一次
+                        if (quitDialog.opened && exitButton.finder.uploadCount === 0)
+                            quitDialog.close()
+                    }
+                }
+
+                ConfirmDialog {
+                    id: quitDialog
+                    objectName: "quitDialog"
+                    readonly property var finder: exitButton.finder
+                    readonly property int count: finder ? finder.uploadCount : 0
+                    readonly property real total: finder ? finder.uploadTotal : 0
+                    // 「 (58.6 / 124.0 MB)」；還不知道大小（檔案還在寫）時不寫
+                    readonly property string amount: total > 0
+                        ? qsTr(" (%1 / %2 MB)").arg((Math.min(finder.uploadDone, total) / 1e6).toFixed(1))
+                                               .arg((total / 1e6).toFixed(1))
+                        : ""
+                    title: qsTr("Quit while uploading?")
+                    body: count > 1
+                        ? qsTr("%1 services are still uploading%2. If you quit now, they won't be saved.")
+                              .arg(count).arg(amount)
+                        : qsTr("%1 is still uploading%2. If you quit now, this service won't be saved.")
+                              .arg(finder ? finder.uploadServiceId : "").arg(amount)
+                    confirmText: qsTr("Quit Anyway")
+                    cancelText: qsTr("Keep Uploading")
+                    onConfirmed: exitButton.quitNow()
+                }
 
                 states: [
                     State {
@@ -694,11 +762,7 @@ Window {
                     id: mouseArea4
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        console.log("Exit clicked")
-                        serverHome.clearDir()
-                        Qt.quit() // 退出應用程式
-                    }
+                    onClicked: exitButton.requestQuit()
                 }
             }
         }

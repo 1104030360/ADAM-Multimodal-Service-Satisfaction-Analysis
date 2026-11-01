@@ -25,7 +25,7 @@ from myapp.services import AppServices
 from myapp.tasks import TaskRunner
 from myapp.ui_prefs import UiPrefs
 from myapp.watcher import POLL_KEY as WATCHER_KEY, AnalysisWatcher, DockAttention
-from .record_widget import RecordWidget
+from .record_widget import QuitGuard, RecordingSaver, RecordWidget
 from myapp import storage
 import shutil
 import cv2
@@ -328,7 +328,7 @@ def probe_microphones():
 
 
 class DeviceFinder(QObject):
-    """錄影頁的鏡頭和麥克風清單。
+    """錄影頁的鏡頭和麥克風清單，以及錄影視窗和錄好之後的存檔（F3）。
 
     - 不在建構子探測（以前登入時就把 0～9 號鏡頭都打開一次，UX-02、UX-13）：打開錄影頁才探測，結果留著；
       「Scan Again」重新探測。
@@ -336,11 +336,18 @@ class DeviceFinder(QObject):
     - 探測在 GUI 執行緒做（T18）：OpenCV 在 macOS 上還沒取得相機權限時，只有在主執行緒才能跳出授權詢問
       （cv2 的訊息：「can not spin main run loop from other thread」）。所以先把 status 設成 scanning，
       等 SCAN_DELAY_MS 讓「Looking for cameras and microphones…」畫出來，再探測。
+    - startRecording() 打開錄影視窗（同時只有一個）。停止錄影之後的上傳、寫資料庫由 RecordingSaver 在背景做，
+      屬於這裡（和外殼活得一樣久），不屬於視窗：視窗關了也會做完（UX-08、ENG-03）。
+    - 結束程式前（UX-09、UX-29）：外殼的 Exit 按鈕和 onClosing 呼叫 stopRecording()，再看 uploadCount 決定要不要問。
+      ⌘Q 不會經過 onClosing（T20），所以錄影中、存檔中時用 QuitGuard 在 app 上攔 QEvent.Quit，改發 quitRequested。
     """
 
     camerasChanged = Signal()
     microphonesChanged = Signal()
     statusChanged = Signal()
+    recordingChanged = Signal()  # 錄影視窗開始或停止錄影
+    uploadsChanged = Signal()  # 背景存檔的筆數或 bytes 變了
+    quitRequested = Signal()  # ⌘Q（或其他 QEvent.Quit）被擋下來了：外殼要問使用者
 
     SCAN_DELAY_MS = 50
 
@@ -353,6 +360,9 @@ class DeviceFinder(QObject):
         self._microphone_ids = []  # 清單第 n 項對應的 PyAudio 裝置編號
         self._status = "idle"
         self._error_technical = ""
+        self._recorder = None  # 開著的錄影視窗
+        self._saver = None  # 第一次錄影時才建立（要有 AppServices）
+        self._quit_allowed = False
 
     @Property(list, notify=camerasChanged)
     def cameras(self):
@@ -407,13 +417,112 @@ class DeviceFinder(QObject):
             self._status = status
             self.statusChanged.emit()
 
+    # ------------------------------------------------------------ 錄影視窗與存檔（F3）
+
+    @property
+    def saver(self):
+        if self._saver is None:
+            self._saver = RecordingSaver(self.server_home.services, on_saved=self._saved, parent=self)
+            self._saver.inFlightChanged.connect(self._uploads_changed)
+        return self._saver
+
+    @property
+    def recorder(self):
+        return self._recorder
+
     @Slot(int, int, int)
     def startRecording(self, cam0_index, cam1_index, mic_index):
+        """打開錄影視窗。已經開著的：錄影中就帶到最前面，不開第二個；沒在錄就換成這次選的裝置。"""
+        recorder = self._recorder
+        if recorder is not None and recorder.recording:
+            recorder.showNormal()
+            recorder.raise_()
+            recorder.activateWindow()
+            return
+        if recorder is not None:
+            recorder.close()
         account_id = self.server_home.getID()  # Retrieve the account_id dynamically
-        # QML 傳的是下拉選單的位置，換成真正的裝置編號
+        # QML 傳的是下拉選單的位置，換成真正的裝置編號；名稱顯示在狀態列（DS-34）
         widget = RecordWidget(self._camera_ids[cam0_index], self._camera_ids[cam1_index],
-                              self._microphone_ids[mic_index], account_id)
+                              self._microphone_ids[mic_index], account_id, saver=self.saver,
+                              camera_names=(self._cameras[cam0_index], self._cameras[cam1_index]),
+                              microphone_name=self._microphones[mic_index])
+        widget.recordingChanged.connect(self._recording_changed)
+        widget.closed.connect(lambda: self._forget(widget))
+        self._recorder = widget
         widget.show()
+
+    def _forget(self, widget):
+        if self._recorder is widget:
+            self._recorder = None
+            widget.deleteLater()
+            self._recording_changed()
+
+    @Property(bool, notify=recordingChanged)
+    def recording(self):
+        return self._recorder is not None and self._recorder.recording
+
+    def _in_flight(self):
+        return self._saver.in_flight() if self._saver is not None else []
+
+    @Property(int, notify=uploadsChanged)
+    def uploadCount(self):
+        """還在收尾、上傳或寫資料庫的錄影數。"""
+        return len(self._in_flight())
+
+    @Property(str, notify=uploadsChanged)
+    def uploadServiceId(self):
+        jobs = self._in_flight()
+        return jobs[0].service_id if jobs else ""
+
+    @Property(float, notify=uploadsChanged)
+    def uploadDone(self):
+        return float(sum(job.done for job in self._in_flight()))
+
+    @Property(float, notify=uploadsChanged)
+    def uploadTotal(self):
+        """還在存的錄影加起來的 bytes；有一筆還不知道大小（檔案還在寫）時是 0。"""
+        jobs = self._in_flight()
+        return float(sum(job.total for job in jobs)) if all(job.total > 0 for job in jobs) else 0.0
+
+    @Slot(result=bool)
+    def stopRecording(self):
+        """結束程式前：錄影中的先停止並存檔（UX-09）。回傳是否停止了一段錄影。"""
+        if self._recorder is not None and self._recorder.recording:
+            self._recorder.stop_recording()
+            return True
+        return False
+
+    @Slot()
+    def allowQuit(self):
+        """使用者選了 Quit Anyway：之後的 QEvent.Quit 不再攔。"""
+        self._quit_allowed = True
+        self._update_quit_guard()
+
+    def _should_block_quit(self):
+        return not self._quit_allowed and (self.recording or bool(self._in_flight()))
+
+    def quit_blocked(self):
+        """QuitGuard 擋下 ⌘Q 之後呼叫：錄影中的先停止並存檔，再請外殼問（server_home.qml 的 Exit 按鈕）。"""
+        self.stopRecording()
+        self.quitRequested.emit()
+
+    def _update_quit_guard(self):
+        QuitGuard.instance().set_blocking(self, self._should_block_quit())
+
+    def _recording_changed(self, recording=None):
+        self.recordingChanged.emit()
+        self._update_quit_guard()
+
+    def _uploads_changed(self):
+        self.uploadsChanged.emit()
+        self._update_quit_guard()
+
+    def _saved(self, service_id):
+        """寫好資料庫了：分析頁的 Not Analyzed 清單重新整理（CONTRACTS §4 的跨流程呼叫）。"""
+        model = getattr(self.server_home, "serviceModel", None)
+        if model is not None:
+            model.refresh()
 
 
 # ---------------------------------------------------------------- 首頁分數（UX-05、UX-06、DS-33）
