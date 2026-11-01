@@ -6,25 +6,19 @@ GUI 執行緒上不碰資料庫。結果放進屬性（Property＋notify），�
 - 每個區塊（分數、排名、趨勢、搜尋、帳號資料）都有四種狀態：loading、empty、error、ready（DS-25～27）。
   已經有資料時重新載入，舊資料留著，refreshing 為 true（畫面變淡，DS-33）。
 - 錯誤不再只 print：區塊原地顯示錯誤和重試；新增帳號的結果一定有 toast 或欄位錯誤（UX-33、UX-38）。
-- 明細頁（MediaService）、報表（PDFHandler）還在 GUI 執行緒，留給第三波。
+- 明細頁的下載、報表的 PDF 也在背景（第三波 F3）：和服務人員端共用 myapp/media.py。
 """
 import calendar
 import logging
-import os
 import re
-import shutil
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-import fitz
-from mysql.connector import Error
 from PySide6.QtCharts import QXYSeries  # import 之後，QML 傳進來的 LineSeries／ScatterSeries 才會是 QXYSeries
 from PySide6.QtCore import Property, QObject, QPointF, Qt, QUrl, Signal, Slot
-from PySide6.QtGui import QImage, QStandardItem, QStandardItemModel
+from PySide6.QtGui import QStandardItem, QStandardItemModel
 
-from myapp import storage
-from myapp.database import DatabaseConnector
 from myapp.db_lane import DbLane
 from myapp.notifications import Notifier, user_message
 from myapp.passwords import hash_password
@@ -35,278 +29,9 @@ from myapp.ui_prefs import UiPrefs
 logger = logging.getLogger(__name__)
 
 
-class PDFHandler(QObject):
-    pdfPageChanged = Signal(str)  # 用于发射图片路径的信号
-    currentPageChanged = Signal(int, int)  # 用于发射当前页和总页数的信号
-
-    def __init__(self):
-        super().__init__()
-        self.doc = None
-        self.current_page = 0
-        self.total_pages = 0
-        # 获取 myapp/src/myapp 目录的绝对路径
-        self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 回到第二个 myapp 目录
-
-    @Slot(str)
-    def open_pdf(self, filename):
-        try:
-            # 使用基于 myapp/src/myapp 目录的相对路径指向 pdf 文件夹
-            filepath = os.path.join(self.base_dir, "pdf", filename)  # 在 myapp/src/myapp 目录下的 pdf 文件夹
-            
-            # 打印文件路径以确保路径正确
-            print(f"Looking for PDF at: {filepath}")
-            
-            # 检查文件是否存在
-            if not os.path.exists(filepath):
-                print(f"Error: File '{filepath}' not found.")
-                return
-            
-            # 打开 PDF 文档
-            self.doc = fitz.open(filepath)
-            self.total_pages = len(self.doc)  # 获取总页数
-            self.current_page = 0  # 重置为第一页
-            
-            if self.total_pages > 0:
-                self.render_page()  # 渲染第一页
-                self.currentPageChanged.emit(self.current_page + 1, self.total_pages)  # 发射当前页码和总页数
-            else:
-                print(f"Error: PDF '{filename}' is empty or cannot be opened.")
-        except Exception as e:
-            print(f"Error opening PDF: {e}")
-
-    def render_page(self):
-        if self.doc is not None:
-            try:
-                # 渲染当前页
-                page = self.doc.load_page(self.current_page)
-                pix = page.get_pixmap()
-
-                # 将页面保存为图像，并保存到 pdf 目录
-                image_path = os.path.join(self.base_dir, "pdf", f"page_{self.current_page + 1}.png")
-                image = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
-                image.save(image_path)
-                
-                # 发射图片路径信号，通知 QML 更新图片
-                self.pdfPageChanged.emit(image_path)
-            except Exception as e:
-                print(f"Error rendering page: {e}")
-
-    def render_all_pages(self):
-        if self.doc is not None:
-            try:
-                # 遍历所有页面并渲染每一页
-                for page_number in range(self.total_pages):
-                    page = self.doc.load_page(page_number)  # 加载当前页面
-                    pix = page.get_pixmap()
-
-                    # 为每一页创建不同的图像文件名
-                    image_path = os.path.join(self.base_dir, "pdf", f"page_{page_number + 1}.png")
-                    image = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
-                    image.save(image_path)
-                    
-                    # 打印已保存的图片路径
-                    print(f"Saved image for page {page_number + 1} at: {image_path}")
-                    
-                    # 发射图片路径信号，通知 QML 更新图片
-                    self.pdfPageChanged.emit(image_path)
-            except Exception as e:
-                print(f"Error rendering pages: {e}")
-
-    @Slot()
-    def next_page(self):
-        if self.current_page < self.total_pages - 1:
-            self.current_page += 1
-            self.render_page()
-            self.currentPageChanged.emit(self.current_page + 1, self.total_pages)
-
-    @Slot()
-    def previous_page(self):
-        if self.current_page > 0:
-            self.current_page -= 1
-            self.render_page()
-            self.currentPageChanged.emit(self.current_page + 1, self.total_pages)
-
-
-class ChartsModel(QObject):
-    chartsSourceChanged = Signal()
-
-    def __init__(self):
-        super().__init__()
-        self._charts_sources = []
-
-    @Property(list, notify=chartsSourceChanged)
-    def chartsSources(self):
-        return self._charts_sources
-
-    @chartsSources.setter
-    def chartsSources(self, sources):
-        if self._charts_sources != sources:
-            self._charts_sources = sources
-            self.chartsSourceChanged.emit()
-
-
-class MediaModel(QObject):
-    cam0SourceChanged = Signal()
-    cam1SourceChanged = Signal()
-    audioSourceChanged = Signal()
-
-    def __init__(self):
-        super().__init__()
-        self._cam0_source = ""
-        self._cam1_source = ""
-        self._audio_source = ""
-
-    @Property(str, notify=cam0SourceChanged)
-    def cam0Source(self):
-        return self._cam0_source
-
-    @cam0Source.setter
-    def cam0Source(self, source):
-        if self._cam0_source != source:
-            self._cam0_source = source
-            self.cam0SourceChanged.emit()
-
-    @Property(str, notify=cam1SourceChanged)
-    def cam1Source(self):
-        return self._cam1_source
-
-    @cam1Source.setter
-    def cam1Source(self, source):
-        if self._cam1_source != source:
-            self._cam1_source = source
-            self.cam1SourceChanged.emit()
-
-    @Property(str, notify=audioSourceChanged)
-    def audioSource(self):
-        return self._audio_source
-
-    @audioSource.setter
-    def audioSource(self, source):
-        if self._audio_source != source:
-            self._audio_source = source
-            self.audioSourceChanged.emit()
-
-
-class MediaService:
-    def __init__(self, service_id, db_connector):
-        self.service_id = service_id
-        self.local_media_dir = os.getenv('LOCAL_MEDIA_DIR', os.path.join(os.path.dirname(__file__), "media"))
-        self.local_charts_dir = os.getenv('LOCAL_CHARTS_DIR', os.path.join(os.path.dirname(__file__), "charts"))
-        self.db_connector = db_connector
-
-        if not os.path.exists(self.local_media_dir):
-            os.makedirs(self.local_media_dir)
-        if not os.path.exists(self.local_charts_dir):
-            os.makedirs(self.local_charts_dir)
-
-    def get_video_urls_from_db(self):
-        try:
-            conn = self.db_connector.connection
-            cursor = conn.cursor()
-            # 每個鏡頭取最新的一列；LIMIT 1 也確保結果都讀完了，才能執行下一個查詢
-            query = ("SELECT video_url FROM tbl_video_storage WHERE service_id = %s AND video_name LIKE %s "
-                     "ORDER BY video_id DESC LIMIT 1")
-
-            cursor.execute(query, (self.service_id, '%cam0%'))
-            row = cursor.fetchone()
-            cam0_url = row[0] if row else None
-
-            cursor.execute(query, (self.service_id, '%cam1%'))
-            row = cursor.fetchone()
-            cam1_url = row[0] if row else None
-
-            return cam0_url, cam1_url
-        except Error as e:
-            print(f"Error querying MySQL: {e}")
-            return None, None
-        finally:
-            if conn.is_connected():
-                cursor.close()
-
-    def get_audio_url_from_db(self):
-        try:
-            conn = self.db_connector.connection
-            cursor = conn.cursor()
-            query = "SELECT audio_url FROM tbl_audio_storage WHERE service_id = %s ORDER BY audio_id DESC LIMIT 1"
-            cursor.execute(query, (self.service_id,))
-            row = cursor.fetchone()
-            return row[0] if row else None
-        except Error as e:
-            print(f"Error querying MySQL: {e}")
-            return None
-        finally:
-            if conn.is_connected():
-                cursor.close()
-
-    def get_charts_urls_from_db(self):
-        try:
-            conn = self.db_connector.connection
-            cursor = conn.cursor()
-            query = "SELECT charts_url FROM tbl_charts_storage WHERE service_id = %s ORDER BY charts_id"
-            cursor.execute(query, (self.service_id,))
-            result = cursor.fetchall()
-            return [row[0] for row in result] if result else []
-        except Error as e:
-            print(f"Error querying MySQL: {e}")
-            return []
-        finally:
-            if conn.is_connected():
-                cursor.close()
-
-    def download_media(self, media_url, media_type):
-        media_name = os.path.basename(media_url)
-        folder = 'audio/' if media_type == 'audio' else 'video/'
-        local_file_path = os.path.join(self.local_media_dir, media_name)
-
-        try:
-            storage.download(f'{folder}{media_name}', local_file_path)
-            print(f"Downloaded {media_name} to {local_file_path}")
-            return local_file_path
-        except Exception as e:
-            print(f"Error downloading media from S3: {e}")
-            return None
-
-    def download_chart(self, chart_url):
-        chart_name = os.path.basename(chart_url)
-        local_file_path = os.path.join(self.local_charts_dir, chart_name)
-
-        try:
-            storage.download(f'charts/{chart_name}', local_file_path)
-            print(f"Downloaded {chart_name} to {local_file_path}")
-            return local_file_path
-        except Exception as e:
-            print(f"Error downloading chart from S3: {e}")
-            return None
-
-    def run(self, media_model, charts_model):
-        # 先清空：查不到資料時，畫面不能沿用上一筆服務的影片和圖表
-        media_model.cam0Source = ""
-        media_model.cam1Source = ""
-        media_model.audioSource = ""
-        charts_model.chartsSources = []
-
-        cam0_url, cam1_url = self.get_video_urls_from_db()
-
-        if cam0_url:
-            cam0_path = self.download_media(cam0_url, 'video')
-            media_model.cam0Source = QUrl.fromLocalFile(cam0_path).toString() if cam0_path else ""
-
-        if cam1_url:
-            cam1_path = self.download_media(cam1_url, 'video')
-            media_model.cam1Source = QUrl.fromLocalFile(cam1_path).toString() if cam1_path else ""
-
-        audio_url = self.get_audio_url_from_db()
-        if audio_url:
-            audio_path = self.download_media(audio_url, 'audio')
-            media_model.audioSource = QUrl.fromLocalFile(audio_path).toString() if audio_path else ""
-
-        downloaded_paths = []
-        for chart_url in self.get_charts_urls_from_db():
-            chart_path = self.download_chart(chart_url)
-            if chart_path:
-                downloaded_paths.append(QUrl.fromLocalFile(chart_path).toString())
-        charts_model.chartsSources = downloaded_paths
-
+# ---------------------------------------------------------------- 服務明細、報表（前端重建 F3）
+# 兩端共用 myapp/media.py（UX-46）。名稱留在這裡：AdminHome、launch() 照舊建立和註冊 ChartsModel、MediaModel、PDFHandler
+from myapp.media import ChartsModel, MediaModel, MediaService, PDFHandler, clear_cache  # noqa: E402,F401
 
 
 # ---------------------------------------------------------------- 區塊的載入狀態（ENG-08、DS-25～27）
@@ -1258,32 +983,15 @@ class AdminHome(QObject):
         return self.account_id
 
     @Slot(str)
-    def load_service_media(self, service_id):
-        # 第三波才搬到背景：這裡還是在 GUI 執行緒查資料庫、下載
-        if self._db_connector is None:
-            self._db_connector = DatabaseConnector()
-        media_service = MediaService(service_id, self._db_connector)
-        media_service.run(self.mediaModel, self.chartsModel)
+    @Slot(str, str)
+    def load_service_media(self, service_id, start_time=""):
+        """Details：先換頁，檔案在背景查詢（db lane）、下載（io lane）；GUI 執行緒不碰網路（UX-22、ENG-04）。"""
+        self.mediaModel.open(service_id, start_time, self.services, self.chartsModel)
 
     @Slot()
     def clearDir(self):
-        # 獲取當前檔案所在的路徑
-        current_dir = os.path.dirname(__file__)
-
-        # 和 MediaService 用同一組資料夾：有設定 LOCAL_MEDIA_DIR／LOCAL_CHARTS_DIR 時清那裡
-        media_dir = os.getenv('LOCAL_MEDIA_DIR', os.path.join(current_dir, 'media'))
-        charts_dir = os.getenv('LOCAL_CHARTS_DIR', os.path.join(current_dir, 'charts'))
-
-        # 清除 media 資料夾的內容
-        if os.path.exists(media_dir):
-            shutil.rmtree(media_dir)
-            os.makedirs(media_dir)
-            print(f"Cleared and recreated {media_dir}")
-        # 清除 charts 資料夾的內容
-        if os.path.exists(charts_dir):
-            shutil.rmtree(charts_dir)
-            os.makedirs(charts_dir)
-            print(f"Cleared and recreated {charts_dir}")
+        """Quit：取消還在下載的檔案，清空影片、圖表、報表頁面的快取（和 MediaModel 用同一組資料夾）。"""
+        clear_cache(self.mediaModel)
 
     def close(self, owns_services=False):
         """主畫面關掉時：關掉明細頁用過的舊連線；services 是 launch() 自己建的，就一起收掉。"""

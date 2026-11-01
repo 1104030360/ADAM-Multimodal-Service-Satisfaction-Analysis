@@ -9,7 +9,7 @@ import "../components"
 // - 日期格式不對：欄位下方顯示錯誤，不送出，焦點移到那一欄
 // - 查不到：空狀態寫出查了哪一段期間；查詢失敗：區塊錯誤＋Retry
 // - 換頁回來時，欄位是上一次送出的條件，和下面的結果對得起來
-// - Details 照舊：先在 GUI 執行緒下載影音再換頁（第三波改成先換頁、在背景下載）
+// - Details 先換頁，影音和圖表在明細頁的背景下載（UX-22、ENG-04）：這裡不碰網路
 Item {
     id: searchPage
     anchors.fill: parent
@@ -265,7 +265,8 @@ Item {
                                 onClicked: {
                                     if (busy)
                                         return
-                                    serverHome.load_service_media(resultRow.service_id)
+                                    // 只改屬性、送出背景工作，馬上換頁；頁首的 ID 和時間直接用這一列的
+                                    serverHome.load_service_media(resultRow.service_id, resultRow.start_datetime)
                                     mainContentLoader.source = "../../qml/pages/server_service_detail_page.qml"
                                 }
                             }

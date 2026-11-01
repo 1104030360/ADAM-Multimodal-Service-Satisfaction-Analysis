@@ -1,41 +1,67 @@
-"""側邊欄「Exit」呼叫的 clearDir()：清掉下載的影片與圖表快取（兩端各一份）。"""
+"""側邊欄「Quit」呼叫的 clearDir()：先取消還在下載的檔案，再清掉影片、圖表、報表頁面的快取（兩端共用 myapp/media.py）。"""
 import pytest
 
+from myapp import media
+from myapp.db_lane import DbLane
 from myapp.init import admin_home_init, server_home_init
+from myapp.notifications import Notifier
+from myapp.services import AppServices
+from myapp.tasks import TaskRunner
+from myapp.ui_prefs import UiPrefs
+from tests.integration.helpers import ADMIN_ID, STAFF_ID
 
-HOMES = pytest.mark.parametrize(
-    "module, home", [(server_home_init, "ServerHome"), (admin_home_init, "AdminHome")], ids=["staff", "admin"])
+
+@pytest.fixture
+def services():
+    """建立主畫面需要的背景服務；不連資料庫（DbLane 第一次用到才連）。"""
+    services = AppServices(TaskRunner(), Notifier(), DbLane(), UiPrefs())
+    yield services
+    services.tasks.shutdown()
+
+
+@pytest.fixture(params=["staff", "admin"])
+def home(request, services):
+    if request.param == "staff":
+        return server_home_init.ServerHome(STAFF_ID, services)
+    return admin_home_init.AdminHome(ADMIN_ID, services)
 
 
 def fill(folder):
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "old.png").write_bytes(b"cached")
+    (folder / "half.avi.0123.download.part").write_bytes(b"half")  # 下載到一半的暫存檔也要清掉
 
 
-def clear_dir(module, home):
-    # clearDir 沒有用到 self，所以不必建立整個 ServerHome／AdminHome（那需要資料庫）
-    getattr(module, home).clearDir(None)
-
-
-@HOMES
-def test_exit_empties_media_and_chart_cache(module, home, tmp_path, monkeypatch):
-    monkeypatch.delenv("LOCAL_MEDIA_DIR")  # 沒有另外設定時，快取在模組旁邊的 media/、charts/
+def test_quit_empties_the_caches_next_to_the_module_by_default(home, tmp_path, monkeypatch):
+    monkeypatch.delenv("LOCAL_MEDIA_DIR")  # 沒有另外設定時，快取在 init/ 底下的 media/、charts/、reports/
     monkeypatch.delenv("LOCAL_CHARTS_DIR")
-    # clearDir 用模組檔案的位置找資料夾；指到暫存資料夾，才不會刪到真的快取
-    monkeypatch.setattr(module, "__file__", str(tmp_path / "init" / "module.py"))
-    fill(tmp_path / "init" / "media")
-    fill(tmp_path / "init" / "charts")
-    clear_dir(module, home)
-    assert list((tmp_path / "init" / "media").iterdir()) == []
-    assert list((tmp_path / "init" / "charts").iterdir()) == []
+    monkeypatch.setattr(media, "CACHE_ROOT", str(tmp_path / "init"))  # 不能刪到真的快取
+    for name in ("media", "charts", "reports"):
+        fill(tmp_path / "init" / name)
+    home.clearDir()
+    for name in ("media", "charts", "reports"):
+        assert list((tmp_path / "init" / name).iterdir()) == []  # 資料夾留著，裡面清空
 
 
-@HOMES
-def test_exit_empties_cache_dirs_set_in_env(module, home, tmp_path, monkeypatch):
-    # 萬一 clearDir 還是清模組旁邊的資料夾，也只會清到暫存資料夾
-    monkeypatch.setattr(module, "__file__", str(tmp_path / "init" / "module.py"))
-    fill(tmp_path / "media")  # conftest 把 LOCAL_MEDIA_DIR、LOCAL_CHARTS_DIR 設成這兩個資料夾
-    fill(tmp_path / "charts")
-    clear_dir(module, home)
-    assert list((tmp_path / "media").iterdir()) == []
-    assert list((tmp_path / "charts").iterdir()) == []
+def test_quit_empties_the_cache_dirs_set_in_env(home, tmp_path):
+    # conftest 把 LOCAL_MEDIA_DIR、LOCAL_CHARTS_DIR 設成這兩個資料夾；報表頁面圖和影片放在同一層
+    for name in ("media", "charts", "reports"):
+        fill(tmp_path / name)
+    home.clearDir()
+    for name in ("media", "charts", "reports"):
+        assert list((tmp_path / name).iterdir()) == []
+
+
+def test_quit_does_not_create_cache_dirs_that_were_never_used(home, tmp_path):
+    home.clearDir()
+    assert not (tmp_path / "media").exists() and not (tmp_path / "reports").exists()
+
+
+def test_quit_cancels_downloads_before_clearing(home, tmp_path, monkeypatch):
+    order = []
+    monkeypatch.setattr(home.mediaModel, "close", lambda: order.append("cancel downloads"))
+    real_rmtree = media.shutil.rmtree
+    monkeypatch.setattr(media.shutil, "rmtree", lambda path, **kwargs: order.append("clear") or real_rmtree(path, **kwargs))
+    fill(tmp_path / "media")
+    home.clearDir()
+    assert order == ["cancel downloads", "clear"]  # 下載還在寫檔時不清，免得清到一半又冒出新檔案

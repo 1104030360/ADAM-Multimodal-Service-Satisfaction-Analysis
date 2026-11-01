@@ -9,7 +9,7 @@ import "../components"
 // - 日期格式不對：欄位下方顯示錯誤，不送出。
 // - 搜尋中：按鈕忙碌（Searching…）；已經有結果時舊結果留著、變淡。新的搜尋取代還沒回來的舊搜尋。
 // - 沒有結果是空狀態，失敗是區塊錯誤＋Retry，兩者分開（UX-38）。
-// - Details 還是先下載完才換頁（第三波才改）。
+// - Details 先換頁，影音和圖表在明細頁的背景下載（UX-22、ENG-04）：這裡不碰網路。
 Item {
     id: searchPage
     anchors.fill: parent
@@ -278,11 +278,13 @@ Item {
                                     verticalAlignment: Text.AlignVCenter
                                 }
 
-                                Button {
-                                    text: "Details"
-                                    width: parent.width * 0.25
+                                BusyButton {
+                                    objectName: "detailsButton"
+                                    text: qsTr("Details")
+                                    Accessible.name: text + ", " + service_id
                                     onClicked: {
-                                        adminHome.load_service_media(service_id)
+                                        // 只改屬性、送出背景工作，馬上換頁；頁首的 ID 和時間直接用這一列的
+                                        adminHome.load_service_media(service_id, start_datetime)
                                         mainContentLoader.source = "../../qml/pages/admin_service_detail_page.qml"
                                     }
                                 }

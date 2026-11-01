@@ -90,3 +90,47 @@ def test_admin_page_has_no_warnings(engine, services, qml_warnings, page):
     show_page(home, page)
     settle()
     assert qml_warnings == []
+
+
+@pytest.mark.parametrize("side", ["staff", "admin"])
+def test_service_detail_and_reports_with_data_have_no_warnings(engine, services, db, s3, qml_warnings, side, tmp_path):
+    """明細頁的每一種狀態（好了、失敗、沒有這個檔案、圖表警告列）和打開 PDF 的報表頁都畫出來，零警告（C2）。"""
+    import fitz
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    from PySide6.QtGui import QColor, QImage
+
+    sid = "S20261030120000"
+    db.add_service(sid, "2026-10-30 12:00:00")
+    for key in (f"video/{sid}_cam0.avi", f"audio/{sid}_audio.wav", f"charts/{sid}_a.png", f"charts/{sid}_b.png"):
+        db.add_media(sid, key.split("/")[0], f"s3://adam-test/{key}")
+    image, png = QImage(16, 12, QImage.Format.Format_RGB32), QByteArray()
+    image.fill(QColor("#2E7D32"))
+    buffer = QBuffer(png)
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    image.save(buffer, "PNG")
+    s3.put_object(Bucket="adam-test", Key=f"charts/{sid}_a.png", Body=bytes(png))  # 其他的不在 S3：失敗的狀態
+    s3.put_object(Bucket="adam-test", Key=f"audio/{sid}_audio.wav", Body=b"not really audio")
+    reports = tmp_path / "report-source"
+    reports.mkdir()
+    document = fitz.Document()
+    document.new_page()
+    document.save(reports / f"{sid}.pdf")
+
+    module = server_home_init if side == "staff" else admin_home_init
+    home = module.launch(engine, STAFF_ID if side == "staff" else ADMIN_ID, services)
+    window = engine.rootObjects()[-1]
+    home.load_service_media(sid, "2026-10-30 12:00:00")
+    show_page(window, f"{'server' if side == 'staff' else 'admin'}_service_detail_page.qml")
+    wait_until(lambda: home.mediaModel.state == "ready" and not home.mediaModel.pending
+               and home.chartsModel.state == "ready")
+    settle()
+    page = qml(window, "mainContentLoader.item")  # 留著參照，子物件的 wrapper 才不會失效（T17）
+    page.findChild(QObject, "tabBar").setProperty("currentIndex", 1)  # 圖表分頁：警告列、一張好的圖表
+    settle()
+    home.pdfmodel.reports_dir = str(reports)
+    show_page(window, f"{'server' if side == 'staff' else 'admin'}_reports_page.qml")
+    assert home.pdfmodel.open(f"{sid}.pdf", 600)
+    wait_until(lambda: home.pdfmodel.viewState == "ready")
+    settle()
+    assert qml_warnings == []
+    home.pdfmodel._tasks().shutdown()  # 沒有 services 的 PDFHandler 自己的 pdf lane
