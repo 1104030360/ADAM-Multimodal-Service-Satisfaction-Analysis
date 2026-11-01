@@ -6,7 +6,8 @@ import QtQuick.Controls.Basic
 // 確認對話框（DS-28）：只用在會丟資料的時候，例如上傳中要離開。
 // - title 用問句，body 說後果；兩個按鈕都用動詞，不用 OK、Cancel。
 // - 安全的選項（cancelText）是預設：實心、放右邊、開啟時有焦點。Esc 和 Enter 都等於安全的選項。
-// - 危險的選項（confirmText）用紅字紅框。
+// - 危險的選項（confirmText）用紅字紅框。沒有東西會丟的確認（N1 的「Log out?」「Quit ADAM?」）用
+//   confirmVariant: "secondary"，一般的次要按鈕；安全的選項一樣是預設。
 // - Dialog 自己就是 Accessible.Dialog，名稱是 title；關閉後焦點回到原本的控制項（Qt 會還原）。
 Dialog {
     id: root
@@ -14,6 +15,7 @@ Dialog {
     property string body: ""
     property string confirmText: ""     // 危險的選項，例如 "Quit Anyway"
     property string cancelText: ""      // 安全的選項，例如 "Keep Uploading"
+    property string confirmVariant: "danger"    // 確認按鈕的樣子（BusyButton 的 variant）：danger 或 secondary
 
     signal confirmed()
     signal cancelled()
@@ -96,7 +98,7 @@ Dialog {
 
                 BusyButton {
                     objectName: "confirmButton"
-                    variant: "danger"
+                    variant: root.confirmVariant
                     text: root.confirmText
                     onClicked: root.accept()
                 }

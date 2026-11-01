@@ -4,7 +4,8 @@ moto 的 S3、測試用的 MySQL。鏡頭和麥克風是假的。
 - 停止之後在背景上傳（io lane，upload:<sid>）、寫資料庫（db lane，record:save:<sid>）；GUI 執行緒 0 個往返
 - 主視窗的通知用同一個 key 就地更新：進度 → Saved（Analyze）或 wasn't saved（Retry）（DS-21、DS-52）
 - 失敗時檔案留著，Retry 之後存好（UX-10）
-- 上傳中按 Quit、關掉主視窗、⌘Q 都先問（UX-29、DS-28）；錄影中關掉錄影視窗會停止並存檔（UX-09）
+- 上傳中按 Quit、關掉主視窗、⌘Q 都先問上傳的警告（UX-29、DS-28）；沒有在存時問「Quit ADAM?」（N1，
+  Log Out 的整段在 test_log_out.py）；錄影中關掉錄影視窗會停止並存檔（UX-09）
 - 沒存完的（失敗、或存到一半結束 app）重開之後同一個帳號登入還有 Retry；檔案不見了就說明存不了（T26）
 - 錄影頁的 Saving 清單（deviceFinder.saves）：通知關掉之後還看得到，Retry、Analyze 和通知上的一樣（UD9、T29）
 """
@@ -391,9 +392,11 @@ def test_quit_while_uploading_asks_first_from_exit_close_and_cmd_q(engine, staff
     wait_until(lambda: qml(dialog, "opened"))
     assert quits == []
 
+    assert not qml(window.findChild(QObject, "quitConfirmDialog"), "visible")  # 外殼也攔了這次 ⌘Q：只開一個對話框
     qml(confirm, "clicked()")  # Quit Anyway
     wait_until(lambda: quits == [True])
     assert not QuitGuard.instance().blocking(finder)  # 接下來的 Quit 不再攔
+    assert not QuitGuard.instance().blocking(home.session)
     # 結束時 main.py 的 tasks.shutdown() 取消上傳：這一筆沒有存進資料庫，檔案留在這台電腦上
     services.tasks.cancel(f"upload:{sid}")
     gate.release()
@@ -402,12 +405,58 @@ def test_quit_while_uploading_asks_first_from_exit_close_and_cmd_q(engine, staff
     assert all(os.path.exists(path) for path in recording.files)
 
 
-def test_quit_without_uploads_quits_at_once(engine, staff, services, db, no_network_on_gui_thread):
+def test_log_out_while_uploading_asks_with_the_upload_warning(engine, staff, services, db, gate,
+                                                              no_network_on_gui_thread):
+    """上傳中按 Log Out（N1）：和 Quit 同一個上傳的警告，不是「Log out?」，不疊兩層。Keep Uploading 什麼都不變；
+    Log Out Anyway 取消上傳，檔案和本機的紀錄留著，同一個帳號下次登入時可以 Retry（T26）。"""
+    home, window, finder = staff
+    recorder = finder.recorder
+    recording = record(recorder, started=lambda sid: gate.hold(f"video/{sid}_cam1.avi"))
+    sid = recording.service_id
+    job = job_of(finder, recording)
+    wait_until(lambda: job.state == UPLOADING and job.done == job.sizes[0])
+    dialog = quit_dialog(window)
+    cancel, confirm = dialog.findChild(QObject, "cancelButton"), dialog.findChild(QObject, "confirmButton")
+
+    qml(window, "logoutButton.click()")
+    wait_until(lambda: qml(dialog, "opened"))
+    assert not qml(window.findChild(QObject, "logoutDialog"), "visible")
+    assert dialog.property("title") == "Log out while uploading?"
+    amount = f"{job.done / 1e6:.1f} / {job.total / 1e6:.1f} MB"
+    assert dialog.property("body") == (
+        f"{sid} is still uploading ({amount}). If you log out now, this service won't be saved.")
+    assert (cancel.property("text"), confirm.property("text")) == ("Keep Uploading", "Log Out Anyway")
+    wait_until(cancel.hasActiveFocus)  # 預設是安全的選項
+    qml(cancel, "clicked()")
+    wait_until(lambda: not qml(dialog, "visible"))
+    assert job.state == UPLOADING and not home.session.ended and window.isVisible()
+
+    qml(window, "logoutButton.click()")
+    wait_until(lambda: qml(dialog, "opened"))
+    qml(confirm, "clicked()")  # Log Out Anyway
+    assert home.session.ended and not window.isVisible()
+    assert finder.recorder is None  # 錄影視窗也關了
+    wait_until(lambda: not services.tasks.isBusy(f"upload:{sid}"))  # 上傳取消了
+    assert db.rows("SELECT COUNT(*) FROM tbl_service") == [(0,)]
+    assert all(os.path.exists(path) for path in recording.files)
+    assert [pending.service_id for pending in PendingSaveStore().load(STAFF_ID)] == [sid]  # 下次登入有 Retry
+    assert not QuitGuard.instance().blocking(finder) and not QuitGuard.instance().blocking(home.session)
+    assert toasts(services.notifier) == []  # 這個帳號的通知不留給下一個帳號
+
+
+def test_quit_without_uploads_asks_quit_adam_first(engine, staff, services, db, no_network_on_gui_thread):
+    """沒有在錄、沒有在存：以前直接結束（UX-29），N1 改成一律先問「Quit ADAM?」，不是上傳的警告。"""
     home, window, finder = staff
     quits = track_quit(engine)
-    assert not QuitGuard.instance().blocking(finder)  # 沒有在錄、沒有在存：⌘Q 照常結束
+    assert not QuitGuard.instance().blocking(finder)  # deviceFinder 不攔；攔 ⌘Q 的是外殼（session）
+    assert QuitGuard.instance().blocking(home.session)
     qml(window, "exitButton.click()")
-    assert quits == [True] and not qml(quit_dialog(window), "opened")
+    confirm = window.findChild(QObject, "quitConfirmDialog")
+    wait_until(lambda: qml(confirm, "opened"))
+    assert quits == [] and not qml(quit_dialog(window), "visible")
+    qml(confirm.findChild(QObject, "confirmButton"), "clicked()")  # Quit
+    wait_until(lambda: quits == [True])
+    assert not QuitGuard.instance().blocking(home.session)
 
 
 def test_quit_while_recording_stops_and_saves_then_asks(engine, staff, services, db, gate,

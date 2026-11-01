@@ -7,6 +7,7 @@ import "../components"
 
 // Services（服務人員，新版介面 U2，PLAN §6-4；設計稿 StaffServices）：找過去的服務。頁面標題和說明在外殼的頁首。
 // - 條件卡片：From、To（YYYY-MM-DD）、Search；留空就不限，只列出分析完成的服務。
+//   兩格都可以打字，也可以點開月曆選（DateField，N2）；月曆的 Last 7 days、This month 一次填好兩格（applyRange）。
 //   日期格式不對、To 早於 From：欄位下方顯示錯誤，不送出，焦點移到第一個有錯的欄位（DS-27）。
 // - 結果卡片（ServiceTable.qml，兩端共用）：「18 services · Oct 19 – Nov 1, 2026 · newest first」、
 //   Service ID、Date、Length、Customer、Staff、Details；一次 8 筆＋Show More（UD7）。拿掉 Name 欄（UD11）。
@@ -30,6 +31,17 @@ Item {
             return
         if (!manager.search(startDateField.text, endDateField.text))   // 日期有錯：焦點移到第一個有錯的欄位
             (manager.startDateError !== "" ? startDateField : endDateField).forceActiveFocus()
+    }
+
+    // 月曆的 Last 7 days、This month（DateField 的 rangeChosen）：一次填好 From、To，兩格的錯誤先拿掉。
+    // 和選一天一樣不自己查詢，按 Search 才查
+    function applyRange(start, end) {
+        startDateField.text = start
+        endDateField.text = end
+        if (manager) {
+            manager.clearDateError("start")
+            manager.clearDateError("end")
+        }
     }
 
     // 查到 0 筆時的標題：寫出查了哪一段期間（DS-52）
@@ -118,6 +130,8 @@ Item {
                             accessibleName: qsTr("From date")
                             errorText: searchPage.manager ? searchPage.manager.startDateError : ""
                             invalid: errorText !== ""
+                            rangeOptions: true
+                            onRangeChosen: (start, end) => searchPage.applyRange(start, end)
                             onActiveFocusChanged: if (activeFocus) searchPage.reveal(this)
                             onTextEdited: {
                                 if (searchPage.manager)
@@ -145,6 +159,8 @@ Item {
                             accessibleName: qsTr("To date")
                             errorText: searchPage.manager ? searchPage.manager.endDateError : ""
                             invalid: errorText !== ""
+                            rangeOptions: true
+                            onRangeChosen: (start, end) => searchPage.applyRange(start, end)
                             onActiveFocusChanged: if (activeFocus) searchPage.reveal(this)
                             onTextEdited: {
                                 if (searchPage.manager)

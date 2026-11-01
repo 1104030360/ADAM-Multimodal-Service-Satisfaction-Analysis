@@ -7,6 +7,7 @@ import "../components"
 
 // Services（管理員，新版介面 U2，PLAN §6-9；設計稿 AdminServices）：找任何員工的服務。頁面標題和說明在外殼的頁首。
 // - 條件卡片：Staff（All staff＋每位服務人員）、From、To、Search。名單和搜尋都在背景（Python 的 serviceManager）。
+//   日期可以打字，也可以點開月曆選（DateField，N2）；月曆的 Last 7 days、This month 一次填好兩格（applyRange）。
 //   日期格式不對、To 早於 From：欄位下方顯示錯誤、框線變紅，不送出。名單沒有載入時，搜尋照樣能用（不篩選名字），可以重試。
 // - 結果卡片（ServiceTable.qml，和服務人員端共用）：「138 services · All staff · Oct 19 – Nov 1, 2026 · newest first」，
 //   多一欄 Staff；一次 8 筆＋Show More（UD7）。只列分析完成的服務，新的在前（T31 第 4 節）。
@@ -25,6 +26,15 @@ Item {
         if (!serviceManager.search(chosenStaff, startDateField.text, endDateField.text)
                 && (serviceManager.startDateError !== "" || serviceManager.endDateError !== ""))
             (serviceManager.startDateError !== "" ? startDateField : endDateField).forceActiveFocus()
+    }
+
+    // 月曆的 Last 7 days、This month（DateField 的 rangeChosen）：一次填好 From、To，兩格的錯誤先拿掉。
+    // 和選一天一樣不自己查詢，按 Search 才查
+    function applyRange(start, end) {
+        startDateField.text = start
+        endDateField.text = end
+        serviceManager.clearDateError("start")
+        serviceManager.clearDateError("end")
     }
 
     // 空狀態的標題：「No services from 2026-10-01 to 2026-10-31」（DS-52）
@@ -240,6 +250,8 @@ Item {
                             accessibleName: qsTr("From date")
                             errorText: serviceManager.startDateError
                             invalid: errorText !== ""
+                            rangeOptions: true
+                            onRangeChosen: (start, end) => searchPage.applyRange(start, end)
                             onActiveFocusChanged: if (activeFocus) searchPage.reveal(this)
                             onTextEdited: serviceManager.clearDateError("start")
                             onAccepted: searchPage.search()
@@ -265,6 +277,8 @@ Item {
                             accessibleName: qsTr("To date")
                             errorText: serviceManager.endDateError
                             invalid: errorText !== ""
+                            rangeOptions: true
+                            onRangeChosen: (start, end) => searchPage.applyRange(start, end)
                             onActiveFocusChanged: if (activeFocus) searchPage.reveal(this)
                             onTextEdited: serviceManager.clearDateError("end")
                             onAccepted: searchPage.search()

@@ -27,7 +27,14 @@ from myapp.services import AppServices
 from myapp.tasks import TaskRunner
 from myapp.ui_prefs import UiPrefs
 
+from .session import ShellSession
+
 logger = logging.getLogger(__name__)
+
+# launch() 註冊的 context property（tasks、notifier、uiPrefs 是登入前就有的，不算）：登出時設成 null（N1）。
+# launch() 多註冊一個名稱，這裡也要加上（tests/integration/test_log_out.py 會比對 launch() 的程式）
+CONTEXT_NAMES = ("adminHome", "homeDashboard", "serviceManager", "accountManager", "chartsModel", "mediaModel",
+                 "pdfHandler", "serviceSearch", "helpCenter", "myAccount")
 
 
 # ---------------------------------------------------------------- 服務明細、報表（前端重建 F3）
@@ -674,6 +681,7 @@ class AdminHome(QObject):
         self.myAccount = account.AccountSelfService(services, self._profile, self)  # 設定頁的 Account（T36）
         self.helpCenter = HelpCenter(services, reports=self.pdfmodel, parent=self)  # 設定頁的 Help 區塊（T40）
         self.helpCenter.storage.cleared.connect(self.myAccount.cacheCleared)  # 照片的快取清掉了：重新下載（T36）
+        self._session = ShellSession(services, self)  # Log Out、Quit、⌘Q（N1）；launch() 載入外殼後 attach()
         self._profile.profileChanged.connect(self._sync_level)
 
     @Property(QObject, constant=True)
@@ -681,6 +689,11 @@ class AdminHome(QObject):
         """AccountProfile（myapp/account.py）：name、username、level、photoSource、state。頁首顯示名字和照片；
         新增帳號頁依 level 列出能指派的等級。"""
         return self._profile
+
+    @Property(QObject, constant=True)
+    def session(self):
+        """ShellSession：外殼接 quitRequested（⌘Q），選了 Quit 時呼叫 allowQuit()。"""
+        return self._session
 
     @Slot(result=str)
     def getID(self):
@@ -697,8 +710,18 @@ class AdminHome(QObject):
         """Quit：取消還在下載的檔案，清空影片、圖表、報表頁面的快取（和 MediaModel 用同一組資料夾）。"""
         clear_cache(self.mediaModel)
 
+    @Slot()
+    def logOut(self):
+        """Log Out（N1）：外殼已經問過了。清快取，再由 session 取消這個帳號的背景工作、關掉外殼；
+        MainWindow 收到 session.loggedOut，讓登入視窗再出現。管理員端沒有錄影和上傳，不必先問上傳的事。"""
+        if self._session.ended:
+            return
+        self.clearDir()
+        self._session.end()
+
     def close(self, owns_services=False):
-        """主畫面關掉時：關掉明細頁用過的舊連線；services 是 launch() 自己建的，就一起收掉。"""
+        """主畫面關掉時：不再攔 ⌘Q；services 是 launch() 自己建的，就一起收掉。"""
+        self._session.stop()
         if owns_services:
             self.services.tasks.shutdown()
 
@@ -751,6 +774,8 @@ def launch(engine, account_id, services=None):
 
     window = roots[-1]  # 剛載入的主畫面（從登入視窗進來時，第 0 個是登入視窗）
     services.ui_prefs.restoreWindow(window)  # 這個帳號上次的視窗模式，第一次是全螢幕（S1）
+    # Log Out、Quit、⌘Q（N1）：外殼開著時攔 ⌘Q；登出時把上面註冊的名稱設成 null
+    home.session.attach(context, {name: context.contextProperty(name) for name in CONTEXT_NAMES}, window)
     # lambda 也讓 home 活得和視窗一樣久：QML 透過 context property 用它
     window.destroyed.connect(lambda *args: home.close(owns_services))
     return home

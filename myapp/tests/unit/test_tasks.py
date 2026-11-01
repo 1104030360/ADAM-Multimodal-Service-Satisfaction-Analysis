@@ -198,6 +198,29 @@ def test_shutdown_cancels_everything_and_refuses_new_work(runner):
     runner.shutdown()  # 呼叫兩次沒關係
 
 
+def test_cancel_all_cancels_every_task_but_keeps_accepting_work(runner, events):
+    """登出（N1）：這個帳號的工作全部取消，結果不交回；runner 還要給下一個帳號用。"""
+    gate, tokens, outcome = threading.Event(), [], []
+
+    def running(token, report):
+        tokens.append(token)
+        gate.wait(5)
+        return "late"
+
+    runner.submit("db", "running", running, on_ok=outcome.append, on_err=outcome.append)
+    runner.submit("db", "queued", lambda token, report: outcome.append("queued ran"))
+    runner.submit("io", "download", blocked_until(gate, "file"), on_ok=outcome.append)
+    wait_until(lambda: tokens)
+    runner.cancelAll()
+    assert tokens[0].cancelled
+    gate.set()
+    wait_until(lambda: not any(runner.isBusy(key) for key in ("running", "queued", "download")))
+    assert outcome == [] and [event for event in events if event[0] == "failed"] == []
+    assert runner.submit("db", "next-account", lambda token, report: "ok", on_ok=outcome.append)
+    wait_until(lambda: outcome == ["ok"])
+    runner.cancelAll()  # 沒有在跑的工作：什麼都不做
+
+
 # ---------------------------------------------------------------- 進度
 
 

@@ -31,6 +31,7 @@ from myapp.tasks import TaskRunner
 from myapp.ui_prefs import UiPrefs, open_settings
 from myapp.watcher import POLL_KEY as WATCHER_KEY, AnalysisWatcher, DockAttention
 from .record_widget import SAVE_ROLES, SAVED, QuitGuard, RecordingSaver, RecordWidget
+from .session import ShellSession
 import cv2
 from dotenv import load_dotenv
 load_dotenv()
@@ -49,6 +50,10 @@ HOME_KEYS = tuple(f"{HOME_KEY_PREFIX}:{name}" for name in ("overview", "recent",
 LAUNCH_KEYS = (ACCOUNT_NAME_KEY, *HOME_KEYS, WATCHER_KEY)
 # 「Can't refresh analysis status」：清單的重新整理和監看的查詢共用這一則（同一次斷線只跳一則）
 ANALYSIS_REFRESH_TOAST_KEY = "analysis-refresh"
+# launch() 註冊的 context property（tasks、notifier、uiPrefs 是登入前就有的，不算）：登出時設成 null（N1）。
+# launch() 多註冊一個名稱，這裡也要加上（tests/integration/test_log_out.py 會比對 launch() 的程式）
+CONTEXT_NAMES = ("serverHome", "deviceFinder", "homeDashboard", "serviceModel", "serviceManager", "chartsModel",
+                 "mediaModel", "pdfHandler", "serviceSearch", "helpCenter", "myAccount")
 
 _FIRST_ROLE = int(Qt.ItemDataRole.UserRole)
 
@@ -579,6 +584,19 @@ class DeviceFinder(QObject):
     def allowQuit(self):
         """使用者選了 Quit Anyway：之後的 QEvent.Quit 不再攔。"""
         self._quit_allowed = True
+        self._update_quit_guard()
+
+    def end_session(self):
+        """登出（N1）：外殼已經問過了，錄影也已經停止。關掉錄影視窗，不再攔 ⌘Q。
+
+        還在存的（使用者選了 Log Out Anyway）由 ShellSession 取消上傳；檔案和本機的紀錄留著，
+        同一個帳號下次登入時跳出 Retry（T26）。剛停止的錄影先等檔案寫完，和結束程式時一樣（最多 QUIT_WAIT_S）。
+        """
+        self._quit_allowed = True
+        if self._recorder is not None:
+            self._recorder.close()  # 錄影中的話 closeEvent 會先停止並存檔（外殼問之前已經停了）
+        if self._saver is not None:
+            self._saver._finish_files()
         self._update_quit_guard()
 
     def _should_block_quit(self):
@@ -1341,6 +1359,7 @@ class ServerHome(QObject):
         self.helpCenter = HelpCenter(services, reports=self.pdfmodel, parent=self)  # 設定頁的 Help 區塊（T40）
         if self.myAccount is not None:  # 清掉下載快取時照片的檔案也沒了：重新下載（T36）
             self.helpCenter.storage.cleared.connect(self.myAccount.cacheCleared)
+        self._session = ShellSession(services, self)  # Log Out、Quit、⌘Q（N1）；launch() 載入外殼後 attach()
 
     @Property(str, notify=accountNameChanged)
     def accountName(self):
@@ -1354,6 +1373,11 @@ class ServerHome(QObject):
     @Slot()
     def _profile_changed(self):
         self.accountNameChanged.emit()
+
+    @Property(QObject, constant=True)
+    def session(self):
+        """ShellSession：外殼接 quitRequested（⌘Q），選了 Quit 時呼叫 allowQuit()。"""
+        return self._session
 
     def start(self):
         """launch() 呼叫：帳號名稱、首頁的三張卡片、監看要看的服務都在 db lane 載入，GUI 執行緒不碰網路。
@@ -1369,12 +1393,24 @@ class ServerHome(QObject):
         self.deviceFinder.restore_saves()
 
     def stop(self):
-        """外殼關掉時：停止監看和分析頁的計時，清掉 Dock 的徽章。"""
+        """外殼關掉時（或登出時）：停止監看和分析頁的計時，清掉 Dock 的徽章，不再攔 ⌘Q。"""
         if self.watcher is not None:
             self.watcher.stop()
         self.serviceModel.stop()
         self.attention.clear()
+        self._session.stop()
         self.shell_window = None
+
+    @Slot()
+    def logOut(self):
+        """Log Out（N1）：外殼已經問過了（上傳中問的是上傳的警告）。清快取、停掉監看和計時、關掉錄影視窗，
+        再由 session 取消這個帳號的背景工作、關掉外殼；MainWindow 收到 session.loggedOut，讓登入視窗再出現。"""
+        if self._session.ended:
+            return
+        self.clearDir()
+        self.stop()
+        self.deviceFinder.end_session()
+        self._session.end()
 
     def _watch(self, services):
         """建立分析完成的監看（ENG-16），接上清單、通知和 Dock。"""
@@ -1511,6 +1547,8 @@ def launch(engine, account_id, services=None):
     window = engine.rootObjects()[-1]
     services.ui_prefs.restoreWindow(window)
     home.shell_window = window
+    # Log Out、Quit、⌘Q（N1）：外殼開著時攔 ⌘Q；登出時把上面註冊的名稱設成 null
+    home.session.attach(context, {name: context.contextProperty(name) for name in CONTEXT_NAMES}, window)
 
     # setContextProperty 不會留住 Python 物件（PySide6 6.12 實測）：home 和各頁的模型只被自己的循環參照留著，
     # 下一次 gc 就會被刪掉，QML 拿到 null。destroyed 的連線留著 closed，closed 的預設值留著 home，

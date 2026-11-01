@@ -9,6 +9,7 @@ import "../components"
 // - options：[{value, text}]；value 是現在選的那一個的 value。選了別的發 picked(value)，由頁面改自己的屬性。
 // - 高 44 以上；框線預設是 fieldBorder（和卡片 3.1:1，WCAG 1.4.11）；鍵盤焦點時換成 2 px 的焦點框（DS-30）。
 // - 趨勢卡在藍底上，顏色改用 trendControl、trendControlBorder（fill、borderColor、textColor、chevron 都可以換）。
+// - 日期欄的月曆（DateField.qml，N2）也用它選月、年：清單最高 320、放不下時推回視窗裡，打開時捲到選到的那一個。
 ComboBox {
     id: select
 
@@ -103,13 +104,18 @@ ComboBox {
         y: select.height + 4
         width: Math.max(select.width, 180)
         padding: 4
-        implicitHeight: contentItem.implicitHeight + topPadding + bottomPadding
+        margins: Theme.spaceS
+        implicitHeight: Math.min(contentItem.implicitHeight + topPadding + bottomPadding, 320)
+        onOpened: optionList.positionViewAtIndex(select.currentIndex, ListView.Contain)
 
         contentItem: ListView {
+            id: optionList
             implicitHeight: contentHeight
             clip: true
             model: select.popup.visible ? select.delegateModel : null
             currentIndex: select.highlightedIndex
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollIndicator.vertical: ScrollIndicator {}
         }
 
         background: Rectangle {

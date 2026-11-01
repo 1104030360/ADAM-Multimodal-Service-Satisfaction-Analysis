@@ -1193,12 +1193,12 @@ def test_every_icon_is_used_and_every_used_icon_exists():
 
 def test_every_nav_icon_is_used_and_every_used_nav_icon_exists():
     """側邊欄（SidebarButton）的每個按鈕有中性灰（iconNeutral）的一份；會變成目前頁面的按鈕另有深色
-    （navItemCurrentText）的一份。Quit 不會是目前頁面，只有中性灰（T23 第 4 節）。"""
+    （navItemCurrentText）的一份。Log Out、Quit 不會是目前頁面，只有中性灰（T23 第 4 節、N1）。"""
     names = set()
     for shell in ("server_home.qml", "admin_home.qml"):
         names |= set(re.findall(r'iconName:\s*"([\w-]+)"', (PAGES / shell).read_text(encoding="utf-8")))
     expected = ({f"{name}_iconNeutral.svg" for name in names}
-                | {f"{name}_navItemCurrentText.svg" for name in names - {"log-out"}})
+                | {f"{name}_navItemCurrentText.svg" for name in names - {"log-out", "power"}})
     assert expected == {path.name for path in (ICONS / "nav").glob("*.svg")}
 
 

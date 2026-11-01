@@ -34,6 +34,7 @@ class MainWindow(QObject):
     loginSucceeded = Signal(str, str)  # accountId, accountLevel（字串，"1" 是服務人員）
     loginRejected = Signal()           # 帳號或密碼不正確
     loginFailed = Signal(str)          # "offline"：連不上資料庫；"error"：其他錯誤（例如資料庫設定錯了）
+    loginRequested = Signal()          # 登出了（N1）：login.qml 換一份新的表單，登入視窗再出現
 
     def __init__(self, engine):
         super().__init__()
@@ -87,11 +88,19 @@ class MainWindow(QObject):
 
     @Slot(str)
     def launchServerHome(self, account_id):
-        server_home_init.launch(self.engine, account_id, self.services)
+        home = server_home_init.launch(self.engine, account_id, self.services)
+        home.session.loggedOut.connect(self.showLogin)  # Log Out（N1）：回到登入視窗
 
     @Slot(str)
     def launchAdminHome(self, account_id):
-        admin_home_init.launch(self.engine, account_id, self.services)
+        home = admin_home_init.launch(self.engine, account_id, self.services)
+        home.session.loggedOut.connect(self.showLogin)
+
+    @Slot()
+    def showLogin(self):
+        """登出之後（N1）：登入視窗再出現，不重播開場圖；表單是新的（帳號、密碼都空白，焦點在帳號欄）。
+        登入成功時 login.qml 只把視窗關掉（藏起來），所以是同一個視窗。"""
+        self.loginRequested.emit()
 
 
 def main():

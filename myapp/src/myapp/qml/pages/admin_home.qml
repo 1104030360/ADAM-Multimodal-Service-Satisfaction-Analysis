@@ -10,6 +10,18 @@ Window {
     // 視窗模式（全螢幕或視窗）由 launch() 照這個帳號上次的模式決定（new-feature PLAN 13.2 S1）
     color: Theme.contentBg  // 換頁時新頁面還沒建好的那幾個畫格，內容區是內容頁的底色
 
+    // 關掉主視窗（紅色按鈕、⌘W）和按 Quit 一樣先問（N1）。⌘Q 不會經過這裡（T20）：外殼開著時 adminHome.session
+    // 向 QuitGuard 登記，攔下來之後從 quitRequested 走同一條路
+    onClosing: (close) => { if (!exitButton.requestQuit()) close.accepted = false }
+
+    // 鍵盤（Tab、⌘1～⌘6）走到側邊欄裡看不到的按鈕：捲過去（視窗太矮時側邊欄可以捲動）
+    onActiveFocusItemChanged: if (railScroller) railScroller.reveal(activeFocusItem)
+
+    // 已經有一個離開的對話框開著：不再開第二個（N1）
+    function leaving() {
+        return quitConfirmDialog.visible || logoutDialog.visible
+    }
+
     // 減少動態效果（ENG-18、DS-43）：設定頁的選項、系統設定、測試的 animationScale 都經由 Theme 生效。
     // uiPrefs 由 MainWindow（或 launch()）註冊；是 null 時不寫，Theme 用自己的預設值
     Binding {
@@ -94,7 +106,7 @@ Window {
         return ""
     }
 
-    // ── 側邊欄（PLAN 第 4 節）：寬 96，圖示在上、字在下；名字和頭像移到頁首，Quit 在最下面
+    // ── 側邊欄（PLAN 第 4 節）：寬 96，圖示在上、字在下；名字和頭像移到頁首，Log Out、Quit 在最下面（N1）
     Rectangle {
         id: sidebar
         width: Theme.railWidth
@@ -108,74 +120,178 @@ Window {
             color: Theme.railBorder
         }
 
-        // 側邊欄的按鈕是真的 Button（SidebarButton）：Tab 照這個順序停，Space、Return 按下（UX-41、DS-32）
-        Column {
-            id: sidebarContent
-            anchors.top: parent.top
-            anchors.topMargin: Theme.spaceL
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: 6
+        // 視窗太矮、放不下全部的按鈕時（例如小螢幕上的 Windowed），整條側邊欄可以捲動；平常不能拖。
+        // 鍵盤走到看不到的按鈕時捲過去（window 的 onActiveFocusItemChanged）
+        Flickable {
+            id: railScroller
+            objectName: "railScroller"
+            anchors.fill: parent
+            contentWidth: width
+            contentHeight: Math.max(height, sidebarContent.y + sidebarContent.height + sessionButtons.height
+                                            + 2 * Theme.spaceL)
+            interactive: contentHeight > height
+            boundsBehavior: Flickable.StopAtBounds
+            clip: true
 
-            SidebarButton {
-                id: homeButton
-                objectName: "homeButton"
-                text: qsTr("Home")
-                iconName: "house"
-                current: window.currentPage === "admin_home_page.qml"
-                onClicked: window.showPage("admin_home_page.qml")
+            // 側邊欄裡的 item 有一部分在看不到的地方：捲到整個看得到
+            function reveal(item) {
+                let inside = item
+                while (inside && inside !== contentItem)
+                    inside = inside.parent
+                if (!inside || !interactive)
+                    return
+                const top = item.mapToItem(contentItem, 0, 0).y
+                if (top < contentY)
+                    contentY = Math.max(0, top - Theme.spaceL)
+                else if (top + item.height > contentY + height)
+                    contentY = Math.min(contentHeight - height, top + item.height - height + Theme.spaceL)
             }
 
-            SidebarButton {
-                id: addAccountButton
-                objectName: "addAccountButton"
-                text: qsTr("Add Account")
-                iconName: "user-round-plus"
-                current: window.currentPage === "admin_add_page.qml"
-                // 不再順便載入首頁的資料：新增帳號頁用不到（UX-32）
-                onClicked: window.showPage("admin_add_page.qml")
+            // 側邊欄的按鈕是真的 Button（SidebarButton）：Tab 照這個順序停，Space、Return 按下（UX-41、DS-32）
+            Column {
+                id: sidebarContent
+                anchors.top: parent.top
+                anchors.topMargin: Theme.spaceL
+                anchors.horizontalCenter: parent.horizontalCenter
+                spacing: 6
+
+                SidebarButton {
+                    id: homeButton
+                    objectName: "homeButton"
+                    text: qsTr("Home")
+                    iconName: "house"
+                    current: window.currentPage === "admin_home_page.qml"
+                    onClicked: window.showPage("admin_home_page.qml")
+                }
+
+                SidebarButton {
+                    id: addAccountButton
+                    objectName: "addAccountButton"
+                    text: qsTr("Add Account")
+                    iconName: "user-round-plus"
+                    current: window.currentPage === "admin_add_page.qml"
+                    // 不再順便載入首頁的資料：新增帳號頁用不到（UX-32）
+                    onClicked: window.showPage("admin_add_page.qml")
+                }
+
+                SidebarButton {
+                    id: servicesButton
+                    objectName: "servicesButton"
+                    text: qsTr("Services")
+                    iconName: "history"
+                    current: window.currentPage === "admin_service_page.qml"
+                             || window.currentPage === "admin_service_detail_page.qml"
+                    onClicked: window.showPage("admin_service_page.qml")
+                }
+
+                SidebarButton {
+                    id: reportsButton
+                    objectName: "reportsButton"
+                    text: qsTr("Reports")
+                    iconName: "file-chart-column"
+                    current: window.currentPage === "admin_reports_page.qml"
+                    onClicked: window.showPage("admin_reports_page.qml")
+                }
+
+                SidebarButton {
+                    id: settingsButton
+                    objectName: "settingsButton"
+                    text: qsTr("Settings")
+                    iconName: "settings"
+                    current: window.currentPage === "admin_setting_page.qml"
+                    onClicked: window.showPage("admin_setting_page.qml")
+                }
             }
 
-            SidebarButton {
-                id: servicesButton
-                objectName: "servicesButton"
-                text: qsTr("Services")
-                iconName: "history"
-                current: window.currentPage === "admin_service_page.qml"
-                         || window.currentPage === "admin_service_detail_page.qml"
-                onClicked: window.showPage("admin_service_page.qml")
-            }
+            // ── 最下面：Log Out、Quit（N1）。兩個都先問（管理員端沒有錄影和上傳，只有這一種對話框）。
+            // 視窗太矮、放不下兩組按鈕時，接在上面那一組的下面，不會疊在一起（側邊欄可以捲動，和服務人員端一樣）
+            Column {
+                id: sessionButtons
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: Math.max(sidebarContent.y + sidebarContent.height + Theme.spaceL,
+                            railScroller.height - height - Theme.spaceL)
+                spacing: 6
 
-            SidebarButton {
-                id: reportsButton
-                objectName: "reportsButton"
-                text: qsTr("Reports")
-                iconName: "file-chart-column"
-                current: window.currentPage === "admin_reports_page.qml"
-                onClicked: window.showPage("admin_reports_page.qml")
-            }
+                // Log Out：問過之後回到登入視窗（adminHome.logOut()：清快取、停掉這個帳號的工作、關掉外殼）
+                SidebarButton {
+                    id: logoutButton
+                    objectName: "logoutButton"
+                    text: qsTr("Log Out")
+                    iconName: "log-out"
 
-            SidebarButton {
-                id: settingsButton
-                objectName: "settingsButton"
-                text: qsTr("Settings")
-                iconName: "settings"
-                current: window.currentPage === "admin_setting_page.qml"
-                onClicked: window.showPage("admin_setting_page.qml")
-            }
-        }
+                    onClicked: logoutButton.requestLogOut()
 
-        // Quit：管理員端沒有錄影和上傳，不必問，清掉快取就結束
-        SidebarButton {
-            id: exitButton
-            objectName: "exitButton"
-            anchors.bottom: parent.bottom
-            anchors.bottomMargin: Theme.spaceL
-            anchors.horizontalCenter: parent.horizontalCenter
-            text: qsTr("Quit")
-            iconName: "log-out"
-            onClicked: {
-                adminHome.clearDir()
-                Qt.quit() // 退出應用程式
+                    function requestLogOut() {
+                        if (exitButton.quitting || window.leaving())
+                            return
+                        window.raise()
+                        window.requestActivate()
+                        logoutDialog.open()
+                    }
+
+                    function logOutNow() {
+                        adminHome.logOut()
+                    }
+
+                    ConfirmDialog {
+                        id: logoutDialog
+                        objectName: "logoutDialog"
+                        title: qsTr("Log out?")
+                        body: qsTr("You'll return to the sign-in screen.")
+                        confirmText: qsTr("Log Out")
+                        cancelText: qsTr("Stay Logged In")
+                        confirmVariant: "secondary"     // 沒有東西會丟：不用紅色
+                        onConfirmed: logoutButton.logOutNow()
+                    }
+                }
+
+                // Quit：視窗的 onClosing、⌘W、⌘Q（quitRequested）也走這裡
+                SidebarButton {
+                    id: exitButton
+                    objectName: "exitButton"
+                    text: qsTr("Quit")
+                    iconName: "power"
+
+                    readonly property var session: adminHome ? adminHome.session : null
+                    property bool quitting: false
+
+                    onClicked: exitButton.requestQuit()
+
+                    // 回傳 true 表示可以結束（onClosing 用）；其他時候先問，回傳 false
+                    function requestQuit() {
+                        if (quitting)
+                            return true
+                        if (window.leaving())
+                            return false
+                        window.raise()
+                        window.requestActivate()
+                        quitConfirmDialog.open()
+                        return false
+                    }
+
+                    function quitNow() {
+                        quitting = true
+                        if (session)
+                            session.allowQuit()     // 接下來的 QEvent.Quit 不再攔
+                        adminHome.clearDir()
+                        Qt.quit() // 退出應用程式
+                    }
+
+                    Connections {
+                        target: exitButton.session
+                        function onQuitRequested() { exitButton.requestQuit() }
+                    }
+
+                    ConfirmDialog {
+                        id: quitConfirmDialog
+                        objectName: "quitConfirmDialog"
+                        title: qsTr("Quit ADAM?")
+                        confirmText: qsTr("Quit")
+                        cancelText: qsTr("Don't Quit")
+                        confirmVariant: "secondary"     // 沒有東西會丟：不用紅色
+                        onConfirmed: exitButton.quitNow()
+                    }
+                }
             }
         }
 
@@ -186,6 +302,8 @@ Window {
         Shortcut { sequence: "Ctrl+3"; onActivated: window.activateNav(servicesButton) }
         Shortcut { sequence: "Ctrl+4"; onActivated: window.activateNav(reportsButton) }
         Shortcut { sequence: "Ctrl+5"; onActivated: window.activateNav(settingsButton) }
+        // ⌘W：關掉主視窗，和紅色按鈕一樣走 onClosing（N1）
+        Shortcut { sequence: "Ctrl+W"; onActivated: window.close() }
     }
 
     // 第一頁和外殼一起同步建好：launch() 回傳時首頁已經在，視窗一出現就有內容（T19 的測試靠這點）。

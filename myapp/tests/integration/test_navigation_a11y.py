@@ -46,7 +46,9 @@ ADMIN = SimpleNamespace(module=admin_home_init, account=ADMIN_ID, detail_page="a
     ("reportsButton", "Reports", "admin_reports_page.qml", "file-chart-column"),
     ("settingsButton", "Settings", "admin_setting_page.qml", "settings"),
 ])
-QUIT = ("exitButton", "Quit", None, "log-out")
+# 最下面的兩個（N1）：Log Out、Quit。不會是目前頁面
+LOGOUT = ("logoutButton", "Log Out", None, "log-out")
+QUIT = ("exitButton", "Quit", None, "power")
 BOTH_SIDES = pytest.mark.parametrize("side", [STAFF, ADMIN], ids=["staff", "admin"])
 CTRL = Qt.KeyboardModifier.ControlModifier  # Qt 在 macOS 上的 Ctrl 就是 ⌘
 # 自己把焦點放進第一個欄位的頁面（新增帳號頁，T19：一進來就能打帳號）。其他頁面換頁後焦點留在側邊欄（DS-29）
@@ -119,7 +121,7 @@ def current_buttons(window, side):
 @BOTH_SIDES
 def test_sidebar_buttons_are_real_buttons_named_in_sidebar_order(side, engine, services, qml_warnings):
     ui = launch(side, engine, services)
-    names, labels = zip(*[(name, label) for name, label, *_ in side.pages + [QUIT]])
+    names, labels = zip(*[(name, label) for name, label, *_ in side.pages + [LOGOUT, QUIT]])
     buttons = [child(ui.window, name) for name in names]
     assert [button.property("text") for button in buttons] == list(labels)  # DS-51
     for button, label in zip(buttons, labels):
@@ -132,12 +134,16 @@ def test_sidebar_buttons_are_real_buttons_named_in_sidebar_order(side, engine, s
     assert current_buttons(ui.window, side) == ["homeButton"]
     assert qml(child(ui.window, "homeButton"), "Accessible.description") == "Current page"
     assert qml(child(ui.window, "exitButton"), "Accessible.description") == ""
+    assert qml(child(ui.window, "logoutButton"), "Accessible.description") == ""
+    # 最下面那一組在上面那一組的下面，不會疊在一起（離線的測試視窗只有 600 高）
+    last_page = child(ui.window, side.pages[-1][0])
+    assert tops[-2] >= last_page.mapToScene(QPointF(0, 0)).y() + last_page.height()
 
 
 @BOTH_SIDES
 def test_tab_reaches_every_sidebar_button_in_order_with_a_focus_ring(side, engine, services, qml_warnings):
     ui = launch(side, engine, services)
-    names = [name for name, *_ in side.pages + [QUIT]]
+    names = [name for name, *_ in side.pages + [LOGOUT, QUIT]]
     qml(ui.window, "contentItem.forceActiveFocus()")  # 從頭開始
     reached = []
     for _ in names:
@@ -148,6 +154,32 @@ def test_tab_reaches_every_sidebar_button_in_order_with_a_focus_ring(side, engin
         assert qml(child(focused, "focusRing"), "border.color") == theme(ui.window, "focusOnDark")
     assert reached == names
     assert [name for name in names if child(ui.window, name).findChild(QObject, "focusRing").isVisible()] == ["exitButton"]
+    assert not qml(ui.window, "railScroller.interactive")  # 放得下：側邊欄不能拖
+
+
+@BOTH_SIDES
+def test_a_short_window_scrolls_the_rail_to_the_focused_button(side, engine, services, qml_warnings):
+    """視窗太矮（例如小螢幕上的 Windowed）放不下全部的按鈕：側邊欄可以捲動，Tab 走到的按鈕捲進畫面（N1）。"""
+    ui = launch(side, engine, services)
+    ui.window.showNormal()
+    ui.window.setGeometry(0, 0, 800, 520)
+    wait_until(lambda: qml(ui.window, "railScroller.interactive"))
+    rail = child(ui.window, "railScroller")
+
+    def shown(name):
+        button = child(ui.window, name)
+        top = button.mapToScene(QPointF(0, 0)).y()
+        return 0 <= top and top + button.height() <= rail.height()
+
+    last_page = child(ui.window, side.pages[-1][0])
+    logout = child(ui.window, "logoutButton")
+    assert logout.mapToScene(QPointF(0, 0)).y() >= last_page.mapToScene(QPointF(0, last_page.height())).y()  # 不疊
+    assert not shown("exitButton")
+    qml(ui.window, "exitButton.forceActiveFocus(Qt.TabFocusReason)")
+    wait_until(lambda: shown("exitButton"))
+    QTest.keyClick(ui.window, Qt.Key.Key_1, CTRL)  # ⌘1：回到第一個按鈕，也捲回上面
+    wait_until(lambda: shown("homeButton"))
+    assert qml(ui.window, "railScroller.contentY") == 0
 
 
 def test_return_enter_and_space_activate_the_focused_button_and_focus_stays(engine, services, qml_warnings):
@@ -315,14 +347,15 @@ def test_nav_icons_are_precoloured_lucide_svgs_and_every_button_draws_one(engine
     ui = launch(STAFF, engine, services)
     page_icons = {icon for side in (STAFF, ADMIN) for *_, icon in side.pages}
     expected = {f"{icon}_{token}.svg" for icon in page_icons for token in ("iconNeutral", "navItemCurrentText")}
-    assert {path.name for path in NAV_ICONS.iterdir()} == expected | {"log-out_iconNeutral.svg"}  # Quit 不會是目前頁面
+    # Log Out、Quit 不會是目前頁面：只有中性灰的一份
+    assert {path.name for path in NAV_ICONS.iterdir()} == expected | {"log-out_iconNeutral.svg", "power_iconNeutral.svg"}
     for path in NAV_ICONS.iterdir():
         svg = path.read_text(encoding="utf-8")
         assert svg.startswith("<!-- @license lucide-static v1.58.0 - ISC -->"), path.name
         strokes = re.findall(r'stroke="(#[0-9A-F]{6})"', svg)
         assert len(strokes) == 1 and "currentColor" not in svg, path.name
         assert QColor(strokes[0]) == theme(ui.window, path.stem.rsplit("_", 1)[1]), path.name
-    images = [child(child(ui.window, name), "navIcon") for name, *_ in STAFF.pages + [QUIT]]
+    images = [child(child(ui.window, name), "navIcon") for name, *_ in STAFF.pages + [LOGOUT, QUIT]]
     wait_until(lambda: all(qml(image, "status === Image.Ready") for image in images))
 
 

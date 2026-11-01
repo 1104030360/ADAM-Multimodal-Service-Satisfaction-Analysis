@@ -61,7 +61,7 @@ def test_staff_home_objects_keep_the_class_metaobject(engine, services):
     objects = app_objects(home, services.tasks, services.notifier, services.ui_prefs)
     assert {"ServerHome", "DeviceFinder", "RecordingSaver", "SavesModel", "ServiceModel", "AnalysisWatcher",
             "DockAttention", "MediaModel", "ChartsModel", "AccountProfile",
-            "AccountSelfService"} <= {type(obj).__name__ for obj in objects}
+            "AccountSelfService", "ShellSession"} <= {type(obj).__name__ for obj in objects}
     assert with_dynamic_slots(objects) == {}
 
 
@@ -70,6 +70,6 @@ def test_admin_home_objects_keep_the_class_metaobject(engine, services):
     sections = (home.profile, *home.homeDashboard.sections)
     wait_until(lambda: all(section.state != "loading" for section in sections))
     objects = app_objects(home, services.tasks, services.notifier, services.ui_prefs)
-    assert {"AdminHome", "AccountProfile", "AccountManager", "AccountSelfService"} <= {
+    assert {"AdminHome", "AccountProfile", "AccountManager", "AccountSelfService", "ShellSession"} <= {
         type(obj).__name__ for obj in objects}
     assert with_dynamic_slots(objects) == {}

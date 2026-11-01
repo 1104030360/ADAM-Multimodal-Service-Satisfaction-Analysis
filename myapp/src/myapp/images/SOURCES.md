@@ -58,7 +58,7 @@
 - **檔名**：`<Lucide 名稱>_<Theme token>.svg`，線條的顏色就是 `Theme.qml` 那個 token 的值。改了 `Theme.qml` 的顏色，要重新產生對應的圖示。
 - **格式**：SVG，不轉成 PNG。Qt 的 SVG 外掛（`libqsvg`，PySide6 6.12 內建）畫得出每個檔案，沒有任何警告；`Image` 設了 `sourceSize` 時會依螢幕的 devicePixelRatio 重新點陣化，Retina 上也是清楚的。
 - **測試**：`tests/unit/test_qml_components.py` 檢查每個檔案的顏色等於檔名寫的 token、畫得出來、沒有警告，而且每個檔案都有 QML 用到、用到的都存在。
-- **側邊欄**：每個按鈕有兩份。一般是 `iconNeutral`（UD2：圖示預設中性灰），目前頁面是 `navItemCurrentText`（亮底 `#E6E8EB` 上的深色，15.5:1）。Quit 不會是目前頁面，只有一份。
+- **側邊欄**：每個按鈕有兩份。一般是 `iconNeutral`（UD2：圖示預設中性灰），目前頁面是 `navItemCurrentText`（亮底 `#E6E8EB` 上的深色，15.5:1）。Log Out、Quit 不會是目前頁面，各只有一份。
 
 | 檔案 | 顏色 | 用在 | 衍生自 |
 |---|---|---|---|
@@ -118,7 +118,8 @@
 | `nav/history_navItemCurrentText.svg` | `navItemCurrentText` `#0E1013` | 側邊欄（`SidebarButton.qml`） |  |
 | `nav/house_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | 側邊欄（`SidebarButton.qml`） |  |
 | `nav/house_navItemCurrentText.svg` | `navItemCurrentText` `#0E1013` | 側邊欄（`SidebarButton.qml`） |  |
-| `nav/log-out_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | 側邊欄（`SidebarButton.qml`） | Feather |
+| `nav/log-out_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | 側邊欄（`SidebarButton.qml`）：Log Out | Feather |
+| `nav/power_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | 側邊欄（`SidebarButton.qml`）：Quit | Feather |
 | `nav/settings_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | 側邊欄（`SidebarButton.qml`） |  |
 | `nav/settings_navItemCurrentText.svg` | `navItemCurrentText` `#0E1013` | 側邊欄（`SidebarButton.qml`） |  |
 | `nav/user-round-plus_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | 側邊欄（`SidebarButton.qml`） |  |
@@ -161,6 +162,7 @@ bd039cbc60abc0af2d241232fa6fe76da45c974a8928141b266b15435ca26e0c  info.svg
 b22e81c1ed6523da0a711af1fd25086b5bea96dd8f3fba7aa87fc42b025517d5  mic.svg
 d764efc7d23340a615d7cec56ca0a6e7fb10ba2474559a2267535d21b66e0672  pause.svg
 99eaf96106efd57b9ac5abfe436918ac3bf57dca430c5bb1b0941b204ae87141  play.svg
+dd6ff4af3d5e0a6d2ae6167f62b2edf3b45389ff36abec1a1a5980d53f57a102  power.svg
 7f52a2ff0ceae30cb075fe04ecec64a83eee08b5bf8381ebe2e189126b826485  rotate-cw.svg
 78ad58a828761b1f4a1fbe68acf4a9f4cbc89b2dc66e671888f1038a21498a3f  scan-face.svg
 014a4a94c906b6a363be5c070d22a3323eff9b40e4caca52b97e0c098b690a85  search.svg

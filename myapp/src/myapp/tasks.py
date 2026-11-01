@@ -209,6 +209,14 @@ class TaskRunner(QObject):
             self._cancel_task(task)
 
     @Slot()
+    def cancelAll(self):
+        """登出時（new-feature N1）：取消全部還在跑的工作，和一個一個 cancel(key) 一樣；之後還能照常送出新的工作
+        （shutdown() 就不行了）。登入後同時只有一個外殼，在跑的工作都屬於要登出的這個帳號。"""
+        self._require_gui_thread()
+        for task in list(self._running.values()):
+            self._cancel_task(task)
+
+    @Slot()
     def shutdown(self):
         """程式結束時（aboutToQuit）：取消全部的 token，不等工作結束；之後的結果都不交回。"""
         self._closed = True

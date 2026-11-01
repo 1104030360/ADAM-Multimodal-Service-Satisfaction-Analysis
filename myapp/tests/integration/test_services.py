@@ -1,4 +1,6 @@
 """登入後的畫面拿到的背景服務（AppServices）：MainWindow 交給 launch()，db lane 連得到資料庫。"""
+from types import SimpleNamespace
+
 import pytest
 
 from myapp import main
@@ -25,10 +27,12 @@ def test_db_lane_work_reads_the_database_off_the_gui_thread(services, no_network
     ("launchAdminHome", main.admin_home_init),
 ], ids=["staff", "admin"])
 def test_main_window_hands_its_services_to_launch(engine, db, monkeypatch, slot, init_module):
-    calls = []
-    monkeypatch.setattr(init_module, "launch", lambda *args: calls.append(args))
+    calls, connected = [], []
+    home = SimpleNamespace(session=SimpleNamespace(loggedOut=SimpleNamespace(connect=connected.append)))
+    monkeypatch.setattr(init_module, "launch", lambda *args: calls.append(args) or home)
     window = MainWindow(engine)
     getattr(window, slot)(STAFF_ID)
     [(_, account_id, services)] = calls
     assert account_id == STAFF_ID
     assert (services.tasks, services.notifier, services.ui_prefs) == (window.tasks, window.notifier, window.ui_prefs)
+    assert connected == [window.showLogin]  # Log Out（N1）之後回到登入視窗

@@ -29,6 +29,20 @@ Window {
             stackView.replace(loginComponent)
     }
 
+    // 登出之後（N1，mainWindow.showLogin()）：同一個視窗再出現，不重播開場圖。換一份新的表單：帳號、密碼、錯誤都是空的，
+    // 表單出現時（StackView.onActivated）焦點在帳號欄。被換掉的表單不再處理登入結果（它的 Connections 看 StackView.status）
+    function showAgain() {
+        stackView.replace(loginComponent, {}, StackView.Immediate)
+        login_window.show()
+        login_window.raise()
+        login_window.requestActivate()
+    }
+
+    Connections {
+        target: mainWindow
+        function onLoginRequested() { login_window.showAgain() }
+    }
+
     // 第一個畫面在這裡才決定：這時 Binding 已經把 uiPrefs 寫進 Theme。
     // 減少動態（或 animationScale 0）時 durSplash 是 0，開場圖整段不出現，直接是登入表單（DS-43）
     Component.onCompleted: {
