@@ -80,113 +80,28 @@ def score_or_none(value):
 from myapp.media import ChartsModel, MediaModel, MediaService, PDFHandler, clear_cache  # noqa: E402,F401
 
 
-class RowListModel(QAbstractListModel):
-    """依主鍵增量更新的清單模型（ENG-08）。角色名稱就是每一列 dict 的鍵。
-
-    replace(rows) 只對真的變動的列發 remove、insert、move、dataChanged：清單不整份重設，
-    捲動位置和沒變的 delegate 都留著（以前是 model = null 再設回去，捲動位置會跳回最上面，UX-21）。
-    """
-
-    countChanged = Signal()
-
-    def __init__(self, roles, key, parent=None):
-        super().__init__(parent)
-        self._roles = tuple(roles)
-        self._key = key
-        self._rows = []
-
-    @Property(int, notify=countChanged)
-    def count(self):
-        return len(self._rows)
-
-    def rowCount(self, parent=QModelIndex()):
-        return 0 if parent.isValid() else len(self._rows)
-
-    def roleNames(self):
-        return {_FIRST_ROLE + i: name.encode() for i, name in enumerate(self._roles)}
-
-    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
-        offset = int(role) - _FIRST_ROLE
-        if not index.isValid() or not 0 <= index.row() < len(self._rows) or not 0 <= offset < len(self._roles):
-            return None
-        return self._rows[index.row()][self._roles[offset]]
-
-    def rows(self):
-        """目前的每一列（複本），給 Python 端和測試讀。"""
-        return [dict(row) for row in self._rows]
-
-    def replace(self, rows):
-        """換成 rows（依畫面順序，主鍵不重複）。"""
-        before = len(self._rows)
-        wanted = {row[self._key] for row in rows}
-        for i in reversed(range(len(self._rows))):
-            if self._rows[i][self._key] not in wanted:
-                self.beginRemoveRows(QModelIndex(), i, i)
-                del self._rows[i]
-                self.endRemoveRows()
-        for target, row in enumerate(rows):
-            row = {name: row.get(name) for name in self._roles}
-            key = row[self._key]
-            current = next((i for i in range(target, len(self._rows)) if self._rows[i][self._key] == key), None)
-            if current is None:
-                self.beginInsertRows(QModelIndex(), target, target)
-                self._rows.insert(target, row)
-                self.endInsertRows()
-                continue
-            if current != target:  # 前面的都排好了，所以 current 一定在 target 後面
-                self.beginMoveRows(QModelIndex(), current, current, QModelIndex(), target)
-                self._rows.insert(target, self._rows.pop(current))
-                self.endMoveRows()
-            changed = [name for name in self._roles if self._rows[target][name] != row[name]]
-            if changed:
-                self._rows[target] = row
-                index = self.index(target)
-                self.dataChanged.emit(index, index, [_FIRST_ROLE + self._roles.index(name) for name in changed])
-        if len(self._rows) != before:
-            self.countChanged.emit()
+# 清單模型搬到 myapp/service_list.py（兩端的 Services 頁都用）；名稱留在這裡：分析頁的 ServiceModel、測試照舊 import
+from myapp.service_list import (LIST_ROLES, PAGE_SIZE, Criteria, RowListModel, clear_date_error,  # noqa: E402,F401
+                                count_text, date_errors, list_rows, list_subtitle, page_range, search_page,
+                                shown_text)
 
 
-# ---------------------------------------------------------------- 服務查詢（UX-24）
-
-SEARCH_SQL = """
-SELECT s.service_id, a.account_name AS name, s.service_start AS start_datetime
-FROM tbl_service AS s
-JOIN tbl_account AS a ON a.account_id = s.account_id
-WHERE s.account_id = %s AND s.service_status = 3{conditions}
-ORDER BY s.service_start DESC, s.service_id DESC
-"""
-RESULT_ROLES = ("service_id", "name", "start_datetime")  # 和以前的 ResultsModel 同名：QML 的表格照用
-
-
-def parse_date(text):
-    """「YYYY-MM-DD」→ datetime；空白 → None（不限）；格式不對丟 ValueError。"""
-    text = text.strip()
-    return datetime.strptime(text, "%Y-%m-%d") if text else None
-
-
-def search_services(db, account_id, start, end):
-    """在 db lane 執行：自己的、分析完成的服務，依開始時間新的在前。結束日當天整天都算。1 個往返。"""
-    conditions, params = "", [account_id]
-    if start is not None:
-        conditions += " AND s.service_start >= %s"
-        params.append(start)
-    if end is not None:  # 條件用「小於隔天 00:00」
-        conditions += " AND s.service_start < %s"
-        params.append(end + timedelta(days=1))
-    with db.cursor(dictionary=True) as cursor:
-        cursor.execute(SEARCH_SQL.format(conditions=conditions), tuple(params))
-        rows = cursor.fetchall()
-    return [{"service_id": str(row["service_id"]), "name": row["name"],
-             "start_datetime": format_time(row["start_datetime"])} for row in rows]
+# ---------------------------------------------------------------- 服務查詢（UX-24；新版 Services 頁，PLAN §6-4、T31）
 
 
 class ServiceManager(QObject):
-    """服務查詢頁（server_service_page.qml）的資料。
+    """Services 頁（server_service_page.qml，PLAN §6-4）的資料：自己的、分析完成的服務，新的在前。
 
-    - search(start, end)：先檢查日期格式（不連網路），格式不對只設 startDateInvalid／endDateInvalid、不送出；
-      對了就在 db lane 查詢，replace=True：連按時只留最後一次的結果。
-    - status：idle（還沒查過）、ready、error；busy 是查詢中。查到 0 筆＝ready 而且 resultsModel.count 是 0。
+    - search(start, end)：先檢查日期（不連網路）：格式不對、To 早於 From，錯誤寫在 startDateError／endDateError、不送出；
+      對了就在 db lane 查詢，replace=True：連按時只留最後一次的結果。每次搜尋都從 8 筆開始。
+      頁面第一次打開時用空白的日期查一次（全部，新的在前）。
+    - status：idle（還沒查過）、ready、error；busy 是搜尋中（Show More 不算）。查到 0 筆＝ready 而且 totalCount 是 0。
     - startDate、endDate：上一次送出的條件。換頁回來時欄位照舊，條件和結果對得起來（UX-24）。
+    - 清單（listModel，角色見 service_list.LIST_ROLES）一次 8 筆（UD7）：totalCount 是全部符合的筆數，hasMore 表示還有沒列出的。
+      showMore() 用同樣的條件多查 8 筆（1 個往返）；loadingMore 是查詢中，失敗時清單留著，
+      moreErrorDetail／moreErrorTechnical／moreFailureCount 說明原因，再按一次 Show More 就是重試（T31 第 1 節）。
+    - 標題（T31 第 2 節）：countText「18 services」、rangeText「Oct 19 – Nov 1, 2026」（沒填的日期用查到的服務補上）、
+      subtitle「Oct 19 – Nov 1, 2026 · newest first」、shownText「Showing 8 of 18」。還沒查過時都是空字串。
     """
 
     statusChanged = Signal()
@@ -194,29 +109,26 @@ class ServiceManager(QObject):
     errorChanged = Signal()
     criteriaChanged = Signal()
     dateErrorsChanged = Signal()
-    currentServiceIdChanged = Signal()
+    pageChanged = Signal()          # totalCount、hasMore 和標題的文字
+    loadingMoreChanged = Signal()   # loadingMore 和 Show More 的錯誤
 
     def __init__(self, services, account_id):
         super(ServiceManager, self).__init__()
         self.services = services
         self.account_id = account_id
-        self._currentServiceId = ""
-        self.resultsModel = RowListModel(RESULT_ROLES, "service_id", self)
+        self._list = RowListModel(LIST_ROLES, "serviceId", self)
         self._status = "idle"
         self._busy = False
         self._start_date = self._end_date = ""
-        self._start_invalid = self._end_invalid = False
+        self._date_errors = {"start": "", "end": ""}
         self._error_detail = self._error_technical = ""
         self._failure_count = 0
-
-    @Property(str, notify=currentServiceIdChanged)
-    def currentServiceId(self):
-        return self._currentServiceId
-
-    @Slot(str)
-    def setCurrentServiceId(self, service_id):
-        self._currentServiceId = service_id
-        self.currentServiceIdChanged.emit()
+        self._criteria = None  # 上一次送出的條件（Criteria）：Show More 用同一組
+        self._page = None      # 上一次查到的結果（service_list.SearchPage）
+        self._shown_criteria = None  # 畫面上這份結果的條件（標題的範圍用）
+        self._loading_more = False
+        self._more_detail = self._more_technical = ""
+        self._more_failures = 0
 
     @Property(str, notify=statusChanged)
     def status(self):
@@ -234,13 +146,13 @@ class ServiceManager(QObject):
     def endDate(self):
         return self._end_date
 
-    @Property(bool, notify=dateErrorsChanged)
-    def startDateInvalid(self):
-        return self._start_invalid
+    @Property(str, notify=dateErrorsChanged)
+    def startDateError(self):
+        return self._date_errors["start"]
 
-    @Property(bool, notify=dateErrorsChanged)
-    def endDateInvalid(self):
-        return self._end_invalid
+    @Property(str, notify=dateErrorsChanged)
+    def endDateError(self):
+        return self._date_errors["end"]
 
     @Property(str, notify=errorChanged)
     def errorDetail(self):
@@ -254,20 +166,79 @@ class ServiceManager(QObject):
     def failureCount(self):
         return self._failure_count
 
+    # ------------------------------------------------------------ 清單與標題（新版 Services 頁）
+
+    @Property(QObject, constant=True)
+    def listModel(self):
+        """畫面上的列（RowListModel，角色見 service_list.LIST_ROLES）。"""
+        return self._list
+
+    @Property(int, notify=pageChanged)
+    def totalCount(self):
+        return self._page.total if self._page is not None else 0
+
+    @Property(bool, notify=pageChanged)
+    def hasMore(self):
+        return self._page is not None and len(self._page.rows) < self._page.total
+
+    @Property(str, notify=pageChanged)
+    def countText(self):
+        return count_text(self._page.total) if self._page is not None else ""
+
+    @Property(str, notify=pageChanged)
+    def rangeText(self):
+        return page_range(self._shown_criteria, self._page) if self._page is not None else ""
+
+    @Property(str, notify=pageChanged)
+    def subtitle(self):
+        return list_subtitle(self.rangeText) if self._page is not None else ""
+
+    @Property(str, notify=pageChanged)
+    def shownText(self):
+        return shown_text(len(self._page.rows), self._page.total) if self._page is not None else ""
+
+    @Property(bool, notify=loadingMoreChanged)
+    def loadingMore(self):
+        return self._loading_more
+
+    @Property(str, notify=loadingMoreChanged)
+    def moreErrorDetail(self):
+        return self._more_detail
+
+    @Property(str, notify=loadingMoreChanged)
+    def moreErrorTechnical(self):
+        return self._more_technical
+
+    @Property(int, notify=loadingMoreChanged)
+    def moreFailureCount(self):
+        return self._more_failures
+
+    # ------------------------------------------------------------ 搜尋、Show More
+
     @Slot(str, str, result=bool)
     def search(self, start_text, end_text):
-        """回傳是否已經送出查詢（日期格式不對就不送）。"""
-        start, self._start_invalid = self._parse(start_text)
-        end, self._end_invalid = self._parse(end_text)
-        self.dateErrorsChanged.emit()
-        if self._start_invalid or self._end_invalid:
+        """回傳是否已經送出查詢（日期有錯就不送）。"""
+        start, end, errors = date_errors(start_text, end_text)
+        if errors != self._date_errors:
+            self._date_errors = errors
+            self.dateErrorsChanged.emit()
+        if any(errors.values()):
             return False
         self._start_date, self._end_date = start_text.strip(), end_text.strip()
         self.criteriaChanged.emit()
-        db, account_id = self.services.db, self.account_id
-        self.services.tasks.submit("db", SEARCH_KEY, lambda token, report: search_services(db, account_id, start, end),
-                                   on_ok=self._found, on_err=self._failed, replace=True)
+        self._criteria = Criteria(start, end, account_id=self.account_id)
+        self._fetch(PAGE_SIZE, more=False)
         self._set_busy(True)
+        self._set_loading_more(False, "", "", reset_failures=True)  # 還在跑的 Show More 被這次搜尋取代了
+        return True
+
+    @Slot(result=bool)
+    def showMore(self):
+        """多列 8 筆：同樣的條件、LIMIT 多 8 再查一次（1 個往返）。回傳是否送出（沒有更多、正在查時不送）。"""
+        if self._busy or self._loading_more or self._status != "ready" or not self.hasMore:
+            return False
+        self._fetch(len(self._page.rows) + PAGE_SIZE, more=True)
+        self._set_loading_more(True, "", "")
         return True
 
     @Slot()
@@ -275,15 +246,27 @@ class ServiceManager(QObject):
         """區塊錯誤的 Retry：用上一次送出的條件再查一次。"""
         self.search(self._start_date, self._end_date)
 
-    @staticmethod
-    def _parse(text):
-        try:
-            return parse_date(text), False
-        except ValueError:
-            return None, True
+    @Slot(str)
+    def clearDateError(self, field):
+        """使用者改了 field（start、end）那一格：錯誤先拿掉，下一次按 Search 再檢查（service_list.clear_date_error）。"""
+        errors = clear_date_error(self._date_errors, field)
+        if errors != self._date_errors:
+            self._date_errors = errors
+            self.dateErrorsChanged.emit()
 
-    def _found(self, rows):
-        self.resultsModel.replace(rows)
+    def _fetch(self, limit, more):
+        db, criteria = self.services.db, self._criteria
+        on_ok = (lambda page: self._more_found(criteria, page)) if more else (lambda page: self._found(criteria, page))
+        self.services.tasks.submit("db", SEARCH_KEY, lambda token, report: search_page(db, criteria, limit),
+                                   on_ok=on_ok, on_err=self._more_failed if more else self._failed, replace=True)
+
+    def _show(self, criteria, page):
+        self._page, self._shown_criteria = page, criteria
+        self._list.replace(list_rows(page))
+        self.pageChanged.emit()
+
+    def _found(self, criteria, page):
+        self._show(criteria, page)
         if self._failure_count:
             self._failure_count = 0
             self.errorChanged.emit()
@@ -297,6 +280,24 @@ class ServiceManager(QObject):
         self.errorChanged.emit()
         self._set_status("error")
         self._set_busy(False)
+
+    def _more_found(self, criteria, page):
+        self._show(criteria, page)
+        self._set_loading_more(False, "", "", reset_failures=True)
+
+    def _more_failed(self, error):
+        """Show More 失敗：已經列出的留著，原因寫在按鈕旁邊；再按一次就是重試。"""
+        logger.warning("loading more services failed: %r", error)
+        self._more_failures += 1
+        self._set_loading_more(False, *error_text(error))
+
+    def _set_loading_more(self, loading, detail, technical, reset_failures=False):
+        before = (self._loading_more, self._more_detail, self._more_technical, self._more_failures)
+        self._loading_more, self._more_detail, self._more_technical = loading, detail, technical
+        if reset_failures:
+            self._more_failures = 0
+        if before != (self._loading_more, self._more_detail, self._more_technical, self._more_failures):
+            self.loadingMoreChanged.emit()
 
     def _set_status(self, status):
         if status != self._status:
@@ -1480,7 +1481,6 @@ def launch(engine, account_id, services=None):
     context.setContextProperty("homeDashboard", home.homeDashboard)
     context.setContextProperty("serviceModel", home.serviceModel)
     context.setContextProperty("serviceManager", home.serviceManager)
-    context.setContextProperty("resultsModel", home.serviceManager.resultsModel)
     context.setContextProperty("chartsModel", home.chartsModel)
     context.setContextProperty("mediaModel", home.mediaModel)
     context.setContextProperty("pdfHandler", home.pdfmodel)

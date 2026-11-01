@@ -84,10 +84,10 @@ def toasts(notifier):
 
 
 def table_row(model, row):
-    """像 QML 的表格一樣，用角色名稱（roleNames）讀出一列：{"service_id": ..., ...}。"""
+    """像 QML 的表格一樣，用角色名稱（roleNames）讀出一列：{"serviceId": ..., ...}（Services 頁的 LIST_ROLES）。"""
     names = {bytes(name).decode(): role for role, name in model.roleNames().items()}
     index = model.index(row, 0)
-    return {name: model.data(index, names[name]) for name in ("service_id", "name", "start_datetime")}
+    return {name: model.data(index, role) for name, role in names.items()}
 
 
 def find_button(root, text):

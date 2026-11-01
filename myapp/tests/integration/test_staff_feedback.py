@@ -39,6 +39,7 @@ pytestmark = pytest.mark.integration
 
 LOGIN_QML = Path(main.__file__).parent / "qml" / "pages" / "login.qml"
 DATE_HINT = "Enter the date as YYYY-MM-DD, for example 2026-10-31."
+ORDER_HINT = "The To date is before the From date. Choose the same day or later."
 OFFLINE = "Can't reach the database. Check your network and try again."
 _keys = count(1)
 
@@ -101,8 +102,9 @@ def find_item(root, name):
 
 
 def rows_of(view, name):
-    """ListView 已經建立的列，依 index 排序（不用 JS 的 itemAtIndex()）。"""
-    rows = [item for item in view.property("contentItem").childItems() if item.objectName() == name]
+    """ListView 已經建立的列，依 index 排序（不用 JS 的 itemAtIndex()）。剛被移除、還沒刪掉的列（index 是 -1）不算。"""
+    rows = [item for item in view.property("contentItem").childItems()
+            if item.objectName() == name and item.property("index") >= 0]
     return sorted(rows, key=lambda item: item.property("index"))
 
 
@@ -267,7 +269,7 @@ def test_page_objects_live_as_long_as_the_shell(engine, services, db):
     window = engine.rootObjects()[-1]
     wait_for_launch(services)
     gc.collect()
-    for name in ("serverHome", "homeDashboard", "serviceModel", "serviceManager", "resultsModel", "deviceFinder"):
+    for name in ("serverHome", "homeDashboard", "serviceModel", "serviceManager", "deviceFinder"):
         assert qml(window, f"{name} !== null"), name
     page = show_page(window, "analysisButton")
     assert qml(page, "vm !== null")
@@ -473,9 +475,12 @@ def test_recent_bars_show_both_scores_and_open_the_service(engine, services, db,
 # ── 服務查詢 ─────────────────────────────────────────────────────────────────
 
 def open_search(engine, services):
+    """打開 Services：第一次打開會用空白的日期查一次（全部，新的在前），等它查完。"""
     home, window = launch_staff(engine, services)
     wait_for_launch(services)
-    return window, show_page(window, "servicesButton")
+    page = show_page(window, "servicesButton")
+    wait_until(lambda: not services.tasks.isBusy(SEARCH_KEY))
+    return window, page
 
 
 def search(page, start, end):
@@ -486,14 +491,23 @@ def search(page, start, end):
 
 def test_search_checks_dates_before_querying(engine, services, db, no_network_on_gui_thread):
     window, page = open_search(engine, services)
-    assert find(page, "searchPrompt").isVisible()  # 還沒查過：說明怎麼查
-    start = find(page, "startDateField")
+    start, end = find(page, "startDateField"), find(page, "endDateField")
     search(page, "2026/10/30", "2026-10-31")
     assert find(page, "startDateError").property("text") == DATE_HINT  # 欄位下方說明格式（DS-52）
-    assert find(page, "endDateError").property("text") == ""
+    assert find(page, "startDateError").isVisible() and not find(page, "endDateError").isVisible()
+    assert qml(start, "invalid && Qt.colorEqual(background.border.color, Theme.errorOnDark)")
     assert qml(start, "Accessible.description") == DATE_HINT
     assert not services.tasks.isBusy(SEARCH_KEY)  # 格式不對就不查（以前會默默拿掉這個條件）
     wait_until(start.hasActiveFocus)  # 焦點移到有錯的欄位
+
+    search(page, "2026-10-31", "2026-10-30")  # To 早於 From：錯誤在 To 下面，也不查
+    assert find(page, "startDateError").property("text") == ""
+    assert find(page, "endDateError").property("text") == ORDER_HINT
+    assert not services.tasks.isBusy(SEARCH_KEY)
+    wait_until(end.hasActiveFocus)
+    start.setProperty("text", "2026-10-29")
+    qml(start, "textEdited()")  # 改了 From：To 下面「早於 From」的錯誤先拿掉，下一次 Search 再檢查
+    assert find(page, "endDateError").property("text") == ""
 
 
 def test_search_shows_an_empty_state_for_the_range(engine, services, db, no_network_on_gui_thread):
@@ -528,7 +542,7 @@ def test_search_failure_shows_retry_and_recovers(engine, services, db, monkeypat
     view = find(page, "resultList")
     wait_until(lambda: len(rows_of(view, "resultRow")) == 1)  # delegate 在下一次畫面更新才建立
     [row] = rows_of(view, "resultRow")
-    assert row.property("service_id") == "S20261030120000"
+    assert row.property("serviceId") == "S20261030120000"
 
 
 def test_rapid_searches_keep_only_the_last_result(engine, services, db, no_network_on_gui_thread):
@@ -544,8 +558,7 @@ def test_rapid_searches_keep_only_the_last_result(engine, services, db, no_netwo
         qml(page, "submit()")  # 改了日期按 Enter：取消前一次、改查新的（replace=True）
     wait_until(lambda: not services.tasks.isBusy(SEARCH_KEY))
     view = find(page, "resultList")
-    wait_until(lambda: len(rows_of(view, "resultRow")) > 0)
-    assert [row.property("service_id") for row in rows_of(view, "resultRow")] == ["S20261030120000"]
+    wait_until(lambda: [row.property("serviceId") for row in rows_of(view, "resultRow")] == ["S20261030120000"])
     assert qml(page, "manager.startDate") == "2026-10-30"
 
 
@@ -561,7 +574,7 @@ def test_search_page_keeps_the_last_criteria_when_reopened(engine, services, db,
     view = find(page, "resultList")
     wait_until(lambda: len(rows_of(view, "resultRow")) == 1)
     [row] = rows_of(view, "resultRow")
-    assert row.property("service_id") == "S20261030120000"
+    assert row.property("serviceId") == "S20261030120000"
 
 
 # ── 錄影頁 ───────────────────────────────────────────────────────────────────

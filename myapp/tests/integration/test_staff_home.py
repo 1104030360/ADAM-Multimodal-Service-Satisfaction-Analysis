@@ -41,10 +41,12 @@ def test_search_covers_whole_end_day_and_only_own_completed_services(services, d
     assert manager.busy and services.tasks.isBusy(SEARCH_KEY)  # 在背景查詢
     wait_until(lambda: not manager.busy)
     assert manager.status == "ready"
-    assert manager.resultsModel.rowCount() == 1
-    # QML 的表格用角色名稱讀每一格
-    assert table_row(manager.resultsModel, 0) == {
-        "service_id": "S20261030235900", "name": STAFF_NAME, "start_datetime": "2026-10-30 23:59:00"}
+    assert manager.listModel.rowCount() == 1
+    # QML 的表格用角色名稱讀每一格（helpers 的 add_service：5 分鐘、沒有分數）
+    row = table_row(manager.listModel, 0)
+    assert (row["serviceId"], row["staffName"], row["startTime"]) == (
+        "S20261030235900", STAFF_NAME, "2026-10-30 23:59:00")
+    assert (row["lengthText"], row["customerScore"], row["staffScore"]) == ("5 min", None, None)
 
 
 def test_search_without_dates_lists_every_completed_service_newest_first(services, db, no_network_on_gui_thread):
@@ -54,19 +56,24 @@ def test_search_without_dates_lists_every_completed_service_newest_first(service
     manager = ServiceManager(services, STAFF_ID)
     assert manager.search(" ", "")
     wait_until(lambda: not manager.busy)
-    assert [row["service_id"] for row in manager.resultsModel.rows()] == ["S20261030100000", "S20261028100000"]
+    assert [row["serviceId"] for row in manager.listModel.rows()] == ["S20261030100000", "S20261028100000"]
     assert (manager.startDate, manager.endDate) == ("", "")
 
 
-@pytest.mark.parametrize("start, end, invalid", [
-    ("2026/10/30", "", (True, False)),
-    ("", "2026-02-30", (False, True)),  # 格式對但沒有這一天
-    ("tomorrow", "31-10-2026", (True, True)),
-], ids=["slashes", "no-such-day", "both"])
-def test_search_with_a_bad_date_is_not_sent(services, start, end, invalid):
+FORMAT = "Enter the date as YYYY-MM-DD, for example 2026-10-31."
+ORDER = "The To date is before the From date. Choose the same day or later."
+
+
+@pytest.mark.parametrize("start, end, errors", [
+    ("2026/10/30", "", (FORMAT, "")),
+    ("", "2026-02-30", ("", FORMAT)),  # 格式對但沒有這一天
+    ("tomorrow", "31-10-2026", (FORMAT, FORMAT)),
+    ("2026-10-31", "2026-10-30", ("", ORDER)),  # To 早於 From：查了也是 0 筆，先說清楚
+], ids=["slashes", "no-such-day", "both", "to-before-from"])
+def test_search_with_a_bad_date_is_not_sent(services, start, end, errors):
     manager = ServiceManager(services, STAFF_ID)
     assert manager.search(start, end) is False
-    assert (manager.startDateInvalid, manager.endDateInvalid) == invalid
+    assert (manager.startDateError, manager.endDateError) == errors
     assert not manager.busy and not services.tasks.isBusy(SEARCH_KEY)
     assert manager.status == "idle"
 

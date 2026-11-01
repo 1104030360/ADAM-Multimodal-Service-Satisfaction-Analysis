@@ -125,9 +125,10 @@ def test_search_filters_by_staff_name_and_covers_whole_end_day(db, services):
     assert sorted(manager.names) == sorted([STAFF_NAME, "王小明"])  # 下拉選單只列服務人員（等級 1）
     assert manager.search(STAFF_NAME, "2026-10-31", "2026-10-31")
     loaded(manager)
-    assert [row["service_id"] for row in manager.results] == ["S20261031235900"]
-    assert table_row(manager.resultsModel, 0) == {
-        "service_id": "S20261031235900", "name": STAFF_NAME, "start_datetime": "2026-10-31 23:59:00"}
+    assert [row["serviceId"] for row in manager.listModel.rows()] == ["S20261031235900"]
+    row = table_row(manager.listModel, 0)
+    assert (row["serviceId"], row["staffName"], row["startTime"]) == (
+        "S20261031235900", STAFF_NAME, "2026-10-31 23:59:00")
 
 
 @pytest.fixture

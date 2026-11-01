@@ -460,57 +460,50 @@ class AccountManager(QObject):
             self._submit_add(self._retry_payload)
 
 
-# ---------------------------------------------------------------- 服務查詢
+# ---------------------------------------------------------------- 服務查詢（新版 Services 頁，PLAN §6-9、T31）
 
-
-def parse_date(text):
-    """「YYYY-MM-DD」→ datetime；空白 → None。格式不對丟 ValueError。"""
-    text = text.strip()
-    return datetime.strptime(text, DATE_FORMAT) if text else None
+# 查詢、分頁、清單模型、文字和服務人員端共用 myapp/service_list.py
+from myapp.service_list import (LIST_ROLES, PAGE_SIZE, Criteria, RowListModel, clear_date_error,  # noqa: E402
+                                count_text, date_errors, list_rows, list_subtitle, page_range, search_page,
+                                shown_text, staff_label)
 
 
 class ServiceManager(_Section):
-    """服務查詢（UX-24、DS-26、DS-27）：服務人員名單和搜尋都在背景。
+    """Services 頁（admin_service_page.qml，PLAN §6-9）：服務人員名單和搜尋都在背景。
 
     - 名單：只列等級 1（服務人員）；namesState 是 loading、error、ready、empty。
-    - 搜尋：日期格式不對時不查，錯誤顯示在那個欄位下方；新的搜尋取代還在跑的舊搜尋（replace=True）。
-      state 一開始是 idle（還沒搜尋過）。lastQuery 是最後一次送出的條件，頁面重新建立時拿來還原欄位，
-      空狀態也用它寫出「No services from … to …」。
+    - 搜尋：日期格式不對、To 早於 From 時不查，錯誤顯示在那個欄位下方；新的搜尋取代還在跑的舊搜尋（replace=True）。
+      state 一開始是 idle（還沒搜尋過；頁面第一次打開時查一次全部）。lastQuery 是最後一次送出的條件，
+      頁面重新建立時拿來還原欄位，空狀態也用它寫出「No services from … to …」。
+    - 只列分析完成的服務，新的在前（和服務人員端一樣；以前列出所有狀態、舊的在前）。
+    - 清單（listModel，角色見 service_list.LIST_ROLES）一次 8 筆（UD7）：totalCount、hasMore；showMore() 用同樣的條件多查 8 筆，
+      不變淡、不換 state；loadingMore 是查詢中，失敗時清單留著，moreErrorDetail 等說明原因，再按一次就是重試。
+    - 標題：countText「138 services」、rangeText「Oct 19 – Nov 1, 2026」、
+      subtitle「All staff · Oct 19 – Nov 1, 2026 · newest first」、shownText「Showing 8 of 138」（T31 第 2 節）。
     """
 
     namesChanged = Signal()
     dateErrorsChanged = Signal()
-    resultsChanged = Signal()
     queryChanged = Signal()
-    currentServiceIdChanged = Signal()
+    pageChanged = Signal()          # totalCount、hasMore 和標題的文字（PySide 不認基底類別的 signal 當 notify，T19）
+    loadingMoreChanged = Signal()   # loadingMore 和 Show More 的錯誤
 
     NAMES_KEY = "admin:staff-names"
     NAMES_QUERY = "SELECT DISTINCT account_name FROM tbl_account WHERE account_level = 1 ORDER BY account_name"
-    SEARCH_QUERY = """
-        SELECT s.service_id, a.account_name AS name, s.service_start AS start_datetime
-        FROM tbl_service s
-        JOIN tbl_account a ON s.account_id = a.account_id
-        WHERE 1 = 1
-    """
 
     def __init__(self, services, parent=None):
         super().__init__(services, "admin:search", state=IDLE, parent=parent)
-        self._currentServiceId = ""
         self._names = []
         self._names_state = LOADING
         self._date_errors = {"start": "", "end": ""}
-        self._results = []
         self._query = {"name": "", "start": "", "end": ""}
-        self.resultsModel = ResultsModel()
-
-    @Property(str, notify=currentServiceIdChanged)
-    def currentServiceId(self):
-        return self._currentServiceId
-
-    @Slot(str)
-    def setCurrentServiceId(self, service_id):
-        self._currentServiceId = service_id
-        self.currentServiceIdChanged.emit()
+        self._list = RowListModel(LIST_ROLES, "serviceId", self)  # 依服務 ID 增量更新：Show More 只在最後插入
+        self._criteria = None        # 最後一次送出的條件（Criteria）：Show More 用同一組
+        self._page = None            # 畫面上這份結果（service_list.SearchPage）
+        self._shown_criteria = None  # 畫面上這份結果的條件（標題的範圍、篩選的名字）
+        self._loading_more = False
+        self._more_detail = self._more_technical = ""
+        self._more_failures = 0
 
     @Property(list, notify=namesChanged)
     def names(self):
@@ -528,14 +521,64 @@ class ServiceManager(_Section):
     def endDateError(self):
         return self._date_errors["end"]
 
-    @Property("QVariant", notify=resultsChanged)
-    def results(self):
-        return self._results
-
     @Property("QVariantMap", notify=queryChanged)
     def lastQuery(self):
         """最後一次送出的條件 {"name", "start", "end"}（日期是使用者打的字）。"""
         return dict(self._query)
+
+    # ------------------------------------------------------------ 清單與標題（新版 Services 頁）
+
+    @Property(QObject, constant=True)
+    def listModel(self):
+        """畫面上的列（RowListModel，角色見 service_list.LIST_ROLES）。"""
+        return self._list
+
+    @Property(int, notify=pageChanged)
+    def totalCount(self):
+        return self._page.total if self._page is not None else 0
+
+    @Property(bool, notify=pageChanged)
+    def hasMore(self):
+        return self._page is not None and len(self._page.rows) < self._page.total
+
+    @Property(str, notify=pageChanged)
+    def countText(self):
+        return count_text(self._page.total) if self._page is not None else ""
+
+    @Property(str, notify=pageChanged)
+    def rangeText(self):
+        return page_range(self._shown_criteria, self._page) if self._page is not None else ""
+
+    @Property(str, notify=pageChanged)
+    def staffText(self):
+        """這份結果篩選的服務人員：名字，或「All staff」。"""
+        return staff_label(self._shown_criteria.staff_name) if self._page is not None else ""
+
+    @Property(str, notify=pageChanged)
+    def subtitle(self):
+        return list_subtitle(self.rangeText, self.staffText) if self._page is not None else ""
+
+    @Property(str, notify=pageChanged)
+    def shownText(self):
+        return shown_text(len(self._page.rows), self._page.total) if self._page is not None else ""
+
+    @Property(bool, notify=loadingMoreChanged)
+    def loadingMore(self):
+        return self._loading_more
+
+    @Property(str, notify=loadingMoreChanged)
+    def moreErrorDetail(self):
+        return self._more_detail
+
+    @Property(str, notify=loadingMoreChanged)
+    def moreErrorTechnical(self):
+        return self._more_technical
+
+    @Property(int, notify=loadingMoreChanged)
+    def moreFailureCount(self):
+        return self._more_failures
+
+    # ------------------------------------------------------------ 名單、搜尋、Show More
 
     @Slot(result=bool)
     def loadNames(self):
@@ -555,43 +598,36 @@ class ServiceManager(_Section):
 
     @Slot(str, str, str, result=bool)
     def search(self, name, start_date, end_date):
-        """檢查日期、送出搜尋。回傳是否已經送出（日期格式不對時回傳 False）。"""
-        dates, errors = {}, {}
-        for field, text in (("start", start_date), ("end", end_date)):
-            try:
-                dates[field] = parse_date(text)
-                errors[field] = ""
-            except ValueError:
-                dates[field] = None
-                errors[field] = self.tr("Enter the date as YYYY-MM-DD, for example 2026-10-31.")
+        """檢查日期、送出搜尋（從 8 筆開始）。回傳是否已經送出（日期有錯時回傳 False）。"""
+        start, end, errors = date_errors(start_date, end_date)
         if errors != self._date_errors:
             self._date_errors = errors
             self.dateErrorsChanged.emit()
         if any(errors.values()):
             return False
 
-        query, params = self.SEARCH_QUERY, []
-        if name:
-            query += " AND a.account_name = %s"
-            params.append(name)
-        if dates["start"] is not None:
-            query += " AND s.service_start >= %s"
-            params.append(dates["start"])
-        if dates["end"] is not None:  # 結束日當天整天都要算：條件用「小於隔天 00:00」
-            query += " AND s.service_start < %s"
-            params.append(dates["end"] + timedelta(days=1))
-        query += " ORDER BY s.service_start, s.service_id"
+        criteria = Criteria(start, end, staff_name=name)
         db = self.services.db
-
-        def work(token, report):
-            with db.cursor(dictionary=True) as cursor:
-                cursor.execute(query, tuple(params))
-                return cursor.fetchall()
-
-        submitted = self._submit(work, self._show_results, replace=True)
+        submitted = self._submit(lambda token, report: search_page(db, criteria, PAGE_SIZE),
+                                 lambda page: self._show_results(criteria, page), replace=True)
         if submitted:
+            self._criteria = criteria
             self._query = {"name": name, "start": start_date.strip(), "end": end_date.strip()}
             self.queryChanged.emit()
+            self._set_loading_more(False, "", "", reset_failures=True)  # 還在跑的 Show More 被這次搜尋取代了
+        return submitted
+
+    @Slot(result=bool)
+    def showMore(self):
+        """多列 8 筆：同樣的條件、LIMIT 多 8 再查一次（1 個往返）。回傳是否送出（沒有更多、正在查時不送）。"""
+        if self._loading_more or self._state != READY or self._refreshing or not self.hasMore:
+            return False
+        criteria, limit, db = self._criteria, len(self._page.rows) + PAGE_SIZE, self.services.db
+        submitted = self.services.tasks.submit(
+            "db", self.key, lambda token, report: search_page(db, criteria, limit),
+            on_ok=lambda page: self._more_loaded(criteria, page), on_err=self._more_failed, replace=True)
+        if submitted:
+            self._set_loading_more(True, "", "")
         return submitted
 
     @Slot(result=bool)
@@ -601,21 +637,37 @@ class ServiceManager(_Section):
 
     @Slot(str)
     def clearDateError(self, field):
-        if self._date_errors.get(field):
-            self._date_errors[field] = ""
+        """使用者改了 field（start、end）那一格：錯誤先拿掉，下一次按 Search 再檢查（service_list.clear_date_error）。"""
+        errors = clear_date_error(self._date_errors, field)
+        if errors != self._date_errors:
+            self._date_errors = errors
             self.dateErrorsChanged.emit()
 
-    def _show_results(self, rows):
-        self._results = list(rows)
-        self.resultsModel.clear()
-        for row in rows:
-            self.resultsModel.appendRow([
-                QStandardItem(row["service_id"]),
-                QStandardItem(row["name"]),
-                QStandardItem(row["start_datetime"].strftime("%Y-%m-%d %H:%M:%S")),
-            ])
-        self.resultsChanged.emit()
-        return not rows
+    def _show_results(self, criteria, page):
+        """搜尋或 Show More 的結果：換成這一份。回傳是不是空的（_Section 決定 state）。"""
+        self._page, self._shown_criteria = page, criteria
+        self._list.replace(list_rows(page))
+        self.pageChanged.emit()
+        return not page.rows
+
+    def _more_loaded(self, criteria, page):
+        empty = self._show_results(criteria, page)
+        self._update(state=EMPTY if empty else READY)  # 這段期間有服務被刪掉、全部沒了的話是 empty
+        self._set_loading_more(False, "", "", reset_failures=True)
+
+    def _more_failed(self, exc):
+        """Show More 失敗：已經列出的留著（state 不變），原因寫在按鈕旁邊；再按一次就是重試。"""
+        logger.warning("loading more services failed: %r", exc)
+        self._more_failures += 1
+        self._set_loading_more(False, reason_text(exc), technical_detail(exc))
+
+    def _set_loading_more(self, loading, detail, technical, reset_failures=False):
+        before = (self._loading_more, self._more_detail, self._more_technical, self._more_failures)
+        self._loading_more, self._more_detail, self._more_technical = loading, detail, technical
+        if reset_failures:
+            self._more_failures = 0
+        if before != (self._loading_more, self._more_detail, self._more_technical, self._more_failures):
+            self.loadingMoreChanged.emit()
 
     def _names_loaded(self, names):
         self._names = names
@@ -626,35 +678,6 @@ class ServiceManager(_Section):
         logger.warning("loading staff names failed: %r", exc)
         self._names_state = ERROR
         self.namesChanged.emit()
-
-
-class ResultsModel(QStandardItemModel):
-    ServiceIdRole = Qt.UserRole + 1
-    NameRole = Qt.UserRole + 2
-    StartDatetimeRole = Qt.UserRole + 3
-
-    def __init__(self):
-        super().__init__()
-
-    def data(self, index, role):
-        if not index.isValid():
-            return None
-
-        if role == self.ServiceIdRole:
-            return index.siblingAtColumn(0).data(Qt.DisplayRole)
-        elif role == self.NameRole:
-            return index.siblingAtColumn(1).data(Qt.DisplayRole)
-        elif role == self.StartDatetimeRole:
-            return index.siblingAtColumn(2).data(Qt.DisplayRole)
-
-        return super().data(index, role)
-
-    def roleNames(self):
-        roles = super().roleNames()
-        roles[self.ServiceIdRole] = b'service_id'
-        roles[self.NameRole] = b'name'
-        roles[self.StartDatetimeRole] = b'start_datetime'
-        return roles
 
 
 # ---------------------------------------------------------------- 主畫面
@@ -727,7 +750,6 @@ def launch(engine, account_id, services=None):
         "adminHome": home,
         "homeDashboard": home.homeDashboard,
         "serviceManager": home.serviceManager,
-        "resultsModel": home.serviceManager.resultsModel,
         "accountManager": home.accountManager,
         "chartsModel": home.chartsModel,
         "mediaModel": home.mediaModel,

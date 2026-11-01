@@ -301,7 +301,8 @@ def test_search_covers_the_whole_end_day_and_remembers_the_query(services):
     settle(services)
     sql, params = services.db.calls[0]
     assert "a.account_name = %s" in sql and params[0] == "王小明"
-    assert [p.isoformat() for p in params[1:]] == ["2026-10-01T00:00:00", "2026-11-01T00:00:00"]
+    assert [p.isoformat() for p in params[1:-1]] == ["2026-10-01T00:00:00", "2026-11-01T00:00:00"]
+    assert "s.service_status = 3" in sql and params[-1] == 8  # 只有分析完成的；一次 8 筆（UD7）
     assert manager.state == "empty"
     assert manager.lastQuery == {"name": "王小明", "start": "2026-10-01", "end": "2026-10-31"}
 
@@ -313,13 +314,18 @@ def test_search_covers_the_whole_end_day_and_remembers_the_query(services):
 
 def test_search_with_only_an_end_date(services):
     manager = ServiceManager(services)
-    services.db.rows = [{"service_id": "S20261030090000", "name": "王小明", "start_datetime": datetime(2026, 10, 30, 9)}]
+    start = datetime(2026, 10, 30, 9)
+    services.db.rows = [{"service_id": "S20261030090000", "name": "王小明", "service_start": start,
+                         "service_end": start, "customer_total": 90.0, "server_total": -1.0,
+                         "total_count": 1, "first_start": start, "last_start": start}]
     assert manager.search("", "", "2026-10-31")
     settle(services)
     sql, params = services.db.calls[0]
-    assert "s.service_start >= %s" not in sql and [p.isoformat() for p in params] == ["2026-11-01T00:00:00"]
+    assert "s.service_start >= %s" not in sql and [p.isoformat() for p in params[:-1]] == ["2026-11-01T00:00:00"]
     assert manager.state == "ready" and manager.lastQuery == {"name": "", "start": "", "end": "2026-10-31"}
-    assert manager.resultsModel.rowCount() == 1
+    assert manager.listModel.rowCount() == 1
+    # 沒填開始日：範圍的開頭用查到的服務最早的那一天（T31 第 2 節）
+    assert (manager.countText, manager.subtitle) == ("1 service", "All staff · Oct 30 – Oct 31, 2026 · newest first")
 
 
 def test_staff_names_load_in_the_background(services):

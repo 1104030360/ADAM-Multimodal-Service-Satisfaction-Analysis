@@ -233,15 +233,18 @@ def test_details_switches_page_at_once_and_downloads_in_the_background(side, ui,
     with lane_held(services.tasks):
         db_proxy.reset()
         qml(button, "clicked()")
-        # 換頁是同步的：按下去就已經在明細頁，頁首有服務 ID 和時間；清單還沒查（db lane 被卡住）
+        # 換頁是同步的：按下去就已經在明細頁，外殼的頁首有「‹ Services」、服務 ID 和日期；清單還沒查（db lane 被卡住）
         assert qml(window, "mainContentLoader.source.toString()").endswith(side.detail_page)
         detail = qml(window, "mainContentLoader.item")
-        assert find(detail, "serviceIdText").property("text") == SID
-        assert find(detail, "startTimeText").property("text") == START
+        assert (qml(window, "header.title"), qml(window, "header.backText")) == (SID, "Services")
+        assert qml(window, "header.subtitle") == "Oct 30, 2026 · 12:00"  # Details 傳進來的開始時間
         assert home.mediaModel.state == "loading"
         assert db_proxy.snapshot()["rt"] == 0  # GUI 執行緒 0 個往返（背景的也還沒開始）
     wait_until(lambda: settled(home))
     assert db_proxy.snapshot()["rt"] == 1  # 所有檔案的位置一個查詢就拿到（以前 4 個查詢）
+    # 新版的頁首（日期、時間、分析狀態）和分數列也在同一個查詢裡（T31 第 3 節）；管理員端前面多服務人員的名字
+    assert home.mediaModel.headerText == "Oct 30, 2026 · 12:00–12:05 · Analysis completed"
+    assert qml(window, "header.subtitle") == ("" if side is STAFF else "服務人員（佔位） · ") + home.mediaModel.headerText
     model = home.mediaModel
     for kind in ("cam0", "cam1", "audio"):
         slot = model.slot(kind)
@@ -427,7 +430,7 @@ def test_leaving_the_page_cancels_unfinished_downloads_and_keeps_finished_ones(s
     wait_until(lambda: model.slot("cam1").done == 1_000_000)
     assert model.slot("audio").state == "waiting"
 
-    qml(find(detail, "backButton"), "clicked()")
+    qml(find(window, "headerBack"), "clicked()")  # 頁首的「‹ Services」
     # 換頁的當下就取消：還在下載的停下來，排隊中的不會開始
     assert qml(window, "mainContentLoader.source.toString()").endswith(side.search_page)
     wait_until(lambda: not services.tasks.isBusy(task(cam1)))
@@ -494,10 +497,10 @@ def test_charts_that_did_not_load_show_a_warning_bar_with_retry(side, ui, servic
     assert find(warning, "chartsWarningTitle").property("text") == "2 charts didn't load"
     assert find(warning, "chartsWarningText").property("text") == "You can view the other 3 now."
     counter = find(detail, "chartCounter")
-    assert counter.property("text") == "1 / 3"
+    assert counter.property("text") == "Chart 1 of 3"
     assert not find(detail, "previousChartButton").property("enabled")
     qml(find(detail, "nextChartButton"), "clicked()")
-    assert counter.property("text") == "2 / 3"
+    assert counter.property("text") == "Chart 2 of 3"
     image = find(detail, "chartImage")
     wait_until(lambda: qml(image, "status === Image.Ready"))
     assert qml(image, "asynchronous")
@@ -509,7 +512,7 @@ def test_charts_that_did_not_load_show_a_warning_bar_with_retry(side, ui, servic
     qml(find(warning, "chartsRetryButton"), "clicked()")
     wait_until(lambda: charts.readyCount == 5)
     assert charts.failedCount == 0 and not warning.isVisible()
-    assert counter.property("text") == "2 / 5"
+    assert counter.property("text") == "Chart 2 of 5"
     assert busy.media().count(task(keys[0])) == 1  # 影片沒有被重新下載
 
 
@@ -712,7 +715,7 @@ def test_going_back_before_the_file_list_arrives_cancels_it(side, ui, services, 
     with lane_held(services.tasks):  # 清單還沒查：使用者就按了 Back
         detail = open_detail(side, home, window)
         assert home.mediaModel.state == "loading" and home.chartsModel.state == "loading"
-        qml(find(detail, "backButton"), "clicked()")
+        qml(find(window, "headerBack"), "clicked()")
         assert (home.mediaModel.state, home.mediaModel.busy, home.chartsModel.state) == ("idle", False, "idle")
     wait_until(lambda: not busy.now)
     assert media.list_key(SID) in busy.seen and busy.media() == []  # 查詢被取消，沒有開始任何下載

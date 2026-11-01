@@ -1,26 +1,25 @@
 pragma ComponentBehavior: Bound
 import QtQuick
-// 日期欄（DateField.qml）、按鈕（BusyButton）自己 import Basic；這裡的捲軸也用 Basic，和以前一樣（T13）
+// 捲軸、自訂的控制項都用 Basic 樣式（T13）；日期欄（DateField.qml）、按鈕（BusyButton）自己也 import Basic
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../components"
 
-// 服務查詢（UX-24、DS-26、DS-27）。查詢在背景執行（serviceManager.search，replace=True：連按只留最後一次）。
-// - 日期格式不對：欄位下方顯示錯誤，不送出，焦點移到那一欄
-// - 查不到：空狀態寫出查了哪一段期間；查詢失敗：區塊錯誤＋Retry
-// - 換頁回來時，欄位是上一次送出的條件，和下面的結果對得起來
-// - Details 先換頁，影音和圖表在明細頁的背景下載（UX-22、ENG-04）：這裡不碰網路
+// Services（服務人員，新版介面 U2，PLAN §6-4；設計稿 StaffServices）：找過去的服務。頁面標題和說明在外殼的頁首。
+// - 條件卡片：From、To（YYYY-MM-DD）、Search；留空就不限，只列出分析完成的服務。
+//   日期格式不對、To 早於 From：欄位下方顯示錯誤，不送出，焦點移到第一個有錯的欄位（DS-27）。
+// - 結果卡片（ServiceTable.qml，兩端共用）：「18 services · Oct 19 – Nov 1, 2026 · newest first」、
+//   Service ID、Date、Length、Customer、Staff、Details；一次 8 筆＋Show More（UD7）。拿掉 Name 欄（UD11）。
+// - 第一次打開時用空白的日期查一次：一進來就看得到最近的 8 筆。換頁回來時，欄位是上一次送出的條件，結果留著（UX-24）。
+// - 查詢在背景（serviceManager.search，replace=True：連按只留最後一次）；Details 交給外殼的 window.openServiceDetail()，
+//   影音和圖表在明細頁的背景下載（UX-22、ENG-04）：這裡不碰網路。
+// - 整頁一起捲動；用 Tab 走到下面的按鈕時捲進畫面。
 Item {
     id: searchPage
-    anchors.fill: parent
 
     readonly property var manager: typeof serviceManager !== "undefined" ? serviceManager : null
-    readonly property var results: typeof resultsModel !== "undefined" ? resultsModel : null
     readonly property string status: manager ? manager.status : "idle"
     readonly property bool busy: manager !== null && manager.busy
-    readonly property int resultCount: results ? results.count : 0
-    readonly property int listBottomMargin: typeof toastHost !== "undefined" && toastHost ? toastHost.occupiedHeight : 0
-    readonly property string dateHint: qsTr("Enter the date as YYYY-MM-DD, for example 2026-10-31.")
 
     function submit() {
         if (!manager)
@@ -29,10 +28,11 @@ Item {
         if (manager.busy && startDateField.text.trim() === manager.startDate
                 && endDateField.text.trim() === manager.endDate)
             return
-        if (!manager.search(startDateField.text, endDateField.text))   // 日期格式不對：焦點移到第一個有錯的欄位
-            (manager.startDateInvalid ? startDateField : endDateField).forceActiveFocus()
+        if (!manager.search(startDateField.text, endDateField.text))   // 日期有錯：焦點移到第一個有錯的欄位
+            (manager.startDateError !== "" ? startDateField : endDateField).forceActiveFocus()
     }
 
+    // 查到 0 筆時的標題：寫出查了哪一段期間（DS-52）
     function emptyTitle() {
         const start = manager ? manager.startDate : ""
         const end = manager ? manager.endDate : ""
@@ -45,254 +45,197 @@ Item {
         return qsTr("No completed services yet")
     }
 
+    // 把 item 捲進畫面（Tab 走到看不到的按鈕時）
+    function reveal(item) {
+        const top = item.mapToItem(scroller.contentItem, 0, 0).y
+        if (top < scroller.contentY)
+            scroller.contentY = Math.max(0, top - Theme.spaceM)
+        else if (top + item.height > scroller.contentY + scroller.height)
+            scroller.contentY = Math.min(scroller.contentHeight - scroller.height,
+                                         top + item.height - scroller.height + Theme.spaceM)
+    }
+
     Component.onCompleted: {
-        if (manager) {
-            startDateField.text = manager.startDate
-            endDateField.text = manager.endDate
-        }
+        if (!manager)
+            return
+        startDateField.text = manager.startDate
+        endDateField.text = manager.endDate
+        if (manager.status === "idle" && !manager.busy)
+            manager.search("", "")      // 第一次打開：全部，新的在前
     }
 
-    component HeaderText: Text {
-        Layout.fillWidth: true
-        Layout.preferredWidth: 1
-        color: Theme.textPrimary
-        font.pixelSize: Theme.fontBody
+    // 欄位上面的標籤
+    component FieldLabel: Text {
+        color: Theme.textSecondary
+        font.pixelSize: Theme.fontCaption
         font.weight: Font.DemiBold
-        horizontalAlignment: Text.AlignHCenter
-        verticalAlignment: Text.AlignVCenter
     }
 
-    ColumnLayout {
+    Flickable {
+        id: scroller
+        objectName: "servicesScroller"
         anchors.fill: parent
-        anchors.margins: Theme.spaceL
-        spacing: Theme.spaceS
+        contentWidth: width
+        contentHeight: content.implicitHeight
+        // 最後的內容不會被右下角的通知蓋住（DS-21）
+        bottomMargin: typeof toastHost !== "undefined" && toastHost ? toastHost.occupiedHeight : 0
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ScrollBar {}
 
-        // 查詢條件
-        RowLayout {
-            spacing: Theme.spaceM
+        ColumnLayout {
+            id: content
+            width: scroller.width
+            spacing: Theme.sectionGap
 
-            ColumnLayout {
-                Layout.alignment: Qt.AlignTop
-                spacing: 4
+            // ── 條件
+            Card {
+                objectName: "criteriaCard"
+                Layout.fillWidth: true
+                topPadding: Theme.spaceL
+                bottomPadding: Theme.spaceL
+                Accessible.role: Accessible.Grouping
+                Accessible.name: qsTr("Find services by date")
 
-                // 日期欄和管理員端的查詢頁共用（DateField.qml）。在任一欄按 Enter 都會送出
-                DateField {
-                    id: startDateField
-                    objectName: "startDateField"
-                    placeholderText: qsTr("Start Date (YYYY-MM-DD)")
-                    accessibleName: qsTr("Start date")
-                    errorText: searchPage.dateHint
-                    invalid: searchPage.manager !== null && searchPage.manager.startDateInvalid
-                    onAccepted: searchPage.submit()
-                }
-                FieldError {
-                    objectName: "startDateError"
-                    Layout.preferredWidth: 280
-                    Layout.preferredHeight: 2 * lineHeight  // 這句在 280 寬會排成兩行：先留好，錯誤出現時版面不跳
-                    text: startDateField.invalid ? searchPage.dateHint : ""
-                }
-            }
+                // 一行放不下時往下排（設計稿的 flex-wrap）：Search 和說明跟著輸入框對齊
+                Flow {
+                    id: criteria
+                    width: parent ? parent.width : 0    // 卡片的內容寬度（Pane 不會自己撐開它）
+                    spacing: Theme.spaceM
 
-            ColumnLayout {
-                Layout.alignment: Qt.AlignTop
-                spacing: 4
+                    readonly property real fieldTop: fromLabel.height + 8   // 輸入框的上緣（標籤下面）
+                    readonly property real used: fromColumn.width + toColumn.width + searchColumn.width + 3 * spacing
 
-                DateField {
-                    id: endDateField
-                    objectName: "endDateField"
-                    placeholderText: qsTr("End Date (YYYY-MM-DD)")
-                    accessibleName: qsTr("End date")
-                    errorText: searchPage.dateHint
-                    invalid: searchPage.manager !== null && searchPage.manager.endDateInvalid
-                    onAccepted: searchPage.submit()
-                }
-                FieldError {
-                    objectName: "endDateError"
-                    Layout.preferredWidth: 280
-                    Layout.preferredHeight: 2 * lineHeight
-                    text: endDateField.invalid ? searchPage.dateHint : ""
-                }
-            }
+                    Column {
+                        id: fromColumn
+                        spacing: 8
 
-            BusyButton {
-                id: searchButton
-                objectName: "searchButton"
-                Layout.alignment: Qt.AlignTop
-                variant: "primary"
-                text: qsTr("Search")
-                busyText: qsTr("Searching…")
-                busy: searchPage.busy
-                onClicked: {
-                    if (busy)
-                        return
-                    searchPage.submit()
-                }
-            }
-
-            Item { Layout.fillWidth: true }
-        }
-
-        Text {
-            text: qsTr("Only services with completed analyses are listed.")   // 以前畫面上沒說（UX-24）
-            color: Theme.textSecondary
-            font.pixelSize: Theme.fontCaption
-        }
-
-        // 表頭
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: Theme.controlHeight
-            color: Theme.tile
-            border.color: Theme.cardBorder
-            border.width: 1
-            radius: Theme.radiusS
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.margins: Theme.spaceS
-                spacing: Theme.spaceL
-
-                HeaderText { text: qsTr("Service ID") }
-                HeaderText { text: qsTr("Name") }
-                HeaderText { text: qsTr("Date") }
-                HeaderText { text: qsTr("Details") }
-            }
-        }
-
-        // 結果
-        Item {
-            id: resultArea
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-
-            ListView {
-                id: resultListView
-                objectName: "resultList"
-                anchors.fill: parent
-                visible: searchPage.status === "ready" && searchPage.resultCount > 0
-                opacity: searchPage.busy ? 0.5 : 1      // 查詢中：舊的結果留著、變淡（DS-25）
-                clip: true
-                spacing: 4
-                model: searchPage.results
-                bottomMargin: searchPage.listBottomMargin
-                boundsBehavior: Flickable.StopAtBounds
-                ScrollBar.vertical: ScrollBar {}
-                Accessible.role: Accessible.Table
-                Accessible.name: qsTr("Search results")
-
-                delegate: Rectangle {
-                    id: resultRow
-                    objectName: "resultRow"
-                    required property int index
-                    required property string service_id
-                    required property string name
-                    required property string start_datetime
-
-                    width: ListView.view ? ListView.view.width : 0 // 收尾時 delegate 先離開 ListView，view 會是 null
-                    height: 60
-                    radius: Theme.radiusS
-                    color: index % 2 === 0 ? Theme.contentBg : Theme.card
-                    border.color: Theme.cardBorder
-                    border.width: 1
-                    Accessible.role: Accessible.Row
-                    Accessible.name: [service_id, name, start_datetime].join(", ")
-
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: Theme.spaceS
-                        spacing: Theme.spaceL
-
-                        Text {
-                            Layout.fillWidth: true
-                            Layout.preferredWidth: 1
-                            text: resultRow.service_id
-                            color: Theme.textPrimary
-                            font.pixelSize: Theme.fontBody
-                            font.weight: Font.DemiBold
-                            font.features: { "tnum": 1 }
-                            horizontalAlignment: Text.AlignHCenter
-                            elide: Text.ElideRight
+                        FieldLabel { id: fromLabel; text: qsTr("From") }
+                        // 日期欄和管理員端共用（DateField.qml）。在任一欄按 Enter 都會送出
+                        DateField {
+                            id: startDateField
+                            objectName: "startDateField"
+                            accessibleName: qsTr("From date")
+                            errorText: searchPage.manager ? searchPage.manager.startDateError : ""
+                            invalid: errorText !== ""
+                            onActiveFocusChanged: if (activeFocus) searchPage.reveal(this)
+                            onTextEdited: {
+                                if (searchPage.manager)
+                                    searchPage.manager.clearDateError("start")
+                            }
+                            onAccepted: searchPage.submit()
                         }
-                        Text {
-                            Layout.fillWidth: true
-                            Layout.preferredWidth: 1
-                            text: resultRow.name
-                            color: Theme.textPrimary
-                            font.pixelSize: Theme.fontBody
-                            horizontalAlignment: Text.AlignHCenter
-                            elide: Text.ElideRight
+                        // 欄位錯誤：出現時才佔位置（只在按了 Search 之後；見 T31 第 8 節）
+                        FieldError {
+                            objectName: "startDateError"
+                            width: startDateField.width
+                            visible: hasError
+                            text: startDateField.errorText
                         }
-                        Text {
-                            Layout.fillWidth: true
-                            Layout.preferredWidth: 1
-                            text: resultRow.start_datetime
-                            color: Theme.textPrimary
-                            font.pixelSize: Theme.fontBody
-                            font.features: { "tnum": 1 }
-                            horizontalAlignment: Text.AlignHCenter
-                            elide: Text.ElideRight
-                        }
-                        Item {
-                            Layout.fillWidth: true
-                            Layout.preferredWidth: 1
-                            Layout.fillHeight: true
+                    }
 
-                            BusyButton {
-                                objectName: "detailsButton"
-                                anchors.centerIn: parent
-                                text: qsTr("Details")
-                                Accessible.name: text + ", " + resultRow.service_id
-                                onClicked: {
-                                    if (busy)
-                                        return
-                                    // 只改屬性、送出背景工作，馬上換頁；頁首的 ID 和時間直接用這一列的
-                                    serverHome.load_service_media(resultRow.service_id, resultRow.start_datetime)
-                                    mainContentLoader.source = "../../qml/pages/server_service_detail_page.qml"
-                                }
+                    Column {
+                        id: toColumn
+                        spacing: 8
+
+                        FieldLabel { text: qsTr("To") }
+                        DateField {
+                            id: endDateField
+                            objectName: "endDateField"
+                            accessibleName: qsTr("To date")
+                            errorText: searchPage.manager ? searchPage.manager.endDateError : ""
+                            invalid: errorText !== ""
+                            onActiveFocusChanged: if (activeFocus) searchPage.reveal(this)
+                            onTextEdited: {
+                                if (searchPage.manager)
+                                    searchPage.manager.clearDateError("end")
+                            }
+                            onAccepted: searchPage.submit()
+                        }
+                        FieldError {
+                            objectName: "endDateError"
+                            width: endDateField.width
+                            visible: hasError
+                            text: endDateField.errorText
+                        }
+                    }
+
+                    Item {
+                        id: searchColumn
+                        width: searchButton.implicitWidth
+                        height: criteria.fieldTop + searchButton.height
+
+                        BusyButton {
+                            id: searchButton
+                            objectName: "searchButton"
+                            y: criteria.fieldTop
+                            variant: "primary"
+                            horizontalPadding: Theme.spaceXL
+                            font.pixelSize: Theme.fontInput
+                            text: qsTr("Search")
+                            busyText: qsTr("Searching…")
+                            busy: searchPage.busy
+                            onActiveFocusChanged: if (activeFocus) searchPage.reveal(this)
+                            onClicked: {
+                                if (busy)
+                                    return
+                                searchPage.submit()
                             }
                         }
+                    }
+
+                    // 說明：同一行放得下（至少 240）就填滿剩下的寬度，否則自己一行
+                    Text {
+                        objectName: "criteriaHint"
+                        width: criteria.width - criteria.used >= 240 ? criteria.width - criteria.used : criteria.width
+                        topPadding: criteria.width - criteria.used >= 240
+                                    ? criteria.fieldTop + Math.max(0, (Theme.controlHeight - 2 * 18) / 2) : 0
+                        text: qsTr("Leave a date empty to search without that limit. Only services with a completed analysis are listed.")
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.fontSmall
+                        lineHeight: 18
+                        lineHeightMode: Text.FixedHeight
+                        wrapMode: Text.Wrap
                     }
                 }
             }
 
-            // 還沒查過
-            EmptyState {
-                objectName: "searchPrompt"
-                anchors.horizontalCenter: parent.horizontalCenter
-                y: Theme.space4XL
-                width: Math.min(parent.width, 360)
-                visible: searchPage.status === "idle" && !searchPage.busy
-                title: qsTr("Search your services")
-                description: qsTr("Enter a date range, or leave the dates empty to see all of them.")
-            }
+            // ── 結果（兩端共用 ServiceTable.qml）
+            Card {
+                objectName: "resultsCard"
+                Layout.fillWidth: true
+                bottomPadding: Theme.spaceM
 
-            // 查到 0 筆
-            EmptyState {
-                objectName: "searchEmpty"
-                anchors.horizontalCenter: parent.horizontalCenter
-                y: Theme.space4XL
-                width: Math.min(parent.width, 360)
-                visible: searchPage.status === "ready" && searchPage.resultCount === 0 && !searchPage.busy
-                title: searchPage.emptyTitle()
-                description: searchPage.manager && (searchPage.manager.startDate !== "" || searchPage.manager.endDate !== "")
-                             ? qsTr("Try a different date range.")
-                             : qsTr("Services appear here once their analysis is complete.")
-            }
+                ServiceTable {
+                    id: table
+                    width: parent ? parent.width : 0
+                    model: searchPage.manager ? searchPage.manager.listModel : null
+                    listState: searchPage.status === "error" ? "error"
+                             : searchPage.status !== "ready" ? "loading"
+                             : searchPage.manager.totalCount > 0 ? "ready" : "empty"
+                    busy: searchPage.busy
+                    countText: searchPage.manager ? searchPage.manager.countText : ""
+                    subtitle: searchPage.manager ? searchPage.manager.subtitle : ""
+                    shownText: searchPage.manager ? searchPage.manager.shownText : ""
+                    hasMore: searchPage.manager !== null && searchPage.manager.hasMore
+                    loadingMore: searchPage.manager !== null && searchPage.manager.loadingMore
+                    moreErrorDetail: searchPage.manager ? searchPage.manager.moreErrorDetail : ""
+                    moreErrorTechnical: searchPage.manager ? searchPage.manager.moreErrorTechnical : ""
+                    moreFailureCount: searchPage.manager ? searchPage.manager.moreFailureCount : 0
+                    emptyTitle: searchPage.emptyTitle()
+                    emptyDescription: searchPage.manager && (searchPage.manager.startDate !== ""
+                                                             || searchPage.manager.endDate !== "")
+                                      ? qsTr("Try a different date range.")
+                                      : qsTr("Services appear here once their analysis is complete.")
+                    errorTitle: qsTr("Couldn't search your services")
+                    errorDetail: searchPage.manager ? searchPage.manager.errorDetail : ""
+                    errorTechnical: searchPage.manager ? searchPage.manager.errorTechnical : ""
+                    failureCount: searchPage.manager ? searchPage.manager.failureCount : 0
 
-            InlineError {
-                objectName: "searchError"
-                anchors.horizontalCenter: parent.horizontalCenter
-                y: Theme.space4XL
-                width: Math.min(parent.width, 480)
-                visible: searchPage.status === "error"
-                title: qsTr("Couldn't search your services")
-                detail: searchPage.manager ? searchPage.manager.errorDetail : ""
-                technicalDetail: searchPage.manager ? searchPage.manager.errorTechnical : ""
-                failureCount: searchPage.manager ? searchPage.manager.failureCount : 0
-                busy: searchPage.busy
-                onRetry: {
-                    if (searchPage.manager)
-                        searchPage.manager.retry()
+                    onOpenDetail: (serviceId, startTime) => window.openServiceDetail(serviceId, startTime)
+                    onShowMore: searchPage.manager.showMore()
+                    onRetry: searchPage.manager.retry()
+                    onItemFocused: (item) => searchPage.reveal(item)
                 }
             }
         }

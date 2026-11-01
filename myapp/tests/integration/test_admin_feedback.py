@@ -593,21 +593,29 @@ def test_search_shows_date_errors_empty_results_and_rows(admin, db):
     db.add_service("S20261031100000", "2026-10-31 10:00:00")
     manager = admin.home.serviceManager
     page = open_page(admin, "admin_service_page.qml")
-    wait_until(lambda: manager.namesState == "ready")
-    assert qml(page, "nameComboBox.displayText") == "All Staff"  # 名單載入後不會自己選第一個人
-    assert qml(page, "nameComboBox.count") == 2  # 「All Staff」＋一位服務人員
-    assert qml(child(page, "searchButton"), "variant") == "primary"  # 這一頁唯一的主要按鈕：石墨灰（DS-12）
+    wait_until(lambda: manager.namesState == "ready" and manager.state == "ready")  # 第一次打開：查一次全部
+    assert qml(child(page, "resultList"), "count") == 1
+    assert qml(page, "nameComboBox.displayText") == "All staff"  # 名單載入後不會自己選第一個人
+    assert qml(page, "nameComboBox.count") == 2  # 「All staff」＋一位服務人員
+    assert qml(child(page, "searchButton"), "variant") == "primary"  # 這一頁唯一的主要按鈕：淺色膠囊（UD3）
     qml(page, 'startDateField.text = "2026/10/01"; endDateField.text = "2026-10-31"')
+    admin.proxy.reset()
     click(admin.window, child(page, "searchButton"))
     assert field_error(page, "startDateError") == "Enter the date as YYYY-MM-DD, for example 2026-10-31."
-    assert field_error(page, "endDateError") == ""
-    assert manager.state == "idle"  # 日期不對：沒有送出
+    assert not child(page, "endDateError").isVisible()
+    assert admin.proxy.snapshot()["rt"] == 0  # 日期不對：沒有送出
     # 和服務人員端同一個日期欄（DateField.qml）：框線變紅，錯誤寫進給輔助技術的說明（DS-27）
     start, end = child(page, "startDateField"), child(page, "endDateField")
     assert qml(start, "invalid && Qt.colorEqual(background.border.color, Theme.errorOnDark)")
-    assert qml(start, "Accessible.name") == "Start date"
+    assert qml(start, "Accessible.name") == "From date"
     assert qml(start, "Accessible.description") == "Enter the date as YYYY-MM-DD, for example 2026-10-31."
     assert not qml(end, "invalid") and qml(end, "Accessible.description") == ""
+
+    qml(page, 'startDateField.text = "2026-10-31"; endDateField.text = "2026-10-01"')  # To 早於 From：也不送出
+    click(admin.window, child(page, "searchButton"))
+    assert field_error(page, "endDateError") == "The To date is before the From date. Choose the same day or later."
+    assert qml(end, "invalid") and not qml(start, "invalid")
+    assert admin.proxy.snapshot()["rt"] == 0
 
     qml(page, 'startDateField.text = "2026-09-01"; endDateField.text = "2026-09-30"')
     admin.proxy.reset()
@@ -626,6 +634,7 @@ def test_search_shows_date_errors_empty_results_and_rows(admin, db):
     wait_until(lambda: manager.state == "ready")
     assert manager.lastQuery["name"] == "服務人員（佔位）"
     assert qml(child(page, "resultList"), "count") == 1 and not empty.isVisible()
+    assert manager.subtitle == "服務人員（佔位） · Oct 1 – Oct 31, 2026 · newest first"
 
     open_page(admin, "admin_add_page.qml")
     db.add_account("00000000-0000-0000-0000-000000000004", "lee", "李小華")  # 名單變了：選單會整個換掉
@@ -635,7 +644,7 @@ def test_search_shows_date_errors_empty_results_and_rows(admin, db):
     wait_until(lambda: qml(page, "nameComboBox.displayText") == "服務人員（佔位）")  # 選的人還是同一位
     assert qml(child(page, "resultList"), "count") == 1
 
-    qml(page, "nameComboBox.currentIndex = 0; nameComboBox.activated(0)")  # 改回「All Staff」：不再篩選名字
+    qml(page, "nameComboBox.currentIndex = 0; nameComboBox.activated(0)")  # 改回「All staff」：不再篩選名字
     click(admin.window, child(page, "searchButton"))
     wait_until(lambda: manager.lastQuery["name"] == "" and manager.state == "ready")
 
@@ -643,7 +652,7 @@ def test_search_shows_date_errors_empty_results_and_rows(admin, db):
 def test_search_failure_is_a_block_error_with_retry(admin, db, mysql_server, monkeypatch):
     manager = admin.home.serviceManager
     page = open_page(admin, "admin_service_page.qml")
-    wait_until(lambda: manager.namesState == "ready")
+    wait_until(lambda: manager.namesState == "ready" and manager.state == "empty")  # 第一次打開的查詢做完了
     admin.proxy.kill()
     qml(page, 'startDateField.text = "2026-10-01"')
     click(admin.window, child(page, "searchButton"))
@@ -679,7 +688,7 @@ def test_page_objects_live_as_long_as_the_shell(engine, services):
     window = engine.rootObjects()[-1]
     wait_until(lambda: not any(services.tasks.isBusy(key) for key in ("admin:profile",)))
     gc.collect()
-    for name in ("adminHome", "homeDashboard", "serviceManager", "resultsModel", "accountManager"):
+    for name in ("adminHome", "homeDashboard", "serviceManager", "accountManager"):
         assert qml(window, f"{name} !== null"), name
     page = open_page(SimpleNamespace(window=window), "admin_add_page.qml")
     assert page is not None

@@ -1161,7 +1161,7 @@ def test_component_qml_files_use_crlf():
         assert data.count(b"\n") == data.count(b"\r\n") > 0, path.name
 
 
-ICON_NAME = re.compile(r"^(?P<lucide>[a-z-]+)_(?P<token>[A-Za-z]+)\.svg$")
+ICON_NAME = re.compile(r"^(?P<lucide>[a-z0-9-]+)_(?P<token>[A-Za-z]+)\.svg$")  # Lucide 的名稱可以有數字（volume-2）
 
 
 def test_icons_are_lucide_svgs_precoloured_with_theme_tokens(harness):

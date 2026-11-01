@@ -120,3 +120,14 @@ def test_staff_home_without_services_loads_synchronously(db, s3, tmp_path):
     assert home.chartsModel.readyCount == 2
     home.clearDir()
     assert list((tmp_path / "media").iterdir()) == []
+
+
+def test_the_synchronous_path_also_fills_the_header(db, s3):
+    """頁首和分數列（新版介面 U2，T31）在同步版也查得到：舊的共用連線是 tuple 的 cursor，用欄位名稱對應。"""
+    db.add_service(SID, "2026-10-30 12:00:00", status=1)
+    db.add_media(SID, "audio", f"s3://adam-test/{MEDIA_KEYS[2]}")
+    s3.put_object(Bucket="adam-test", Key=MEDIA_KEYS[2], Body=b"audio")
+    media_model, charts = show(server_home_init, SID)
+    assert media_model.headerText == "Oct 30, 2026 · 12:00–12:05 · Not analyzed"
+    assert media_model.staffName == "服務人員（佔位）" and media_model.serviceFound
+    assert media_model.slot("audio").state == "ready" and charts.state == "empty"

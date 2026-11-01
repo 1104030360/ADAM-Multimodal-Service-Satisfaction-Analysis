@@ -5,7 +5,8 @@
 
 明細頁（UX-22、UX-23、ENG-04）：
 - Details 先換頁：load_service_media() 只改屬性、送出工作，GUI 執行緒不碰網路。
-- 檔案清單在 db lane 查（1 個往返，key media:<sid>）；每個檔案一個 io 工作（key media:<sid>:<檔名>），
+- 檔案清單在 db lane 查（1 個往返，key media:<sid>），頁首（日期、時間、分析狀態）和分數列也在同一個查詢
+  （新版介面 U2，T31）；每個檔案一個 io 工作（key media:<sid>:<檔名>），
   用 storage.download_with_progress，進度（TaskRunner 已節流到每秒 4 次）寫進那個檔案自己的 FileSlot。
 - 兩條佇列，各一次一個檔案：圖表（小，先好）；影片和錄音（顧客 → 員工 → 錄音）。這一頁最多佔 io lane 的 2 條執行緒，
   上傳和送出分析不會排在一堆下載後面。
@@ -25,6 +26,7 @@ import uuid
 from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 
 import fitz
 from PySide6.QtCore import QCoreApplication, QDateTime, QLocale, Property, QObject, QUrl, Signal, Slot
@@ -32,6 +34,7 @@ from PySide6.QtCore import QCoreApplication, QDateTime, QLocale, Property, QObje
 from myapp import storage
 from myapp.database import DatabaseConnector
 from myapp.notifications import S3_NOT_FOUND, S3_OFFLINE, UNEXPECTED, user_message
+from myapp.service_list import day_text, display_score, format_time, time_range_text
 from myapp.tasks import CancelToken, TaskRunner
 
 logger = logging.getLogger(__name__)
@@ -49,7 +52,7 @@ REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pdf")
 
 # 一個查詢取回一筆服務的所有檔案（ENG-04：以前 4 個查詢）。每個鏡頭、錄音取最新的一列；圖表依寫入的順序。
 # UNION 裡個別的 ORDER BY 不保證最後的順序，所以多選 part、seq 兩欄，最後再排一次
-FILES_SQL = """
+FILES_UNION = """
 (SELECT 1 AS part, 0 AS seq, 'cam0' AS kind, video_url AS url FROM tbl_video_storage
   WHERE service_id = %s AND video_name LIKE %s ORDER BY video_id DESC LIMIT 1)
 UNION ALL
@@ -60,8 +63,25 @@ UNION ALL
   WHERE service_id = %s ORDER BY audio_id DESC LIMIT 1)
 UNION ALL
 (SELECT 4, charts_id, 'chart', charts_url FROM tbl_charts_storage WHERE service_id = %s)
-ORDER BY part, seq
 """
+FILES_SQL = FILES_UNION + "ORDER BY part, seq\n"
+
+# 明細頁打開時的查詢（新版介面 U2，T31 第 3 節）：服務本身（時間、狀態、服務人員、8 個分數）＋檔案清單，還是 1 個往返。
+# 每個檔案一列，服務的欄位在每一列重複（最多十來列）；沒有檔案時剩一列、kind 是 NULL；沒有這筆服務時 0 列
+DETAIL_SQL = f"""
+SELECT s.service_start, s.service_end, s.service_status, a.account_name,
+       sc.customer_total, sc.customer_text, sc.customer_audio, sc.customer_facial,
+       sc.server_total, sc.server_text, sc.server_audio, sc.server_facial,
+       f.kind, f.url
+FROM tbl_service AS s
+LEFT JOIN tbl_account AS a ON a.account_id = s.account_id
+LEFT JOIN tbl_service_score AS sc ON sc.service_id = s.service_id
+LEFT JOIN ({FILES_UNION}) AS f ON TRUE
+WHERE s.service_id = %s
+ORDER BY f.part, f.seq
+"""
+SCORE_KINDS = ("total", "text", "audio", "facial")
+SCORE_SIDES = (("customer", "customer"), ("staff", "server"))  # （畫面上的名稱, 資料表欄位的前綴）
 
 
 def media_dir():
@@ -103,6 +123,11 @@ def reason_text(exc):
     return f"{title}. {detail}" if detail else title
 
 
+def status_text(status):
+    """明細頁頁首的分析狀態（tbl_service.service_status）；還不知道是空字串。"""
+    return {1: _tr("Not analyzed"), 2: _tr("Analyzing"), 3: _tr("Analysis completed")}.get(status, "")
+
+
 def describe_failure(exc, file_name):
     """一個檔案下載失敗：(原因, 技術細節)。原因先講發生什麼，再講下一步（DS-50、DS-52）。"""
     _, title, _, _ = user_message(exc)
@@ -141,18 +166,58 @@ class MediaFile:
         return os.path.join(charts_dir() if self.kind == "chart" else media_dir(), self.name)
 
 
+def _files_params(service_id):
+    return (service_id, "%cam0%", service_id, "%cam1%", service_id, service_id)
+
+
+def _media_file(kind, url):
+    """一列 → MediaFile；沒有檔名的列（或 LEFT JOIN 沒有檔案的那一列）找不到檔案，回傳 None。"""
+    kind = kind.decode() if isinstance(kind, (bytes, bytearray)) else kind
+    url = url or ""
+    name = os.path.basename(url)
+    return MediaFile(kind, url, name) if kind and name else None
+
+
 def list_files(cursor, service_id):
     """一筆服務的檔案（1 個往返）：影片、錄音最多各一個，圖表依寫入的順序。cursor 的列可以是 tuple 或 dict。"""
-    cursor.execute(FILES_SQL, (service_id, "%cam0%", service_id, "%cam1%", service_id, service_id))
+    cursor.execute(FILES_SQL, _files_params(service_id))
     files = []
     for row in cursor.fetchall():
         kind, url = (row["kind"], row["url"]) if isinstance(row, dict) else (row[2], row[3])
-        kind = kind.decode() if isinstance(kind, (bytes, bytearray)) else kind
-        url = url or ""
-        name = os.path.basename(url)
-        if name:  # 沒有檔名的列找不到檔案，當成沒有
-            files.append(MediaFile(kind, url, name))
+        file = _media_file(kind, url)
+        if file is not None:
+            files.append(file)
     return files
+
+
+@dataclass(frozen=True)
+class ServiceSummary:
+    """明細頁頁首和分數列要的資料庫的值（還沒格式化；文字在 GUI 執行緒由 MediaModel 產生）。
+
+    scores：{"customer": {"total", "text", "audio", "facial"}, "staff": {...}}，資料庫的原始值（-1 是沒有資料）。
+    """
+    start: object
+    end: object
+    status: int
+    staff_name: str
+    scores: dict
+
+
+def load_detail(cursor, service_id):
+    """一筆服務的頁首、分數和檔案（1 個往返，DETAIL_SQL）。回傳 (ServiceSummary 或 None, [MediaFile])；
+    None 表示資料庫裡沒有這筆服務。cursor 的列可以是 tuple（用 column_names 對應欄位）或 dict。"""
+    cursor.execute(DETAIL_SQL, (*_files_params(service_id), service_id))
+    rows = cursor.fetchall()
+    if rows and not isinstance(rows[0], dict):
+        rows = [dict(zip(cursor.column_names, row)) for row in rows]
+    if not rows:
+        return None, []
+    first = rows[0]
+    summary = ServiceSummary(
+        first["service_start"], first["service_end"], int(first["service_status"] or 0), first["account_name"] or "",
+        {side: {kind: first[f"{prefix}_{kind}"] for kind in SCORE_KINDS} for side, prefix in SCORE_SIDES})
+    files = [file for file in (_media_file(row["kind"], row["url"]) for row in rows) if file is not None]
+    return summary, files
 
 
 def fetch(file, token=None, report=None):
@@ -473,6 +538,13 @@ class MediaModel(QObject):
     - cam0（顧客）、cam1（員工）、audio：FileSlot。cam0Source、cam1Source、audioSource 是以前的名稱（＝各自的 source）。
     - canPlay：三個檔案都結束了（好了、這筆沒有、或失敗），而且至少一個好了。要同步播放，所以等下載完才能按 Play。
     - retry(kind)、close()：QML 呼叫。close() 取消還沒下載完的檔案，已經下載好的留在快取。
+    - 頁首和分數列（新版介面 U2，PLAN §6-5、T31 第 3 節）：和檔案清單同一個查詢（DETAIL_SQL，還是 1 個往返）。
+      Details 傳進來的開始時間先拿來顯示日期；查到之後換成資料庫的值。
+      dateText「Oct 31, 2026」、timeText「09:15–09:21」、analysisStatus（1～3，還不知道是 0）、
+      statusText「Analysis completed」、headerText（三段用「 · 」接起來）、staffName（這筆服務的服務人員）、
+      scores {"customer": {total, text, audio, facial}, "staff": {…}}（小數 1 位，沒有資料是 null；
+      分數帶由 QML 的 Theme.bandName() 判斷）、hasScores（至少有一個分數）、
+      serviceFound（查過了、資料庫裡沒有這筆時是 false）。
     """
 
     headerChanged = Signal()
@@ -494,6 +566,8 @@ class MediaModel(QObject):
         self._streams = {"charts": _Stream(), "media": _Stream()}
         self._keys = {}  # 下載工作的 key → FileSlot：進度要知道是哪一個位置
         self._service_id = self._start_time = ""
+        self._summary = None   # ServiceSummary：查到之前是 None
+        self._found = True
         self._state = IDLE
         self._busy = False
         self._detail = self._technical = ""
@@ -510,6 +584,56 @@ class MediaModel(QObject):
     @Property(str, notify=headerChanged)
     def startTime(self):
         return self._start_time
+
+    @Property(bool, notify=headerChanged)
+    def serviceFound(self):
+        return self._found
+
+    @Property(str, notify=headerChanged)
+    def dateText(self):
+        start = self._header_start()
+        return day_text(start) if start is not None else ""
+
+    @Property(str, notify=headerChanged)
+    def timeText(self):
+        start = self._header_start()
+        return time_range_text(start, self._summary.end if self._summary is not None else None)
+
+    @Property(int, notify=headerChanged)
+    def analysisStatus(self):
+        return self._summary.status if self._summary is not None else 0
+
+    @Property(str, notify=headerChanged)
+    def statusText(self):
+        return status_text(self.analysisStatus)
+
+    @Property(str, notify=headerChanged)
+    def headerText(self):
+        """「Oct 31, 2026 · 09:15–09:21 · Analysis completed」：還不知道的部分不寫。"""
+        return " · ".join(part for part in (self.dateText, self.timeText, self.statusText) if part)
+
+    @Property(str, notify=headerChanged)
+    def staffName(self):
+        return self._summary.staff_name if self._summary is not None else ""
+
+    @Property("QVariantMap", notify=headerChanged)
+    def scores(self):
+        raw = self._summary.scores if self._summary is not None else {}
+        return {side: {kind: display_score(raw.get(side, {}).get(kind)) for kind in SCORE_KINDS}
+                for side, _ in SCORE_SIDES}
+
+    @Property(bool, notify=headerChanged)
+    def hasScores(self):
+        return any(value is not None for values in self.scores.values() for value in values.values())
+
+    def _header_start(self):
+        """頁首的開始時間：查到之前用 Details 傳進來的（格式不對就不顯示）。"""
+        if self._summary is not None:
+            return self._summary.start
+        try:
+            return datetime.strptime(self._start_time, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
 
     @Property(str, notify=stateChanged)
     def state(self):
@@ -578,6 +702,7 @@ class MediaModel(QObject):
         self._connector = connector
         self._session += 1
         self._service_id, self._start_time = service_id, start_time
+        self._summary, self._found = None, True
         self.headerChanged.emit()
         for slot in self._slots.values():
             slot.reset()
@@ -659,14 +784,14 @@ class MediaModel(QObject):
             def work(token, report):
                 # dictionary cursor：其他頁面的查詢都用它，已經建好了（多建一種 cursor 要多 1 個往返，ENG-01）
                 with db.cursor(dictionary=True) as cursor:
-                    return list_files(cursor, service_id)
+                    return load_detail(cursor, service_id)
         else:
             connector = self._connector or DatabaseConnector()
 
             def work(token, report):
                 cursor = connector.connection.cursor()
                 try:
-                    return list_files(cursor, service_id)
+                    return load_detail(cursor, service_id)
                 finally:
                     cursor.close()
 
@@ -676,9 +801,14 @@ class MediaModel(QObject):
                               on_ok=lambda files: self._listed(session, files),
                               on_err=lambda exc: self._list_failed(session, exc), replace=True)
 
-    def _listed(self, session, files):
+    def _listed(self, session, detail):
         if session != self._session:
             return
+        summary, files = detail
+        self._summary, self._found = summary, summary is not None
+        if summary is not None:
+            self._start_time = format_time(summary.start)
+        self.headerChanged.emit()
         by_kind = {}
         charts = []
         for file in files:

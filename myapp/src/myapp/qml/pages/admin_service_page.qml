@@ -1,60 +1,29 @@
 pragma ComponentBehavior: Bound
-import QtQuick 2.15
-import QtQuick.Controls 2.15
-import QtQuick.Layouts 1.15
-import QtQuick.Window 2.15
+import QtQuick
+// 自訂了下拉選單的 background、contentItem、popup，要用 Basic 樣式（T13）
+import QtQuick.Controls.Basic
+import QtQuick.Layouts
 import "../components"
 
-// 服務查詢（UX-24、DS-26、DS-27）：服務人員名單和搜尋都在背景（Python 的 serviceManager），畫面不會凍住。
-// - 日期格式不對：欄位下方顯示錯誤、框線變紅，不送出。
-// - 搜尋中：按鈕忙碌（Searching…）；已經有結果時舊結果留著、變淡。新的搜尋取代還沒回來的舊搜尋。
-// - 沒有結果是空狀態，失敗是區塊錯誤＋Retry，兩者分開（UX-38）。
-// - Details 先換頁，影音和圖表在明細頁的背景下載（UX-22、ENG-04）：這裡不碰網路。
-// - 外觀和服務人員端的查詢頁一樣（UX-46）：同一個日期欄（DateField.qml）、表頭和列的顏色都取自 Theme，
-//   Search 是這一頁唯一的主要按鈕（石墨灰，DS-12）。以前是寫死的 #dddddd、#f4f4f4 和 Material 的強調色。
+// Services（管理員，新版介面 U2，PLAN §6-9；設計稿 AdminServices）：找任何員工的服務。頁面標題和說明在外殼的頁首。
+// - 條件卡片：Staff（All staff＋每位服務人員）、From、To、Search。名單和搜尋都在背景（Python 的 serviceManager）。
+//   日期格式不對、To 早於 From：欄位下方顯示錯誤、框線變紅，不送出。名單沒有載入時，搜尋照樣能用（不篩選名字），可以重試。
+// - 結果卡片（ServiceTable.qml，和服務人員端共用）：「138 services · All staff · Oct 19 – Nov 1, 2026 · newest first」，
+//   多一欄 Staff；一次 8 筆＋Show More（UD7）。只列分析完成的服務，新的在前（T31 第 4 節）。
+// - 第一次打開時查一次全部；回到這一頁時，上一次的條件放回欄位，結果留著。
+// - Details 交給外殼的 window.openServiceDetail()：先換頁，影音和圖表在明細頁的背景下載（UX-22、ENG-04）。
 Item {
     id: searchPage
-    anchors.fill: parent
 
     readonly property bool searching: serviceManager.state === "loading" || serviceManager.refreshing
-    readonly property int listBottomMargin: typeof toastHost !== "undefined" && toastHost ? toastHost.occupiedHeight : 0
-    // 使用者在選單選的名字；空字串＝不篩選（選單第 0 項「All Staff」）。名單在背景載入，
+    // 使用者在選單選的名字；空字串＝不篩選（選單第 0 項「All staff」）。名單在背景載入，
     // 換名單時 ComboBox 會回到第 0 項，所以選了誰記在這裡，名單換好再放回去
     property string chosenName: ""
 
-    // active 持續超過 interval 才成立（DS-25：300 ms 內什麼都不顯示，免得閃一下）
-    component Wait: Timer {
-        property bool active: false
-        property bool elapsed: false
-        interval: Theme.busyDelay
-        running: active && !elapsed
-        onTriggered: elapsed = true
-        onActiveChanged: if (!active) elapsed = false
-    }
-
-    component HeaderText: Text {
-        Layout.fillWidth: true
-        Layout.preferredWidth: 1
-        color: Theme.textPrimary
-        font.pixelSize: Theme.fontBody
-        font.weight: Font.DemiBold
-        horizontalAlignment: Text.AlignHCenter
-        verticalAlignment: Text.AlignVCenter
-    }
-
-    component CellText: Text {
-        Layout.fillWidth: true
-        Layout.preferredWidth: 1
-        color: Theme.textPrimary
-        font.pixelSize: Theme.fontBody
-        horizontalAlignment: Text.AlignHCenter
-        elide: Text.ElideRight
-    }
-
-    Wait { id: resultsDim; active: serviceManager.refreshing }
-
     function search() {
-        serviceManager.search(chosenName, startDateField.text, endDateField.text)
+        if (!serviceManager.search(chosenName, startDateField.text, endDateField.text)
+                && (serviceManager.startDateError !== "" || serviceManager.endDateError !== ""))
+            (serviceManager.startDateError !== "" ? startDateField : endDateField).forceActiveFocus()
     }
 
     // 空狀態的標題：「No services from 2026-10-01 to 2026-10-31」（DS-52）
@@ -65,10 +34,10 @@ Item {
             return qsTr("No services from %1 on").arg(query.start)
         if (query.end)
             return qsTr("No services up to %1").arg(query.end)
-        return qsTr("No services yet")
+        return qsTr("No completed services yet")
     }
 
-    // 選單顯示 chosenName；沒選是「All Staff」。名單裡已經沒有這個人時也回到「All Staff」，不再用他篩選
+    // 選單顯示 chosenName；沒選是「All staff」。名單裡已經沒有這個人時也回到「All staff」，不再用他篩選
     function showChosenName() {
         const index = chosenName !== "" ? nameComboBox.find(chosenName) : 0
         if (index < 0)
@@ -76,247 +45,17 @@ Item {
         nameComboBox.currentIndex = Math.max(0, index)
     }
 
-    ColumnLayout {
-        anchors.fill: parent
-        anchors.margins: Theme.spaceL
-        spacing: Theme.spaceS
-
-        // 服務人員：第 0 項是不篩選（以前選了名字就改不回全部，UX-36）
-        ComboBox {
-            id: nameComboBox
-            objectName: "nameComboBox"
-            Layout.preferredWidth: 2 * startDateField.implicitWidth + Theme.spaceM
-            model: [qsTr("All Staff")].concat(serviceManager.names)
-            currentIndex: 0
-            enabled: serviceManager.names.length > 0
-            font.pixelSize: Theme.fontBody
-            displayText: currentIndex > 0 ? currentText
-                       : serviceManager.names.length === 0 && serviceManager.namesState === "loading"
-                         ? qsTr("Loading staff…") : qsTr("All Staff")
-            Accessible.name: qsTr("Staff")
-            onActivated: (index) => searchPage.chosenName = index > 0 ? textAt(index) : ""
-            // 名單內容變了，ComboBox 會回到第 0 項；等它換好，再放回使用者選的人
-            onModelChanged: Qt.callLater(searchPage.showChosenName)
-        }
-
-        // 名單沒有載入：搜尋照樣可以用（不篩選名字），這裡可以重試
-        RowLayout {
-            objectName: "namesError"
-            visible: serviceManager.namesState === "error"
-            spacing: Theme.spaceS
-
-            FieldError {
-                Layout.preferredWidth: 2 * startDateField.implicitWidth
-                text: qsTr("The staff list didn't load.")
-            }
-
-            BusyButton {
-                text: qsTr("Retry")
-                onClicked: serviceManager.loadNames()
-            }
-        }
-
-        // 查詢條件：日期兩欄＋Search，和服務人員端的查詢頁同一個版面
-        RowLayout {
-            spacing: Theme.spaceM
-
-            ColumnLayout {
-                Layout.alignment: Qt.AlignTop
-                spacing: 4
-
-                DateField {
-                    id: startDateField
-                    objectName: "startDateField"
-                    placeholderText: qsTr("Start Date (YYYY-MM-DD)")
-                    accessibleName: qsTr("Start date")
-                    errorText: serviceManager.startDateError
-                    invalid: serviceManager.startDateError !== ""
-                    onTextEdited: serviceManager.clearDateError("start")
-                    onAccepted: searchPage.search()
-                }
-
-                FieldError {
-                    objectName: "startDateError"
-                    Layout.preferredWidth: startDateField.implicitWidth
-                    Layout.preferredHeight: 2 * lineHeight  // 這句在 280 寬會排成兩行：先留好，錯誤出現時版面不跳
-                    text: serviceManager.startDateError
-                }
-            }
-
-            ColumnLayout {
-                Layout.alignment: Qt.AlignTop
-                spacing: 4
-
-                DateField {
-                    id: endDateField
-                    objectName: "endDateField"
-                    placeholderText: qsTr("End Date (YYYY-MM-DD)")
-                    accessibleName: qsTr("End date")
-                    errorText: serviceManager.endDateError
-                    invalid: serviceManager.endDateError !== ""
-                    onTextEdited: serviceManager.clearDateError("end")
-                    onAccepted: searchPage.search()
-                }
-
-                FieldError {
-                    objectName: "endDateError"
-                    Layout.preferredWidth: endDateField.implicitWidth
-                    Layout.preferredHeight: 2 * lineHeight
-                    text: serviceManager.endDateError
-                }
-            }
-
-            BusyButton {
-                id: searchButton
-                objectName: "searchButton"
-                Layout.alignment: Qt.AlignTop
-                variant: "primary"
-                text: qsTr("Search")
-                busyText: qsTr("Searching…")
-                busy: searchPage.searching
-                onClicked: {
-                    if (busy)       // 輔助技術的「按下」不經過 BusyButton 的擋板
-                        return
-                    searchPage.search()
-                }
-            }
-
-            Item { Layout.fillWidth: true }
-        }
-
-        // 表頭
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: Theme.controlHeight
-            color: Theme.tile
-            border.color: Theme.cardBorder
-            border.width: 1
-            radius: Theme.radiusS
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.margins: Theme.spaceS
-                spacing: Theme.spaceL
-
-                HeaderText { text: qsTr("Service ID") }
-                HeaderText { text: qsTr("Name") }
-                HeaderText { text: qsTr("Date") }
-                HeaderText { text: qsTr("Details") }
-            }
-        }
-
-        // 結果
-        Item {
-            id: resultArea
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-
-            ListView {
-                id: resultListView
-                objectName: "resultList"
-                anchors.fill: parent
-                // 有結果（包括重新搜尋時留著的舊結果）才顯示清單
-                visible: serviceManager.state === "ready"
-                opacity: resultsDim.elapsed ? 0.5 : 1
-                clip: true
-                spacing: 4
-                model: resultsModel
-                bottomMargin: searchPage.listBottomMargin  // 最後一列不會被通知蓋住（DS-21）
-                boundsBehavior: Flickable.StopAtBounds
-                ScrollBar.vertical: ScrollBar {}
-                Accessible.role: Accessible.Table
-                Accessible.name: qsTr("Search results")
-
-                Behavior on opacity {       // M-9：重新搜尋時變淡
-                    enabled: Theme.durBase > 0
-                    OpacityAnimator { duration: Theme.durBase }
-                }
-
-                delegate: Rectangle {
-                    id: resultRow
-                    objectName: "resultRow"
-                    required property int index
-                    required property string service_id
-                    required property string name
-                    required property string start_datetime
-
-                    width: ListView.view ? ListView.view.width : 0 // 收尾時 delegate 先離開 ListView，view 會是 null
-                    height: 60
-                    radius: Theme.radiusS
-                    color: index % 2 === 0 ? Theme.contentBg : Theme.card
-                    border.color: Theme.cardBorder
-                    border.width: 1
-                    Accessible.role: Accessible.Row
-                    Accessible.name: [service_id, name, start_datetime].join(", ")
-
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: Theme.spaceS
-                        spacing: Theme.spaceL
-
-                        CellText {
-                            text: resultRow.service_id
-                            font.weight: Font.DemiBold
-                            font.features: { "tnum": 1 }
-                        }
-                        CellText {
-                            text: resultRow.name
-                        }
-                        CellText {
-                            text: resultRow.start_datetime
-                            font.features: { "tnum": 1 }
-                        }
-                        Item {
-                            Layout.fillWidth: true
-                            Layout.preferredWidth: 1
-                            Layout.fillHeight: true
-
-                            BusyButton {
-                                objectName: "detailsButton"
-                                anchors.centerIn: parent
-                                text: qsTr("Details")
-                                Accessible.name: text + ", " + resultRow.service_id
-                                onClicked: {
-                                    if (busy)
-                                        return
-                                    // 只改屬性、送出背景工作，馬上換頁；頁首的 ID 和時間直接用這一列的
-                                    adminHome.load_service_media(resultRow.service_id, resultRow.start_datetime)
-                                    mainContentLoader.source = "../../qml/pages/admin_service_detail_page.qml"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            EmptyState {
-                objectName: "searchEmpty"
-                anchors.horizontalCenter: parent.horizontalCenter
-                y: Theme.space4XL
-                width: Math.min(parent.width, 360)
-                visible: serviceManager.state === "empty"
-                title: searchPage.emptyTitle(serviceManager.lastQuery)
-                description: serviceManager.lastQuery.name ? qsTr("Try a different staff member or date range.")
-                                                           : qsTr("Try a different date range.")
-            }
-
-            InlineError {
-                objectName: "searchError"
-                anchors.horizontalCenter: parent.horizontalCenter
-                y: Theme.space4XL
-                width: Math.min(parent.width, 480)
-                visible: serviceManager.state === "error"
-                title: qsTr("Search failed")
-                detail: serviceManager.errorDetail
-                technicalDetail: serviceManager.errorTechnical
-                failureCount: serviceManager.failureCount
-                busy: searchPage.searching
-                onRetry: serviceManager.retrySearch()
-            }
-        }
+    // 把 item 捲進畫面（Tab 走到看不到的按鈕時）
+    function reveal(item) {
+        const top = item.mapToItem(scroller.contentItem, 0, 0).y
+        if (top < scroller.contentY)
+            scroller.contentY = Math.max(0, top - Theme.spaceM)
+        else if (top + item.height > scroller.contentY + scroller.height)
+            scroller.contentY = Math.min(scroller.contentHeight - scroller.height,
+                                         top + item.height - scroller.height + Theme.spaceM)
     }
 
-    // 回到這一頁時，把上一次搜尋的條件放回欄位（結果還在 Python 裡）
+    // 回到這一頁時，把上一次搜尋的條件放回欄位（結果還在 Python 裡）；第一次打開時查一次全部
     Component.onCompleted: {
         const query = serviceManager.lastQuery
         startDateField.text = query.start
@@ -324,5 +63,295 @@ Item {
         chosenName = query.name
         showChosenName()
         serviceManager.loadNames()
+        if (serviceManager.state === "idle")
+            serviceManager.search("", "", "")
+    }
+
+    component FieldLabel: Text {
+        color: Theme.textSecondary
+        font.pixelSize: Theme.fontCaption
+        font.weight: Font.DemiBold
+    }
+
+    Flickable {
+        id: scroller
+        objectName: "servicesScroller"
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: content.implicitHeight
+        // 最後的內容不會被右下角的通知蓋住（DS-21）
+        bottomMargin: typeof toastHost !== "undefined" && toastHost ? toastHost.occupiedHeight : 0
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ScrollBar {}
+
+        ColumnLayout {
+            id: content
+            width: scroller.width
+            spacing: Theme.sectionGap
+
+            // ── 條件
+            Card {
+                objectName: "criteriaCard"
+                Layout.fillWidth: true
+                topPadding: Theme.spaceL
+                bottomPadding: Theme.spaceL
+                Accessible.role: Accessible.Grouping
+                Accessible.name: qsTr("Find services by staff and date")
+
+                // 一行放不下時往下排（設計稿的 flex-wrap）：Search 和說明跟著輸入框對齊
+                Flow {
+                    id: criteria
+                    width: parent ? parent.width : 0    // 卡片的內容寬度（Pane 不會自己撐開它）
+                    spacing: Theme.spaceM
+
+                    readonly property real fieldTop: staffLabel.height + 8  // 輸入框的上緣（標籤下面）
+                    readonly property real used: staffColumn.width + fromColumn.width + toColumn.width
+                                                 + searchColumn.width + 4 * spacing
+
+                    Column {
+                        id: staffColumn
+                        spacing: 8
+
+                        FieldLabel { id: staffLabel; text: qsTr("Staff") }
+                        // 服務人員：第 0 項是不篩選（以前選了名字就改不回全部，UX-36）
+                        ComboBox {
+                            id: nameComboBox
+                            objectName: "nameComboBox"
+                            implicitWidth: 240
+                            implicitHeight: Theme.controlHeight
+                            model: [qsTr("All staff")].concat(serviceManager.names)
+                            currentIndex: 0
+                            enabled: serviceManager.names.length > 0
+                            font.pixelSize: Theme.fontInput
+                            displayText: currentIndex > 0 ? currentText
+                                       : serviceManager.names.length === 0 && serviceManager.namesState === "loading"
+                                         ? qsTr("Loading staff…") : qsTr("All staff")
+                            leftPadding: 14
+                            rightPadding: 40
+                            Accessible.name: qsTr("Staff")
+                            onActivated: (index) => searchPage.chosenName = index > 0 ? textAt(index) : ""
+                            // 名單內容變了，ComboBox 會回到第 0 項；等它換好，再放回使用者選的人
+                            onModelChanged: Qt.callLater(searchPage.showChosenName)
+
+                            contentItem: Text {
+                                leftPadding: 0
+                                text: nameComboBox.displayText
+                                font: nameComboBox.font
+                                color: nameComboBox.enabled ? Theme.textPrimary : Theme.textDisabled
+                                verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideRight
+                            }
+
+                            indicator: Image {
+                                x: nameComboBox.width - width - 14
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Theme.iconS
+                                height: Theme.iconS
+                                sourceSize: Qt.size(Theme.iconS, Theme.iconS)
+                                source: "../components/icons/chevron-down_iconNeutral.svg"
+                                opacity: nameComboBox.enabled ? 1 : 0.5
+                                Accessible.ignored: true
+                            }
+
+                            background: Rectangle {
+                                radius: 12
+                                color: Theme.field
+                                border.width: nameComboBox.visualFocus ? 2 : 1
+                                border.color: nameComboBox.visualFocus ? Theme.focusOnDark : Theme.fieldBorder
+                            }
+
+                            delegate: ItemDelegate {
+                                id: option
+                                required property int index
+                                required property var modelData
+                                width: ListView.view ? ListView.view.width : 0
+                                height: Theme.controlHeight
+                                highlighted: nameComboBox.highlightedIndex === index
+
+                                contentItem: Text {
+                                    text: option.modelData
+                                    font.pixelSize: Theme.fontInput
+                                    font.weight: nameComboBox.currentIndex === option.index ? Font.DemiBold : Font.Normal
+                                    color: Theme.textPrimary
+                                    verticalAlignment: Text.AlignVCenter
+                                    elide: Text.ElideRight
+                                }
+                                background: Rectangle {
+                                    radius: 8
+                                    color: option.highlighted || option.hovered ? Theme.tile : "transparent"
+                                }
+                            }
+
+                            popup: Popup {
+                                y: nameComboBox.height + 4
+                                width: nameComboBox.width
+                                implicitHeight: Math.min(contentItem.implicitHeight + 2 * padding, 360)
+                                padding: 4
+
+                                contentItem: ListView {
+                                    clip: true
+                                    implicitHeight: contentHeight
+                                    model: nameComboBox.popup.visible ? nameComboBox.delegateModel : null
+                                    currentIndex: nameComboBox.highlightedIndex
+                                    boundsBehavior: Flickable.StopAtBounds
+                                    ScrollIndicator.vertical: ScrollIndicator {}
+                                }
+
+                                background: Rectangle {
+                                    radius: 12
+                                    color: Theme.card
+                                    border.color: Theme.tileBorder
+                                    border.width: 1
+                                }
+                            }
+                        }
+
+                        // 名單沒有載入：搜尋照樣可以用（不篩選名字），這裡可以重試
+                        RowLayout {
+                            objectName: "namesError"
+                            width: nameComboBox.width
+                            visible: serviceManager.namesState === "error"
+                            spacing: Theme.spaceS
+
+                            FieldError {
+                                Layout.fillWidth: true
+                                text: qsTr("The staff list didn't load.")
+                            }
+                            BusyButton {
+                                font.pixelSize: Theme.fontCaption
+                                text: qsTr("Retry")
+                                onClicked: serviceManager.loadNames()
+                            }
+                        }
+                    }
+
+                    Column {
+                        id: fromColumn
+                        spacing: 8
+
+                        FieldLabel { text: qsTr("From") }
+                        // 日期欄和服務人員端共用（DateField.qml）。在任一欄按 Enter 都會送出
+                        DateField {
+                            id: startDateField
+                            objectName: "startDateField"
+                            implicitWidth: 200
+                            accessibleName: qsTr("From date")
+                            errorText: serviceManager.startDateError
+                            invalid: errorText !== ""
+                            onActiveFocusChanged: if (activeFocus) searchPage.reveal(this)
+                            onTextEdited: serviceManager.clearDateError("start")
+                            onAccepted: searchPage.search()
+                        }
+                        // 欄位錯誤：出現時才佔位置（只在按了 Search 之後；見 T31 第 8 節）
+                        FieldError {
+                            objectName: "startDateError"
+                            width: startDateField.width
+                            visible: hasError
+                            text: serviceManager.startDateError
+                        }
+                    }
+
+                    Column {
+                        id: toColumn
+                        spacing: 8
+
+                        FieldLabel { text: qsTr("To") }
+                        DateField {
+                            id: endDateField
+                            objectName: "endDateField"
+                            implicitWidth: 200
+                            accessibleName: qsTr("To date")
+                            errorText: serviceManager.endDateError
+                            invalid: errorText !== ""
+                            onActiveFocusChanged: if (activeFocus) searchPage.reveal(this)
+                            onTextEdited: serviceManager.clearDateError("end")
+                            onAccepted: searchPage.search()
+                        }
+                        FieldError {
+                            objectName: "endDateError"
+                            width: endDateField.width
+                            visible: hasError
+                            text: serviceManager.endDateError
+                        }
+                    }
+
+                    Item {
+                        id: searchColumn
+                        width: searchButton.implicitWidth
+                        height: criteria.fieldTop + searchButton.height
+
+                        BusyButton {
+                            id: searchButton
+                            objectName: "searchButton"
+                            y: criteria.fieldTop
+                            variant: "primary"
+                            horizontalPadding: Theme.spaceXL
+                            font.pixelSize: Theme.fontInput
+                            text: qsTr("Search")
+                            busyText: qsTr("Searching…")
+                            busy: searchPage.searching
+                            onActiveFocusChanged: if (activeFocus) searchPage.reveal(this)
+                            onClicked: {
+                                if (busy)       // 輔助技術的「按下」不經過 BusyButton 的擋板
+                                    return
+                                searchPage.search()
+                            }
+                        }
+                    }
+
+                    // 說明：同一行放得下（至少 240）就填滿剩下的寬度，否則自己一行
+                    Text {
+                        objectName: "criteriaHint"
+                        width: criteria.width - criteria.used >= 240 ? criteria.width - criteria.used : criteria.width
+                        topPadding: criteria.width - criteria.used >= 240
+                                    ? criteria.fieldTop + Math.max(0, (Theme.controlHeight - 2 * 18) / 2) : 0
+                        text: qsTr("Leave a date empty to search without that limit. Only services with a completed analysis are listed.")
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.fontSmall
+                        lineHeight: 18
+                        lineHeightMode: Text.FixedHeight
+                        wrapMode: Text.Wrap
+                    }
+                }
+            }
+
+            // ── 結果（兩端共用 ServiceTable.qml）
+            Card {
+                objectName: "resultsCard"
+                Layout.fillWidth: true
+                bottomPadding: Theme.spaceM
+
+                ServiceTable {
+                    id: table
+                    width: parent ? parent.width : 0
+                    model: serviceManager.listModel
+                    showStaffColumn: true
+                    listState: serviceManager.state === "idle" || serviceManager.state === "loading" ? "loading"
+                             : serviceManager.state
+                    busy: searchPage.searching
+                    countText: serviceManager.countText
+                    subtitle: serviceManager.subtitle
+                    shownText: serviceManager.shownText
+                    hasMore: serviceManager.hasMore
+                    loadingMore: serviceManager.loadingMore
+                    moreErrorDetail: serviceManager.moreErrorDetail
+                    moreErrorTechnical: serviceManager.moreErrorTechnical
+                    moreFailureCount: serviceManager.moreFailureCount
+                    emptyTitle: searchPage.emptyTitle(serviceManager.lastQuery)
+                    emptyDescription: serviceManager.lastQuery.name ? qsTr("Try a different staff member or date range.")
+                                                                    : qsTr("Try a different date range.")
+                    errorTitle: qsTr("Search failed")
+                    errorDetail: serviceManager.errorDetail
+                    errorTechnical: serviceManager.errorTechnical
+                    failureCount: serviceManager.failureCount
+
+                    onOpenDetail: (serviceId, startTime) => window.openServiceDetail(serviceId, startTime)
+                    onShowMore: serviceManager.showMore()
+                    onRetry: serviceManager.retrySearch()
+                    onItemFocused: (item) => searchPage.reveal(item)
+                }
+            }
+        }
     }
 }
