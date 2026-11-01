@@ -8,7 +8,6 @@
   uiPrefs.animationScale 調大，動畫變慢，才看得到「正在跑」；只斷言設定的長度和最後的狀態，不量時間（CONTRACTS §0）。
 - 每個測試都要零 QML 警告（engine.warnings）。
 """
-import gc
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -74,15 +73,7 @@ def settled(side, home, services):
 
 
 def launch(side, engine, services):
-    """登入後的主畫面，視窗是作用中的（快捷鍵、按鍵只送到作用中的視窗）。
-
-    先收掉前面測試留下的主畫面物件，並清掉沒人用的 QML property cache。原因（T23）：PySide 在 connect 沒有
-    @Slot 的方法時，給那個物件一個自己的 metaobject（AdminHome、ServerHome 和幾個模型都是）；物件被 gc 收掉後，
-    新物件的 metaobject 可能剛好用到同一個位址，QML 依位址快取的 property cache 就對不上，
-    偶爾讀到 adminHome.profile 是 undefined。同一個程式裡只有一個主畫面的 app 不會遇到，測試會。
-    """
-    gc.collect()
-    engine.clearComponentCache()
+    """登入後的主畫面，視窗是作用中的（快捷鍵、按鍵只送到作用中的視窗）。"""
     home = side.module.launch(engine, side.account, services)
     window = engine.rootObjects()[-1]
     wait_until(window.isExposed)

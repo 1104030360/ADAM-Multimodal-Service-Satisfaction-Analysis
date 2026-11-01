@@ -8,3 +8,5 @@ EmptyState 1.0 EmptyState.qml
 InlineError 1.0 InlineError.qml
 FieldError 1.0 FieldError.qml
 ConfirmDialog 1.0 ConfirmDialog.qml
+SidebarButton 1.0 SidebarButton.qml
+SettingsView 1.0 SettingsView.qml

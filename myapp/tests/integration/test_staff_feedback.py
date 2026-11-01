@@ -119,8 +119,8 @@ def wait_for_launch(services):
 
 
 def show_page(window, sidebar_button):
-    """按側邊欄的按鈕（MouseArea 的 id），等新頁面載入完成。"""
-    qml(window, f"{sidebar_button}.clicked(null)")
+    """按側邊欄的按鈕（SidebarButton 的 id），等新頁面載入完成。"""
+    qml(window, f"{sidebar_button}.click()")
     wait_until(lambda: qml(window, "mainContentLoader.status === Loader.Ready"))
     return qml(window, "mainContentLoader.item")
 
@@ -170,7 +170,7 @@ def test_login_starts_on_username_and_enter_submits(engine, login, no_network_on
     assert qml(form, "username_textfield.enabled")
     wait_until(lambda: len(engine.rootObjects()) == 2)  # 驗證在 db lane；登入後的畫面也不在 GUI 執行緒連線
     assert not window.isVisible()
-    assert engine.rootObjects()[1].title() == "Server Home"
+    assert engine.rootObjects()[1].title() == "Staff Home"
 
 
 def test_wrong_password_says_so_and_selects_the_password(login, no_network_on_gui_thread):
@@ -251,7 +251,7 @@ def test_page_objects_live_as_long_as_the_shell(engine, services, db):
     for name in ("serverHome", "serviceScoreManager", "serviceModel", "serviceManager", "resultsModel",
                  "deviceFinder"):
         assert qml(window, f"{name} !== null"), name
-    page = show_page(window, "mouseArea5")
+    page = show_page(window, "analysisButton")
     assert qml(page, "vm !== null")
     qml(window, "serverHome.onLoadAnalysis()")
     assert services.tasks.isBusy(ANALYSIS_KEY)
@@ -337,7 +337,7 @@ def test_home_refresh_keeps_the_old_scores_dimmed(engine, services, db, no_netwo
     rows, indicator = find(page, "scoreRows"), find(page, "updatingIndicator")
     assert rows.property("opacity") == 1 and not indicator.isVisible()
     with db_lane_held(services.tasks):
-        qml(window, "mouseArea.clicked(null)")  # 側邊欄 Home：在背景重新載入
+        qml(window, "homeButton.click()")  # 側邊欄 Home：在背景重新載入
         wait_until(lambda: qml(page, "refreshing"))
         assert rows.property("opacity") == 0.5 and indicator.isVisible()  # 舊的分數留著、變淡，旁邊「Updating…」
         assert ring_text(page, "customer", "total") == "74"
@@ -376,7 +376,7 @@ def test_home_failure_offers_retry_and_recovers(engine, services, db, monkeypatc
 def open_analysis(engine, services):
     home, window = launch_staff(engine, services)
     wait_for_launch(services)
-    page = show_page(window, "mouseArea5")
+    page = show_page(window, "analysisButton")
     wait_until(lambda: not services.tasks.isBusy(ANALYSIS_KEY))
     return window, page
 
@@ -496,7 +496,7 @@ def test_auto_refresh_failure_keeps_the_list_and_warns_once(engine, services, db
 def open_search(engine, services):
     home, window = launch_staff(engine, services)
     wait_for_launch(services)
-    return window, show_page(window, "mouseArea6")
+    return window, show_page(window, "servicesButton")
 
 
 def search(page, start, end):
@@ -575,8 +575,8 @@ def test_search_page_keeps_the_last_criteria_when_reopened(engine, services, db,
     window, page = open_search(engine, services)
     search(page, "2026-10-30", "")
     wait_until(lambda: not services.tasks.isBusy(SEARCH_KEY))
-    show_page(window, "mouseArea")  # 去首頁再回來
-    page = show_page(window, "mouseArea6")
+    show_page(window, "homeButton")  # 去首頁再回來
+    page = show_page(window, "servicesButton")
     assert find(page, "startDateField").property("text") == "2026-10-30"  # 條件和結果對得起來（UX-24）
     assert find(page, "endDateField").property("text") == ""
     view = find(page, "resultList")
@@ -600,7 +600,7 @@ def camera_opens(cameras, monkeypatch):
 
 
 def open_record_page(window):
-    page = show_page(window, "mouseArea2")
+    page = show_page(window, "recordButton")
     wait_until(lambda: qml(window, "deviceFinder.status") not in ("idle", "scanning"))
     return page
 
@@ -610,7 +610,7 @@ def test_devices_are_probed_only_when_the_record_page_opens(engine, services, db
     home, window = launch_staff(engine, services)
     wait_for_launch(services)
     assert camera_opens == []  # 登入時不開鏡頭（UX-02、UX-13）
-    page = show_page(window, "mouseArea2")
+    page = show_page(window, "recordButton")
     assert find(page, "scanningState").isVisible()  # 先畫出「Looking for cameras and microphones…」
     wait_until(lambda: qml(window, "deviceFinder.status") == "ready")
     assert find(page, "deviceForm").isVisible() and not find(page, "scanningState").isVisible()
@@ -619,8 +619,8 @@ def test_devices_are_probed_only_when_the_record_page_opens(engine, services, db
     assert find(page, "activateButton").isEnabled()
     probes = len(camera_opens)
 
-    show_page(window, "mouseArea")
-    page = show_page(window, "mouseArea2")  # 再回到錄影頁：用上次的結果，不再開鏡頭
+    show_page(window, "homeButton")
+    page = show_page(window, "recordButton")  # 再回到錄影頁：用上次的結果，不再開鏡頭
     assert find(page, "deviceForm").isVisible() and len(camera_opens) == probes
 
 

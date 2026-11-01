@@ -6,8 +6,7 @@ Window {
     visible: true
     width: 1920
     height: 1080
-    // DS-51 不用 Server：要改成 Staff 時，test_staff_feedback.py、test_login_window.py 比對標題的地方一起改（T23）
-    title: qsTr("Server Home")
+    title: qsTr("Staff Home")
     visibility: "FullScreen"
     color: Theme.contentBg  // 換頁時新頁面還沒建好的那幾個畫格，內容區是內容頁的底色
 
@@ -329,17 +328,6 @@ Window {
         x: window.width - width - Theme.spaceXL
         y: window.height - height - Theme.spaceXL
     }
-
-    // 舊的 id：其他測試檔（test_staff_feedback.py、test_upload_flow.py、test_analysis.py、test_analysis_flow.py、
-    // test_qml_warnings.py）還用以前 MouseArea 的 id 點側邊欄，例如 mouseArea5.clicked(null)。
-    // 那些測試改用上面的 id（例如 analysisButton.click()）之後就刪掉這一段（T23）
-    property alias mouseArea: homeButton
-    property alias mouseArea2: recordButton
-    property alias mouseArea3: settingsButton
-    property alias mouseArea4: exitButton
-    property alias mouseArea5: analysisButton
-    property alias mouseArea6: servicesButton
-    property alias mouseArea7: reportsButton
 
     Component.onCompleted: shellCompleted = true
 }

@@ -153,7 +153,7 @@ def staff_home(engine, services):
 
 def open_analysis_page(home):
     window = home.shell_window
-    qml(window, "mouseArea5.clicked(null)")  # 側邊欄的「Analysis」：換頁，清單在背景重新整理
+    qml(window, "analysisButton.click()")  # 側邊欄的 Analysis：換頁，清單在背景重新整理
     wait_until(lambda: qml(window, "mainContentLoader.status === Loader.Ready"))
     return qml(window, "mainContentLoader.item")
 

@@ -439,6 +439,7 @@ class ChartsModel(QObject):
             slot.progressChanged.connect(self.progressChanged)
         self._update()
 
+    @Slot()
     def _update(self):
         sources = [slot.source for slot in self._slots if slot.state == READY]
         if sources != self._sources:
@@ -768,6 +769,7 @@ class MediaModel(QObject):
             slot.fail(*describe_failure(exc, slot.file.name))
             self._pump(name)
 
+    @Slot(str, float, float)
     def _on_progress(self, key, done, total):
         slot = self._keys.get(key)
         if slot is not None:

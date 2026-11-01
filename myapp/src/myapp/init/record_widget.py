@@ -592,6 +592,7 @@ class RecordingSaver(QtCore.QObject):
         self._emit(job)
         return True
 
+    @QtCore.Slot(str, float, float)
     def _on_progress(self, key, done, total):
         prefix, _, service_id = key.partition(":")
         job = self._jobs.get(service_id) if prefix == "upload" else None
@@ -653,6 +654,7 @@ class RecordingSaver(QtCore.QObject):
         self._emit(job)
         return False
 
+    @QtCore.Slot(str, int)
     def _on_action(self, action_id, toast_id):
         if action_id.startswith(RETRY_PREFIX):  # 其他前綴是別的流程的（CONTRACTS §4），不認得就不管
             self.retry(action_id[len(RETRY_PREFIX):])
@@ -661,6 +663,7 @@ class RecordingSaver(QtCore.QObject):
         self.changed.emit(job.service_id)
         self.inFlightChanged.emit()
 
+    @QtCore.Slot()
     def _finish_files(self):
         """結束程式時：上傳會被取消（TaskRunner.shutdown），但剛停止的錄影要把檔案寫完，留在這台電腦上。"""
         for job in self._jobs.values():
@@ -1061,6 +1064,7 @@ class RecordWidget(QtWidgets.QWidget):
             problem = problem or self.current.camera_problem(index, now)
         self.previews[index].set_problem(problem)
 
+    @QtCore.Slot()
     def _poll(self):
         """錄影中每 250 ms：經過時間、音量、鏡頭和麥克風的狀態。"""
         recording = self.current
@@ -1075,6 +1079,7 @@ class RecordWidget(QtWidgets.QWidget):
 
     # ------------------------------------------------------------ 錄影
 
+    @QtCore.Slot()
     def start_recording(self):
         """開始錄影：這一段的 service_id 是 'S' + 開始的時間，只在這裡產生一次。"""
         if self.current is not None:
@@ -1096,6 +1101,7 @@ class RecordWidget(QtWidgets.QWidget):
         self._refresh_status()
         self.recordingChanged.emit(True)
 
+    @QtCore.Slot()
     def stop_recording(self):
         """停止錄影：交給 saver 在背景收尾、上傳、寫資料庫（UX-08）。GUI 執行緒不等，馬上可以錄下一段。"""
         recording = self.current
@@ -1127,6 +1133,7 @@ class RecordWidget(QtWidgets.QWidget):
         for capture in self.caps:
             capture.release()
 
+    @QtCore.Slot()
     def _on_about_to_quit(self):
         """結束程式：錄影中的先停止，等檔案寫完再讓程式結束（上傳會被取消，檔案留在這台電腦上）。"""
         recording = self.current
@@ -1137,6 +1144,7 @@ class RecordWidget(QtWidgets.QWidget):
 
     # ------------------------------------------------------------ 狀態列（DS-34）
 
+    @QtCore.Slot(str)
     def _on_save_changed(self, service_id):
         if self.current is None and self.last_recording is not None and service_id == self.last_recording.service_id:
             self._refresh_status()
@@ -1179,6 +1187,7 @@ class RecordWidget(QtWidgets.QWidget):
             self._announce(("failed", job.service_id, job.attempt), f"{job.error_title}. {job.error_detail}",
                            assertive=True)
 
+    @QtCore.Slot()
     def _on_status_action(self):
         job = self.saver.job(self.last_recording.service_id) if self.last_recording is not None else None
         if job is None or self.current is not None:

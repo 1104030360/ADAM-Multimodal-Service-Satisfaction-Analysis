@@ -58,13 +58,13 @@ def poll(home):
 
 
 def show_page(window, sidebar_button):
-    qml(window, f"{sidebar_button}.clicked(null)")
+    qml(window, f"{sidebar_button}.click()")
     wait_until(lambda: qml(window, "mainContentLoader.status === Loader.Ready"))
     return qml(window, "mainContentLoader.item")
 
 
 def open_analysis(home):
-    page = show_page(home.shell_window, "mouseArea5")
+    page = show_page(home.shell_window, "analysisButton")
     wait_until(lambda: not home.services.tasks.isBusy(ANALYSIS_KEY))
     return page
 

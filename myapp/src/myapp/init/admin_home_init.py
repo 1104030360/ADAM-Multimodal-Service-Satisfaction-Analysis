@@ -204,6 +204,7 @@ class AccountProfile(_Section):
         super()._failed(exc)
         self._toast_id = self.services.notifier.fromException(exc, key=self.key, actionId=self.RETRY_ACTION)
 
+    @Slot(str, int)
     def _on_action(self, action_id, toast_id):
         if action_id == self.RETRY_ACTION:
             self.load()
@@ -443,10 +444,12 @@ class AccountManager(QObject):
             self.services.notifier.dismiss(self._failure_toast)
             self._failure_toast = 0
 
+    @Slot(str, bool)
     def _on_busy_changed(self, key, busy):
         if key == self.ADD_KEY:
             self.busyChanged.emit()
 
+    @Slot(str, int)
     def _on_action(self, action_id, toast_id):
         if action_id == self.RETRY_ACTION and self._retry_payload is not None and not self.busy:
             self._submit_add(self._retry_payload)
@@ -997,6 +1000,7 @@ class AdminHome(QObject):
         if owns_services:
             self.services.tasks.shutdown()
 
+    @Slot()
     def _sync_level(self):
         self.accountManager.currentLevel = self._profile.level
 

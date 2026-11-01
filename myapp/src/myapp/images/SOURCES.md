@@ -6,7 +6,7 @@
 |---|---|---|---|
 | `logo.jpg` | 開場畫面（`login.qml`） | 下面那張照片，加上原創的標誌和文字 | 照片：Unsplash License；其餘：本專案原創 |
 | `ADAM_login.jpg` | 登入畫面的背景（`login.qml`） | Jorge Salvador 在 Unsplash 的照片，裁切並調暗 | Unsplash License |
-| `icons/*.png`（9 個） | 側邊欄的圖示與頭像（`server_home.qml`、`admin_home.qml`） | Lucide 1.58.0 | ISC；`exit.png` 另外適用 MIT。全文在 `icons/LICENSE-lucide.txt`，必須和圖片放在一起 |
+| `icons/user.png` | 側邊欄的頭像（`server_home.qml`、`admin_home.qml`） | Lucide 1.58.0 | ISC。全文在 `icons/LICENSE-lucide.txt`，必須和圖片放在一起 |
 
 產生這些圖片的腳本和原始素材只放在這台電腦的 `docs/rebuild/assets/`（被 git 忽略），用它們可以重新產生出逐位元組相同的檔案。
 
@@ -49,34 +49,41 @@
 
 ## 側邊欄圖示（`icons/`）
 
-九個圖檔都由 [Lucide](https://lucide.dev)（https://github.com/lucide-icons/lucide）的圖示產生：npm 套件 `lucide-static` 1.58.0，授權 ISC。
+九個圖檔都## 側邊欄的圖示與頭像
+
+都由 [Lucide](https://lucide.dev)（https://github.com/lucide-icons/lucide）的圖示產生：npm 套件 `lucide-static` 1.58.0，授權 ISC。
 
 - SVG 下載自 `https://cdn.jsdelivr.net/npm/lucide-static@1.58.0/icons/<圖示名稱>.svg`。
 - 另外下載了官方的 npm tarball，它的 sha512 和 npm registry 記錄的相符；用到的 SVG 和 `LICENSE` 都和 tarball 裡的逐位元組相同。
+- 2026-10-31 先做成 `icons/` 底下 8 個 PNG。2026-11-01 前端重建 F5（T23）把側邊欄改成 `SidebarButton`，按鈕圖示換成下面的 SVG，那 8 個 PNG 刪掉了；`icons/` 只剩頭像。
 
-| 檔案 | 按鈕 | Lucide 圖示 | 選用理由 |
-|---|---|---|---|
-| `home.png` | Home | `house` | |
-| `record.png` | Record | `video` | 錄影 |
-| `analysis.png` | Analysis | `brain-circuit` | AI 分析 |
-| `service.png` | Service | `history` | 查詢過去的服務 |
-| `reports.png` | Reports | `file-chart-column` | 帶長條圖的文件 |
-| `setting.png` | Setting | `settings` | |
-| `exit.png` | Exit | `log-out` | |
-| `add.png` | Add | `user-round-plus` | 新增帳號；人形和頭像一樣是圓的 |
-| `user.png` | 頭像 | `circle-user-round`（拿掉外圈） | |
+### 按鈕圖示（`myapp/src/myapp/qml/components/icons/nav/`，15 個 SVG）
 
-- Lucide 的 `LICENSE` 把 `log-out` 列為衍生自 Feather 的圖示，所以同一份授權檔裡 Feather 的 MIT 授權（Copyright (c) 2013-present Cole Bemis）也適用於 `exit.png`。
-- 對原圖的修改（ISC 允許修改）：
-  - 所有圖示：把 `stroke="currentColor"` 換成 `#E6E8EB` 再畫成 PNG。
-  - `user.png`：拿掉 `circle-user-round` 的外圈，只留頭和肩膀；後面的深色圓盤、間隙和外環是另外畫的，不是取自 Lucide。
-- 尺寸與顏色：
-  - 8 個按鈕圖示：60×60 的透明 PNG，QML 以 30×30 顯示，等於 Retina 螢幕的 2 倍圖。線條統一是 `#E6E8EB`，對比在側邊欄 `#333333` 上 10.29:1、按鈕 `#444444` 上 7.93:1、hover `#555555` 上 6.07:1、pressed `#666666` 上 4.68:1。
-  - `user.png`：200×200，QML 以 100×100 顯示。炭灰色的圓盤（`#30343A` → `#15171A`）外面留 3 px 透明間隙，再一圈石墨色的外環（`#8C929A` → `#43474E`）；人形 `#E6E8EB`。
+| Lucide 圖示 | 按鈕 | 選用理由 |
+|---|---|---|
+| `house` | Home | |
+| `video` | Record（服務人員端） | 錄影 |
+| `brain-circuit` | Analysis（服務人員端） | AI 分析 |
+| `history` | Services | 查詢過去的服務 |
+| `file-chart-column` | Reports | 帶長條圖的文件 |
+| `settings` | Settings | |
+| `user-round-plus` | Add Account（管理員端） | 新增帳號；人形和頭像一樣是圓的 |
+| `log-out` | Quit | |
 
-來源 SVG 的 SHA-256：
+- **檔名**：`<Lucide 名稱>_<Theme token>.svg`，規則和下一節的共用元件圖示一樣；`tests/unit/test_qml_components.py` 一起檢查（顏色等於 token、畫得出來、每個都有用到）。
+- **兩種顏色**：目前頁面的按鈕是亮底，所以每個圖示有兩份。Quit 不會是目前頁面，只有亮色那一份。
+  - `chromeIcon` `#E6E8EB`：一般、hover、按下。對比在側邊欄 `#333333` 上 10.29:1、按鈕 `#444444` 上 7.93:1、hover `#555555` 上 6.07:1、按下 `#666666` 上 4.68:1。
+  - `navItemCurrentText` `#0E1013`：目前頁面（亮底 `#E6E8EB`）上 15.5:1。
+- **修改**（ISC 允許）：只把 `stroke="currentColor"` 換成固定的顏色，其餘位元組和原檔相同。把顏色換回 `currentColor`，15 個檔案的 SHA-256 都和下面記的來源相同（2026-11-01 驗證過）。
+- Lucide 的 `LICENSE` 把 `log-out` 列為衍生自 Feather 的圖示，所以同一份授權檔裡 Feather 的 MIT 授權（Copyright (c) 2013-present Cole Bemis）也適用於 `log-out_chromeIcon.svg`。
+- 放在 `nav/` 子資料夾，不和共用元件的 15 個圖示混在一起。
 
-```text
+### 頭像（`icons/user.png`）
+
+- 由 `circle-user-round` 產生（ISC 允許修改）：拿掉外圈，只留頭和肩膀；後面的深色圓盤、間隙和外環是另外畫的，不是取自 Lucide。人形是 `#E6E8EB`。
+- 200×200 的透明 PNG，QML 以 100×100 顯示，等於 Retina 螢幕的 2 倍圖。炭灰色的圓盤（`#30343A` → `#15171A`）外面留 3 px 透明間隙，再一圈石墨色的外環（`#8C929A` → `#43474E`）。
+
+t
 dbfcfe7ae82b8d9d092c2165d21aa6b93330f8b4c04e6d5e1b270b905f13df9a  house.svg
 898a1b8b815739f79aa95031428c2c11a35dd4b0492029ae407a8881250d489a  video.svg
 e6dad1cc4203645e6ac333346a2efb47813fb7dd198add19cb0e886a56a31547  brain-circuit.svg

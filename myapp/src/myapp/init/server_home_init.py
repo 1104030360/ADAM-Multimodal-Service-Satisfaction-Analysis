@@ -514,10 +514,12 @@ class DeviceFinder(QObject):
     def _update_quit_guard(self):
         QuitGuard.instance().set_blocking(self, self._should_block_quit())
 
+    @Slot(bool)
     def _recording_changed(self, recording=None):
         self.recordingChanged.emit()
         self._update_quit_guard()
 
+    @Slot()
     def _uploads_changed(self):
         self.uploadsChanged.emit()
         self._update_quit_guard()
@@ -857,6 +859,7 @@ class ServiceModel(QObject):
             "warning", _tr("Can't refresh analysis status"), _tr("%1. Retrying in %2 seconds.", cause, retry_in),
             ANALYSIS_REFRESH_TOAST_KEY)
 
+    @Slot()
     def refresh_recovered(self):
         """又查得到了（清單或監看）：「更新不到」的警告自己關掉。"""
         if self._refresh_warning:
@@ -1043,18 +1046,22 @@ class ServerHome(QObject):
         services.notifier.actionTriggered.connect(self._on_action)
         return watcher
 
+    @Slot(str)
     def _analysis_finished(self, service_id):
         self.serviceModel.analysis_finished(service_id)
         self.serviceScoreManager.refresh()  # 首頁的分數：舊的留著、變淡，新的到了再換（DS-33）
         self.attention.request(self.shell_window)
 
+    @Slot(str)
     def _analysis_failed(self, service_id):
         self.serviceModel.analysis_failed(service_id)
         self.attention.request(self.shell_window)
 
+    @Slot(object)
     def _watch_failed(self, error):
         self.serviceModel.refresh_failed(error, self.watcher.interval())
 
+    @Slot(str, int)
     def _on_action(self, action_id, toast_id):
         """通知上的動作。只處理分析的（CONTRACTS §4）；其他的（例如 retry-upload:）不認得就不管。"""
         kind, _, service_id = action_id.partition(":")

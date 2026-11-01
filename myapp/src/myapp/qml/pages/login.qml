@@ -206,8 +206,8 @@ Window {
                     font.pixelSize: Theme.fontBodyLarge
                     color: Theme.chromeText
                     placeholderTextColor: Theme.chromeTextMuted
-                    selectionColor: "#4B515A"
-                    selectedTextColor: "#FFFFFF"
+                    selectionColor: Theme.chromeSelection
+                    selectedTextColor: Theme.textOnDark
                     readOnly: loginButton.busy // 驗證中唯讀但不停用，字不會變灰（DS-31）
                     Accessible.name: qsTr("Username") // placeholder 不能當標籤用
                     onAccepted: loginForm.submit()
@@ -231,8 +231,8 @@ Window {
                     echoMode: TextInput.Password // 隐藏输入的密码
                     color: Theme.chromeText
                     placeholderTextColor: Theme.chromeTextMuted
-                    selectionColor: "#4B515A"
-                    selectedTextColor: "#FFFFFF"
+                    selectionColor: Theme.chromeSelection
+                    selectedTextColor: Theme.textOnDark
                     readOnly: loginButton.busy
                     Accessible.name: qsTr("Password")
                     onAccepted: loginForm.submit()

@@ -243,14 +243,5 @@ Window {
         y: window.height - height - Theme.spaceXL
     }
 
-    // 舊的 id：其他測試檔（例如 test_admin.py）還用以前 MouseArea 的 id 找側邊欄的按鈕。
-    // 那些測試改用上面的 id（例如 addAccountButton）之後就刪掉這一段（T23）
-    property alias mouseArea: homeButton
-    property alias mouseArea2: addAccountButton
-    property alias mouseArea3: servicesButton
-    property alias mouseArea4: reportsButton
-    property alias mouseArea5: settingsButton
-    property alias mouseArea6: exitButton
-
     Component.onCompleted: shellCompleted = true
 }

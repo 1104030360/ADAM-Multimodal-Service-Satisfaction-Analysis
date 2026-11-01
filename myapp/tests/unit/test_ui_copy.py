@@ -31,16 +31,8 @@ PAGES = SRC / "qml" / "pages"
 COMPONENTS = SRC / "qml" / "components"
 THEME_QML = COMPONENTS / "Theme.qml"
 
-# D1（外殼與登入，T23）同一波在改的檔案。合併之後，照回報把通過的檔案從這裡拿掉，就會一起被掃描。
-NOT_YET_SCANNED = {
-    "server_home.qml",            # 側邊欄寫死的顏色（#333333、#444444…）
-    "admin_home.qml",             # 同上
-    "login.qml",                  # 輸入框的選取色寫死（#4B515A）
-    "server_setting_button.qml",  # 中文的設定頁（視窗模式、全螢幕模式）
-    "admin_setting_page.qml",     # 同上
-}
-QML_FILES = sorted(path for path in [*PAGES.glob("*.qml"), *COMPONENTS.glob("*.qml")]
-                   if path.name not in NOT_YET_SCANNED)
+# 新加的頁面和元件自動被掃描
+QML_FILES = sorted([*PAGES.glob("*.qml"), *COMPONENTS.glob("*.qml")])
 # 顏色規則不掃 Theme.qml：顏色就定義在那裡
 QML_COLOUR_FILES = [path for path in QML_FILES if path != THEME_QML]
 # 給使用者看的字串也來自 Python：錄影視窗（QtWidgets）、兩個 init 模組（通知、裝置名稱）、明細頁和報表（media.py）
@@ -57,8 +49,9 @@ HEX_COLOUR = re.compile(r"#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})\b")
 MATERIAL_ACCENT = re.compile(r"\bMaterial\.(?:Green|LightGreen|Lime|Teal|Red|DeepOrange|Pink)\b")
 IDENTIFIER = re.compile(r"^[a-z][A-Za-z0-9_]*$")
 SVG_PATH = re.compile(r"^[MmLlHhVvCcSsQqTtAaZz][-\d\s.,MmLlHhVvCcSsQqTtAaZz]*$")   # Lucide 圖示的路徑資料
-# 這幾種屬性的字串不是給人看的：objectName（含 key + "Tab" 這種拼接）、字型名稱、視窗狀態；console.* 是 log
-NOT_UI_PREFIX = re.compile(r"(?:^|[{;])\s*(?:objectName|font\.family|visibility)\s*:[^;{}]*$|\bconsole\.\w+\(")
+# 這幾種屬性的字串不是給人看的：objectName（含 key + "Tab" 這種拼接）、字型名稱、視窗狀態、
+# 快捷鍵（Shortcut 的 sequence："Ctrl+1"，macOS 上顯示成 ⌘1）；console.* 是 log
+NOT_UI_PREFIX = re.compile(r"(?:^|[{;])\s*(?:objectName|font\.family|visibility|sequence)\s*:[^;{}]*$|\bconsole\.\w+\(")
 
 QmlString = namedtuple("QmlString", "line text wrapped prefix")   # prefix：同一行在字串前面的程式碼
 
@@ -233,12 +226,6 @@ def test_theme_py_matches_theme_qml():
     assert set(theme.RECORD_WINDOW) & set(colours) == set()
 
 
-def test_every_qml_file_is_scanned_or_waiting_for_d1():
-    """新加的頁面和元件自動被掃描；暫時不掃的只能是 D1 這一波的檔案（合併後拿掉）。"""
-    every = {path.name for path in [*PAGES.glob("*.qml"), *COMPONENTS.glob("*.qml")]}
-    assert NOT_YET_SCANNED <= every
-    assert {path.name for path in QML_FILES} == every - NOT_YET_SCANNED
-
 
 # ---------------------------------------------------------------- 掃描器本身（抓得到違規、不誤判註解）
 
@@ -262,6 +249,7 @@ Item {
         onClicked: console.log("Clicked Analyze")
     }
     readonly property string icon: "M15 18l-6-6 6-6"
+    Shortcut { sequence: "Ctrl+1"; onActivated: page.open() }
 }
 """
 
@@ -270,7 +258,7 @@ def test_scanner_finds_each_kind_of_violation_but_skips_comments():
     code, strings = qml_tokens(SAMPLE)
     assert [(s.line, s.text) for s in strings if CJK.search(s.text)] == [(9, "服務人員")]
     assert [(s.line, s.text) for s in strings if says_server(s.text)] == [(10, "Server Scores")]
-    # objectName 的拼接、console.log、字型名稱、圖示路徑都不是給人看的字串
+    # objectName 的拼接、console.log、字型名稱、圖示路徑、快捷鍵都不是給人看的字串
     assert [(s.line, s.text) for s in strings if not s.wrapped and is_ui_text(s.text, s.prefix)] == [
         (10, "Server Scores"), (11, "Weekly Scores")]
     assert MATERIAL_ACCENT.findall(code) == ["Material.Green"]  # 註解裡的那一個不算

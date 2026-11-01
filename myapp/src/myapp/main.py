@@ -53,9 +53,11 @@ class MainWindow(QObject):
         context.setContextProperty("notifier", self.notifier)
         context.setContextProperty("uiPrefs", self.ui_prefs)
 
+    @Slot(str, object)
     def _on_task_failed(self, key, error):
         self.notifier.fromException(error)
 
+    @Slot(str, bool)
     def _on_busy_changed(self, key, busy):
         if key == LOGIN_KEY:
             self.loggingInChanged.emit()

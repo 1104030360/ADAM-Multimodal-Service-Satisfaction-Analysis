@@ -108,6 +108,7 @@ class AnalysisWatcher(QObject):
         self._timer.stop()
         self._tasks.cancel(POLL_KEY)
 
+    @Slot(str)
     def add(self, service_id):
         """送出分析成功（狀態已經是 2）：開始看這一筆，間隔回到 15 秒。"""
         self._watched.add(service_id)
@@ -206,6 +207,7 @@ class DockAttention(QObject):
         if app is not None:  # 程式結束時外殼最後才關，app 可能已經不在了
             app.setBadgeNumber(0)
 
+    @Slot(Qt.ApplicationState)
     def _state_changed(self, state):
         if state == Qt.ApplicationState.ApplicationActive:
             self.clear()

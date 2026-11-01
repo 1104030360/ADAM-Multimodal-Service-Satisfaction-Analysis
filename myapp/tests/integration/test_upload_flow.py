@@ -4,7 +4,7 @@ moto 的 S3、測試用的 MySQL。鏡頭和麥克風是假的。
 - 停止之後在背景上傳（io lane，upload:<sid>）、寫資料庫（db lane，record:save:<sid>）；GUI 執行緒 0 個往返
 - 主視窗的通知用同一個 key 就地更新：進度 → Saved（Analyze）或 wasn't saved（Retry）（DS-21、DS-52）
 - 失敗時檔案留著，Retry 之後存好（UX-10）
-- 上傳中按 Exit、關掉主視窗、⌘Q 都先問（UX-29、DS-28）；錄影中關掉錄影視窗會停止並存檔（UX-09）
+- 上傳中按 Quit、關掉主視窗、⌘Q 都先問（UX-29、DS-28）；錄影中關掉錄影視窗會停止並存檔（UX-09）
 """
 import os
 import threading
@@ -81,7 +81,7 @@ def staff(engine, services, s3, gate, monkeypatch):
     home = server_home_init.launch(engine, STAFF_ID, services)
     window = engine.rootObjects()[-1]
     wait_until(lambda: not any(services.tasks.isBusy(key) for key in LAUNCH_KEYS))
-    qml(window, "mouseArea2.clicked(null)")  # 側邊欄的 Record
+    qml(window, "recordButton.click()")  # 側邊欄的 Record
     wait_until(lambda: qml(window, "mainContentLoader.status === Loader.Ready")
                and qml(window, "deviceFinder.status") == "ready")
     activate = window.findChild(QObject, "activateButton")
@@ -258,7 +258,7 @@ def test_quit_while_uploading_asks_first_from_exit_close_and_cmd_q(engine, staff
     wait_until(lambda: job.state == UPLOADING and job.done == job.sizes[0])
     dialog = quit_dialog(window)
 
-    qml(window, "mouseArea4.clicked(null)")  # 側邊欄的 Exit
+    qml(window, "exitButton.click()")  # 側邊欄的 Quit
     wait_until(lambda: qml(dialog, "opened"))
     assert quits == [] and window.isVisible()
     assert dialog.property("title") == "Quit while uploading?"
@@ -299,7 +299,7 @@ def test_quit_without_uploads_quits_at_once(engine, staff, services, db, no_netw
     home, window, finder = staff
     quits = track_quit(engine)
     assert not QuitGuard.instance().blocking(finder)  # 沒有在錄、沒有在存：⌘Q 照常結束
-    qml(window, "mouseArea4.clicked(null)")
+    qml(window, "exitButton.click()")
     assert quits == [True] and not qml(quit_dialog(window), "opened")
 
 
@@ -313,7 +313,7 @@ def test_quit_while_recording_stops_and_saves_then_asks(engine, staff, services,
     gate.hold(f"video/{recording.service_id}_cam0.avi")
     wait_until(lambda: recording.frames_written >= 3 and recording.audio_chunks >= 3)
     assert QuitGuard.instance().blocking(finder)  # 錄影中：⌘Q 會被攔下來
-    qml(window, "mouseArea4.clicked(null)")  # 錄影中按 Exit：先停止並存檔
+    qml(window, "exitButton.click()")  # 錄影中按 Quit：先停止並存檔
     assert recording.stopped and recorder.current is None
     dialog = quit_dialog(window)
     assert qml(dialog, "visible") and quits == []

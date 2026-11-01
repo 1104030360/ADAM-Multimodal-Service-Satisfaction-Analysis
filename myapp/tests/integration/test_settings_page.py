@@ -3,8 +3,6 @@
 - Window：Windowed／Full Screen 的選取狀態跟著主視窗，按下去會切換主視窗。
 - Reduce Motion 存起來、切換 Theme 的測試在 test_navigation_a11y.py。
 """
-import gc
-
 import pytest
 from PySide6.QtCore import QObject, Qt
 from PySide6.QtGui import QWindow
@@ -33,9 +31,6 @@ def qml_warnings(engine):
 
 
 def open_settings(engine, home_init, account_id, page, services):
-    # 前面測試留下的主畫面先收掉、清掉沒人用的 QML property cache（原因見 test_navigation_a11y.launch() 和 T23）
-    gc.collect()
-    engine.clearComponentCache()
     home_init.launch(engine, account_id, services)  # 主視窗一打開就是全螢幕
     window = engine.rootObjects()[-1]
     qml(window, f'mainContentLoader.source = "../../qml/pages/{page}"')

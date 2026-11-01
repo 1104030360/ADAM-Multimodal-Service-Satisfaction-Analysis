@@ -193,7 +193,7 @@ def test_opening_add_account_does_not_reload_home_data(engine, db, services, db_
     for section in (home.profile, home.serviceScoreManager, home.rankingModel, home.trendDataManager):
         loaded(section)
     db_proxy.reset()
-    add_button = qml(window, "mouseArea2")  # 側邊欄的「Add」
+    add_button = qml(window, "addAccountButton")  # 側邊欄的 Add Account
     center = add_button.mapToScene(QPointF(add_button.width() / 2, add_button.height() / 2)).toPoint()
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, center)
     wait_until(lambda: qml(window, "mainContentLoader.source.toString()").endswith("admin_add_page.qml"))

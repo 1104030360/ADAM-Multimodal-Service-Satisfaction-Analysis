@@ -240,7 +240,7 @@ Item {
                     required property string name
                     required property string start_datetime
 
-                    width: ListView.view.width
+                    width: ListView.view ? ListView.view.width : 0 // 收尾時 delegate 先離開 ListView，view 會是 null
                     height: 60
                     radius: Theme.radiusS
                     color: index % 2 === 0 ? Theme.contentBg : Theme.surfaceAlt

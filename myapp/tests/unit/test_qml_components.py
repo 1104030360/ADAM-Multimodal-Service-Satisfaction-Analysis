@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtCore import (QAbstractListModel, QCoreApplication, QEvent, QModelIndex, QObject, QPoint, QPointF,
                             Property, Qt, QUrl, Signal, Slot, qInstallMessageHandler)
-from PySide6.QtGui import QColor, QWindow
+from PySide6.QtGui import QColor, QGuiApplication, QWindow
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtTest import QTest
 
@@ -20,6 +20,7 @@ from tests.integration.helpers import qml, wait_until
 
 COMPONENTS = Path(__file__).resolve().parents[2] / "src" / "myapp" / "qml" / "components"
 ICONS = COMPONENTS / "icons"
+PAGES = COMPONENTS.parent / "pages"
 
 HARNESS = """\
 import QtQuick
@@ -214,6 +215,13 @@ def toasts(window):
     return [qml(view, f"itemAtIndex({i})") for i in range(qml(view, "count"))]
 
 
+def timer_state(window):
+    """toast 的計時器停著的原因（paused＝hover、焦點在 toast 裡，或視窗不是作用中）：給 wait_until 的失敗訊息用。"""
+    shown = [toast for toast in toasts(window) if toast is not None]
+    return (f"視窗作用中 {window.isActive()}，focus window {QGuiApplication.focusWindow()}，"
+            f"toast（標題, paused）{[(toast.property('title'), toast.property('paused')) for toast in shown]}")
+
+
 def toast_titled(window, title):
     def matching():
         return [toast for toast in toasts(window) if toast is not None and toast.property("title") == title]
@@ -294,7 +302,8 @@ def test_toast_auto_dismisses_after_its_timeout_but_sticky_toasts_stay(harness):
     sticky = notifier.push("error", "S20261031093000 wasn't saved", timeoutMs=0)
     quick = notifier.push("success", "Analysis complete", timeoutMs=50)
 
-    wait_until(lambda: quick in notifier.dismissed)
+    # 2026-11-01 整批測試（整合測試先跑）時失敗過一次，之後重跑 4 次都沒有重現：失敗時印出計時器為什麼停著
+    wait_until(lambda: quick in notifier.dismissed, describe=lambda: timer_state(window))
     assert sticky not in notifier.dismissed
     wait_until(lambda: len(toasts(window)) == 1)
     remaining = toasts(window)[0]
@@ -945,11 +954,12 @@ def test_theme_sizes_and_layers_match_the_design_system(harness):
     assert {name: theme(window, name) for name in expected} == expected
 
 
-def test_qmldir_declares_theme_as_singleton_and_the_nine_components():
+def test_qmldir_declares_theme_as_singleton_and_the_eleven_components():
     lines = (COMPONENTS / "qmldir").read_text(encoding="utf-8").splitlines()
     assert lines == ["singleton Theme 1.0 Theme.qml"] + [
         f"{name} 1.0 {name}.qml" for name in ("Toast", "ToastHost", "StatusChip", "TransferProgress", "BusyButton",
-                                               "EmptyState", "InlineError", "FieldError", "ConfirmDialog")]
+                                               "EmptyState", "InlineError", "FieldError", "ConfirmDialog",
+                                               "SidebarButton", "SettingsView")]
 
 
 def test_component_qml_files_use_crlf():
@@ -964,8 +974,8 @@ ICON_NAME = re.compile(r"^(?P<lucide>[a-z-]+)_(?P<token>[A-Za-z]+)\.svg$")
 def test_icons_are_lucide_svgs_precoloured_with_theme_tokens(harness):
     """圖示檔名是「Lucide 名稱_Theme token」，線條顏色要和那個 token 一樣（DS-13）。"""
     window = harness.load("")
-    paths = sorted(ICONS.glob("*.svg"))
-    assert len(paths) == 15
+    paths = sorted(ICONS.rglob("*.svg"))  # 共用元件的 15 個，加上 nav/ 裡側邊欄的 15 個（T23）
+    assert len(paths) == 30
     for path in paths:
         match = ICON_NAME.match(path.name)
         assert match, path.name
@@ -984,12 +994,23 @@ def test_every_icon_is_used_and_every_used_icon_exists():
     assert used == {path.name for path in ICONS.glob("*.svg")}
 
 
+def test_every_nav_icon_is_used_and_every_used_nav_icon_exists():
+    """側邊欄（SidebarButton）的每個按鈕有亮色（chromeIcon）的一份；會變成目前頁面的按鈕另有深色
+    （navItemCurrentText）的一份。Quit 不會是目前頁面，只有亮色（T23 第 4 節）。"""
+    names = set()
+    for shell in ("server_home.qml", "admin_home.qml"):
+        names |= set(re.findall(r'iconName:\s*"([\w-]+)"', (PAGES / shell).read_text(encoding="utf-8")))
+    expected = ({f"{name}_chromeIcon.svg" for name in names}
+                | {f"{name}_navItemCurrentText.svg" for name in names - {"log-out"}})
+    assert expected == {path.name for path in (ICONS / "nav").glob("*.svg")}
+
+
 def test_icons_render_in_their_colour_without_warnings(harness):
     """Qt 的 SVG 外掛畫得出來，而且沒有任何警告；畫出來的線條就是預先上的顏色。"""
     messages = []
     previous = qInstallMessageHandler(lambda mode, context, message: messages.append((context.category, message)))
     try:
-        names = sorted(path.name for path in ICONS.glob("*.svg"))
+        names = sorted(path.relative_to(ICONS).as_posix() for path in ICONS.rglob("*.svg"))  # 含 nav/
         window = harness.load("""
     Grid {
         x: 0; y: 60

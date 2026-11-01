@@ -208,6 +208,7 @@ class TaskRunner(QObject):
         if task is not None:
             self._cancel_task(task)
 
+    @Slot()
     def shutdown(self):
         """程式結束時（aboutToQuit）：取消全部的 token，不等工作結束；之後的結果都不交回。"""
         self._closed = True
@@ -245,11 +246,13 @@ class TaskRunner(QObject):
         except RuntimeError:  # TaskRunner 已經被刪掉（程式結束中），結果沒有人要了
             pass
 
+    @Slot(str, int, float, float)
     def _forward_progress(self, key, task_id, done, total):
         task = self._running.get(key)
         if task is not None and task.id == task_id and not task.cancelled:
             self.progressed.emit(key, done, total)
 
+    @Slot(str, int, object, object)
     def _deliver(self, key, task_id, result, error):
         """在 GUI 執行緒執行。"""
         task = self._running.get(key)

@@ -13,6 +13,7 @@ QtObject {
     readonly property color chromeBorder: "#596069"
     readonly property color chromeFieldBorder: "#606770"
     readonly property color chromeFocus: "#A9B0BA"
+    readonly property color chromeSelection: "#4B515A"      // 新增：登入頁輸入框選取文字的底色（白字 8.0:1）
     readonly property color chromeTextMuted: "#8E959F"
     readonly property color chromeText: "#ECEEF1"
     readonly property color chromeTitle: "#F3F4F6"

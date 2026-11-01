@@ -63,11 +63,14 @@ def qml(obj, expression):
     return None if is_undefined else value
 
 
-def wait_until(condition, timeout=5.0):
-    """一邊處理 Qt 事件（動畫、轉場、計時器、視窗狀態），一邊等 condition() 成立。"""
+def wait_until(condition, timeout=5.0, describe=None):
+    """一邊處理 Qt 事件（動畫、轉場、計時器、視窗狀態），一邊等 condition() 成立。
+
+    describe：逾時才呼叫，把當下的狀態放進失敗訊息（偶爾才失敗的測試，要靠它知道失敗時的狀態）。
+    """
     deadline = time.monotonic() + timeout
     while not condition():
-        assert time.monotonic() < deadline, f"等了 {timeout} 秒還沒成立"
+        assert time.monotonic() < deadline, f"等了 {timeout} 秒還沒成立" + (f"：{describe()}" if describe else "")
         QCoreApplication.processEvents()
         time.sleep(0.01)
 

@@ -85,7 +85,7 @@ def test_staff_shell_shows_every_severity_as_a_toast_without_warnings(engine, se
 
 
 def test_staff_quit_dialog_has_no_warnings(engine, services, qml_warnings, monkeypatch):
-    """錄影中按 Exit：停止並存檔，上傳還沒完成就跳出確認（F3，UX-29）。對話框放在側邊欄的 Exit 按鈕裡。"""
+    """錄影中按 Quit：停止並存檔，上傳還沒完成就跳出確認（F3，UX-29）。對話框放在側邊欄的 Quit 按鈕裡。"""
     uploading, release = threading.Event(), threading.Event()
 
     def stuck_upload(local_path, key, token=None, report=None):  # 測試放行之前，上傳一直沒有完成
@@ -104,7 +104,7 @@ def test_staff_quit_dialog_has_no_warnings(engine, services, qml_warnings, monke
     recorder = finder.recorder
     try:
         recorder.start_recording()
-        qml(window, "mouseArea4.clicked(null)")
+        qml(window, "exitButton.click()")
         wait_until(lambda: uploading.is_set() and qml(window.findChild(QObject, "quitDialog"), "opened"))
         wait_for_staff_data(services)
         settle()

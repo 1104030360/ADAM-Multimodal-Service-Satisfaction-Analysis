@@ -3,7 +3,6 @@
 忙碌、焦點、連不上資料庫這些回饋的細節在 test_staff_feedback.py；開場圖（D3）在 test_navigation_a11y.py。
 """
 import errno
-import gc
 import importlib.metadata
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,9 +29,6 @@ def login_form(engine, db):
     測試的動畫時間是 0（tests/conftest.py 的 ADAM_ANIMATION_SCALE），和減少動態一樣：開場圖整段不出現，
     第一個畫面就是表單，不必再等或手動換頁（D3、DS-43）。
     """
-    # 登入後會建主畫面：前面測試留下的先收掉、清掉沒人用的 QML property cache（見 test_navigation_a11y.launch()、T23）
-    gc.collect()
-    engine.clearComponentCache()
     controller = MainWindow(engine)  # QML 裡的 mainWindow；yield 讓它活到測試結束
     engine.load(QUrl.fromLocalFile(str(LOGIN_QML)))
     window = engine.rootObjects()[0]
@@ -51,7 +47,7 @@ def submit(form, username, password):
 
 
 @pytest.mark.parametrize("username, password, title, name", [
-    ("placeholder_staff", "CHANGE-ME-staff-0000", "Server Home", STAFF_NAME),
+    ("placeholder_staff", "CHANGE-ME-staff-0000", "Staff Home", STAFF_NAME),
     ("placeholder_admin", "CHANGE-ME-admin-0000", "Admin Home", "系統管理員（佔位）"),
 ], ids=["staff", "admin"])
 def test_login_opens_home_for_account_level(engine, login_form, username, password, title, name):
@@ -73,7 +69,7 @@ def test_a_replaced_login_form_ignores_login_results(engine, login_form):
     submit(form, "placeholder_staff", "CHANGE-ME-staff-0000")
     # 兩份表單都接的話，同一個 signal 會一次開兩個主畫面（1 → 3），不會停在 2
     wait_until(lambda: len(engine.rootObjects()) == 2)
-    assert engine.rootObjects()[1].title() == "Server Home"
+    assert engine.rootObjects()[1].title() == "Staff Home"
 
 
 @pytest.mark.parametrize("username, password", [
