@@ -14,7 +14,12 @@ import pytest
 from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtQml import QQmlApplicationEngine
 
-from tests.integration.helpers import Database
+from myapp.db_lane import DbLane
+from myapp.notifications import Notifier
+from myapp.services import CLOSE_DB_KEY, AppServices
+from myapp.tasks import TaskRunner
+from myapp.ui_prefs import UiPrefs
+from tests.integration.helpers import Database, wait_until
 from tests.integration.latency_proxy import db_proxy  # noqa: F401  fixture：app 的 DB_* 改走計算往返次數的 proxy
 
 SCHEMA = Path(__file__).resolve().parents[3] / "docs" / "rebuild" / "db_schema.sql"
@@ -119,6 +124,16 @@ def analysis_service(monkeypatch):
     yield service
     server.shutdown()
     server.server_close()
+
+
+@pytest.fixture
+def services(db):
+    """登入後共用的背景服務，和 main.py 的一樣：真的 TaskRunner、Notifier、UiPrefs，DbLane 連到這個測試的資料庫。"""
+    services = AppServices(TaskRunner(), Notifier(), DbLane(), UiPrefs())
+    yield services
+    if services.close_db():  # 連線只能在 db lane 上關；等它關好，不留連線給下一個測試
+        wait_until(lambda: not services.tasks.isBusy(CLOSE_DB_KEY))
+    services.tasks.shutdown()
 
 
 @pytest.fixture

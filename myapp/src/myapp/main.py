@@ -10,7 +10,9 @@ from pathlib import Path
 from PySide6.QtCore import QUrl, QObject, Slot
 from myapp.database import DatabaseConnector
 from myapp.init import server_home_init, admin_home_init
+from myapp.db_lane import DbLane
 from myapp.notifications import Notifier
+from myapp.services import AppServices
 from myapp.tasks import TaskRunner
 from myapp.ui_prefs import UiPrefs
 
@@ -40,6 +42,8 @@ class MainWindow(QObject):
         self.tasks = TaskRunner(self)
         self.notifier = Notifier(self)
         self.ui_prefs = UiPrefs(self)
+        # 登入後的畫面共用這一份；db lane 的連線只有一條（ENG-10），程式結束時隨行程關閉
+        self.services = AppServices(self.tasks, self.notifier, DbLane(), self.ui_prefs)
         self.tasks.failed.connect(self._on_task_failed)  # 沒給 on_err 的工作失敗時，跳一則通知
         self.db_connector_wrapper = DatabaseConnectorWrapper()
         context = self.engine.rootContext()
@@ -59,11 +63,11 @@ class MainWindow(QObject):
 
     @Slot(str)
     def launchServerHome(self, account_id):
-        server_home_init.launch(self.engine, account_id)
+        server_home_init.launch(self.engine, account_id, self.services)
 
     @Slot(str)
     def launchAdminHome(self, account_id):
-        admin_home_init.launch(self.engine, account_id)
+        admin_home_init.launch(self.engine, account_id, self.services)
 
 
 def main():

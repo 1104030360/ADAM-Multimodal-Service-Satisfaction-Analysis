@@ -735,8 +735,10 @@ class AdminHome(QObject):
             print(f"Cleared and recreated {charts_dir}")
 
 
-def launch(engine, account_id):
+def launch(engine, account_id, services=None):
+    """services：main.py 的 AppServices（TaskRunner、Notifier、DbLane、UiPrefs）；前端重建 F2 起由頁面使用。"""
     home = AdminHome(account_id)
+    home.services = services
     engine.rootContext().setContextProperty("adminHome", home)
     engine.rootContext().setContextProperty("serviceScoreManager", home.serviceScoreManager)
     engine.rootContext().setContextProperty("rankingModel", home.rankingModel)

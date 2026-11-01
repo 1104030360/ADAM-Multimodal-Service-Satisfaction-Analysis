@@ -732,8 +732,10 @@ class ServerHome(QObject):
             shutil.rmtree(charts_dir)
             os.makedirs(charts_dir)
             print(f"Cleared and recreated {charts_dir}")
-def launch(engine, account_id):
+def launch(engine, account_id, services=None):
+    """services：main.py 的 AppServices（TaskRunner、Notifier、DbLane、UiPrefs）；前端重建 F2 起由頁面使用。"""
     home = ServerHome(account_id)
+    home.services = services
     engine.rootContext().setContextProperty("serverHome", home)
     engine.rootContext().setContextProperty("deviceFinder", home.deviceFinder)  # Set deviceFinder as a context property
     engine.rootContext().setContextProperty("serviceScoreManager", home.serviceScoreManager)  # Set serviceScoreManager as a context property
