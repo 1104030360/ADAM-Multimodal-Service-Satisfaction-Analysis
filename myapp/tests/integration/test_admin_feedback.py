@@ -4,6 +4,7 @@
 - 資料庫經過 db_proxy：數往返次數，也可以讓它斷線（kill）。只斷言結果和往返次數，不斷言時間。
 - 等待一律用 wait_until。toast 要等畫面畫出來才看得到；用到它的子控制項時留著 toast 的參照（T17）。
 """
+import gc
 import json
 import threading
 from contextlib import contextmanager
@@ -336,15 +337,12 @@ def test_shell_shows_toasts_of_all_four_severities_without_warnings(admin):
     wait_until(lambda: bottom_right() == (admin.window.width() - 24, admin.window.height() - 24))
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "F1 的 ToastHost：Theme 的 dur* 是 0 時（測試的 animationScale 0、減少動態），ListView 的 add 轉場不會結束，"
-    "新的 toast 一直是 opacity 0。修法（T19）：ToastHost.qml 的 add／remove／displaced 三個 Transition 加上 "
-    "enabled: Theme.durEnter > 0／Theme.durBase > 0。修好之後這個測試會 XPASS，把 xfail 拿掉。"))
 def test_toasts_are_visible_when_motion_is_off(admin):
+    """減少動態、測試的 animationScale 0：動畫時間是 0，ToastHost 不套用轉場，toast 直接看得到（T19 抓到的 bug）。"""
     admin.services.notifier.notify("info", "Can you see me", "")
     toast = toast_titled(admin.window, "Can you see me")
-    render_frames(admin.window, 3)  # 進場轉場（長度 0）早就該跑完了
-    assert toast.property("opacity") == 1  # 現在：建立時是 1，轉場一開始設成 0，之後就停在 0
+    render_frames(admin.window, 3)
+    assert toast.property("opacity") == 1
 
 
 # ---------------------------------------------------------------- 首頁：沒有資料、錯誤、重新整理（DS-25～27、DS-33）
@@ -516,3 +514,19 @@ def test_staff_list_failure_can_be_retried_on_the_page(admin, db, mysql_server, 
     click(admin.window, find_button(row, "Retry"))
     wait_until(lambda: manager.namesState == "ready")
     assert not row.isVisible()
+
+
+# ---------------------------------------------------------------- launch() 的物件存活時間
+
+
+def test_page_objects_live_as_long_as_the_shell(engine, services):
+    """setContextProperty 不會留住 Python 物件（T18）：launch() 要讓它們和外殼活得一樣久，gc 之後頁面還能用。"""
+    admin_home_init.launch(engine, ADMIN_ID, services)  # 不留回傳值，和 MainWindow 一樣
+    window = engine.rootObjects()[-1]
+    wait_until(lambda: not any(services.tasks.isBusy(key) for key in ("admin:profile",)))
+    gc.collect()
+    for name in ("adminHome", "serviceScoreManager", "rankingModel", "trendDataManager", "serviceManager",
+                 "resultsModel", "accountManager"):
+        assert qml(window, f"{name} !== null"), name
+    page = open_page(SimpleNamespace(window=window), "admin_add_page.qml")
+    assert page is not None

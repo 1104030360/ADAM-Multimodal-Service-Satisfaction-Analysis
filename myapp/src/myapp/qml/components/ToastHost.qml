@@ -77,8 +77,10 @@ Popup {
             }
 
             // M-2 進場：opacity 0→1＋往上 8 px
+            // 時間是 0（減少動態、測試）時不套用轉場：Animator 不會跑，toast 會停在 opacity 0 看不到
             add: Transition {
                 id: addTransition
+                enabled: Theme.durEnter > 0
                 ParallelAnimation {
                     OpacityAnimator { from: 0; to: 1; duration: Theme.durEnter; easing.type: Theme.easeEnter }
                     YAnimator {
@@ -91,10 +93,12 @@ Popup {
             }
             // M-3 退場：opacity 1→0
             remove: Transition {
+                enabled: Theme.durBase > 0
                 OpacityAnimator { to: 0; duration: Theme.durBase; easing.type: Theme.easeExit }
             }
             // M-4 其餘的補位
             displaced: Transition {
+                enabled: Theme.durBase > 0
                 YAnimator { duration: Theme.durBase; easing.type: Theme.easeMove }
             }
         }
