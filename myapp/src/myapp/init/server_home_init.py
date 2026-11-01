@@ -25,6 +25,7 @@ from myapp.diagnostics import HelpCenter
 from myapp.home_dashboard import HomeDashboard
 from myapp.notifications import Notifier, user_message
 from myapp.pending_saves import PendingSaveStore
+from myapp.reports import ReportsModel
 from myapp.search import ServiceSearch
 from myapp.services import AppServices
 from myapp.tasks import TaskRunner
@@ -53,7 +54,8 @@ ANALYSIS_REFRESH_TOAST_KEY = "analysis-refresh"
 # launch() 註冊的 context property（tasks、notifier、uiPrefs 是登入前就有的，不算）：登出時設成 null（N1）。
 # launch() 多註冊一個名稱，這裡也要加上（tests/integration/test_log_out.py 會比對 launch() 的程式）
 CONTEXT_NAMES = ("serverHome", "deviceFinder", "homeDashboard", "serviceModel", "serviceManager", "chartsModel",
-                 "mediaModel", "pdfHandler", "serviceSearch", "helpCenter", "myAccount")
+                 "mediaModel", "pdfHandler", "serviceSearch", "helpCenter", "myAccount",
+                 "reportsModel")
 
 _FIRST_ROLE = int(Qt.ItemDataRole.UserRole)
 
@@ -1356,6 +1358,8 @@ class ServerHome(QObject):
         self.mediaModel = MediaModel()
         self.pdfmodel = PDFHandler(services)
         self.serviceSearch = ServiceSearch.for_staff(services, account_id, parent=self)  # 頁首的搜尋（只查自己的）
+        # 報表（new-feature N4、N5，T37）：已發佈的清單、分析頁的 Report 欄；打開時交給 pdfmodel
+        self.reportsModel = ReportsModel(services, account_id, admin=False, pdf=self.pdfmodel, parent=self)
         self.helpCenter = HelpCenter(services, reports=self.pdfmodel, parent=self)  # 設定頁的 Help 區塊（T40）
         if self.myAccount is not None:  # 清掉下載快取時照片的檔案也沒了：重新下載（T36）
             self.helpCenter.storage.cleared.connect(self.myAccount.cacheCleared)
@@ -1397,6 +1401,7 @@ class ServerHome(QObject):
         if self.watcher is not None:
             self.watcher.stop()
         self.serviceModel.stop()
+        self.reportsModel.stop()
         self.attention.clear()
         self._session.stop()
         self.shell_window = None
@@ -1535,6 +1540,7 @@ def launch(engine, account_id, services=None):
     context.setContextProperty("pdfHandler", home.pdfmodel)
     context.setContextProperty("serviceSearch", home.serviceSearch)
     context.setContextProperty("myAccount", home.myAccount)  # 設定頁的 Account（T36）
+    context.setContextProperty("reportsModel", home.reportsModel)
     context.setContextProperty("helpCenter", home.helpCenter)
 
     opened = len(engine.rootObjects())

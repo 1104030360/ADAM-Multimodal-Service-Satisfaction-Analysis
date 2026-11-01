@@ -27,6 +27,7 @@ Item {
 
     property string backPage: ""
     property bool showStaffName: false      // 管理員端：頁首的說明前面加上這筆服務的服務人員
+    property bool showReport: false         // 管理員端：分析完成的服務多一張報表卡（new-feature N4，ServiceReportCard.qml）
     readonly property var media: typeof mediaModel !== "undefined" ? mediaModel : null
     readonly property var charts: typeof chartsModel !== "undefined" ? chartsModel : null
     readonly property string pageState: media ? media.state : "idle"
@@ -495,6 +496,19 @@ Item {
                         font.pixelSize: Theme.fontCaption
                         wrapMode: Text.Wrap
                     }
+                }
+            }
+
+            // ── 報表（管理員端、分析完成的服務；new-feature N4，T37）
+            Loader {
+                objectName: "reportCardLoader"
+                Layout.fillWidth: true
+                active: detail.showReport && detail.media !== null && detail.media.analysisStatus === 3
+                visible: active
+                sourceComponent: ServiceReportCard {
+                    objectName: "serviceReportCard"
+                    vm: typeof reportsModel !== "undefined" ? reportsModel : null
+                    serviceId: detail.media ? detail.media.serviceId : ""
                 }
             }
 

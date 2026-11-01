@@ -27,9 +27,10 @@ logger = logging.getLogger(__name__)
 
 SCAN_KEY = "storage:scan"
 CLEAR_KEY = "storage:clear"
-# 這些 key 的工作在跑時，快取正在被用：明細頁的下載（media:<sid>:<檔名>）、報表頁畫頁面（pdf:…）。
-# 帳號照片、報表 PDF 的下載加進來時，把它們的前綴加在這裡
-CACHE_TASK_PREFIXES = ("media:", "pdf:", "avatar:", "account:self:photo:")  # 照片：下載、處理、上傳（T36）
+# 這些 key 的工作在跑時，快取正在被用：明細頁的下載（media:<sid>:<檔名>）、報表頁畫頁面（pdf:…）、
+# 帳號照片的下載、處理、上傳（avatar:…、account:self:photo:…，T36）、報表 PDF 的下載（reports:download，T37；
+# 報表的其他 key 是資料庫的查詢，不算）。新的快取下載加進來時，把它的前綴加在這裡
+CACHE_TASK_PREFIXES = ("media:", "pdf:", "avatar:", "account:self:photo:", "reports:download")
 RECORDING_FOLDERS = ("video", "audio")  # 錄影寫在「目前目錄」底下的這兩個資料夾（record_widget.Recording）
 
 IDLE, LOADING, READY, ERROR = "idle", "loading", "ready", "error"  # CacheStorage.state

@@ -220,7 +220,8 @@ def test_quit_uses_the_same_folders_and_protection(tmp_path, monkeypatch):
     write(tmp_path / "charts" / "c.png")
     assert media.download_cache_dirs() == [str(tmp_path), str(tmp_path / "charts"),
                                            os.path.join(os.path.dirname(str(tmp_path)), "reports"),
-                                           os.path.join(os.path.dirname(str(tmp_path)), "avatars")]
+                                           os.path.join(os.path.dirname(str(tmp_path)), "avatars"),
+                                           os.path.join(os.path.dirname(str(tmp_path)), "reports-pdf")]
     media.clear_cache()
     assert recording.exists()
     assert list((tmp_path / "charts").iterdir()) == []
@@ -390,18 +391,22 @@ def test_default_places_are_the_recordings_and_the_first_cache_folder(services, 
 
 
 def test_report_pages_are_forgotten_after_clearing(tmp_path):
-    """清掉報表頁面圖之後，PDFHandler 放掉目前的頁面，下次打開報表頁時重新畫（不顯示已經刪掉的圖）。"""
-    handler = media.PDFHandler(reports_dir=str(tmp_path))
+    """清掉報表頁面圖、下載的 PDF 之後，PDFHandler 放掉目前這一份，下次打開報表頁時重新下載、重新畫（T37）。"""
+    handler = media.PDFHandler()
     changes = []
     handler.viewChanged.connect(lambda: changes.append(True))
     handler.forget_pages()
     assert changes == []  # 沒有打開任何報表：什麼都不做
-    handler._current, handler._page, handler._page_count = "a.pdf", 2, 3
-    handler._source, handler._view = "file:///x.png", "ready"
-    handler.forget_pages()
-    assert (handler.current, handler.page, handler.pageCount, handler.pageSource, handler.viewState) == (
-        "", 0, 0, "", "idle")
-    assert changes == [True]
+    handler._current, handler._page, handler._page_count = "a1b2", 2, 3
+    handler._source, handler._view, handler._path = "file:///x.png", "ready", str(tmp_path / "a1b2.pdf")
+    try:
+        handler.forget_pages()
+        assert (handler.current, handler.page, handler.pageCount, handler.pageSource, handler.viewState,
+                handler.currentFileUrl) == ("", 0, 0, "", "idle", "")
+        assert changes == [True]
+    finally:
+        if handler._own_tasks is not None:
+            handler._own_tasks.shutdown()
 
 
 def test_objects_have_parents_and_slots(services):

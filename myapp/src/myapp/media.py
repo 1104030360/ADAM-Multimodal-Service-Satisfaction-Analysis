@@ -14,9 +14,10 @@
 - 離開明細頁（頁面的 Component.onDestruction 呼叫 close()）：取消還沒下載完的，已經下載好的留在快取（T21）。
 - 一個檔案失敗只影響它自己：那個位置顯示錯誤和 Retry；圖表有幾張沒載入時，圖表區上方有警告列（DS-27、DS-52）。
 
-報表（PLAN D7、UX-26、UX-27、ENG-07）：PDFHandler 列出 src/myapp/pdf/ 裡的 PDF（新的在前，名稱、頁數、日期）；
-沒有來源時頁面顯示空狀態。開檔、畫頁面、數頁數都在 pdf lane（PyMuPDF 只在一條執行緒用），頁面圖存到快取資料夾，
-檔名帶版本，換文件不會顯示到舊圖。
+報表（new-feature N4、N5，T37；以前的 UX-26、UX-27、ENG-07）：PDF 由分析服務產生、放在 S3（reports/{report_id}.pdf）。
+清單在 myapp/reports.py（ReportsModel）；這裡的 PDFHandler 只負責檢視一份：io lane 下載到 reports-pdf 快取
+（同一個 report_id 的內容不會變，已經有就直接用），pdf lane 開檔、畫頁面（PyMuPDF 只在一條執行緒用），
+頁面圖存到 reports 快取，檔名帶版本，換文件不會顯示到舊圖。Quit、Log Out 時兩個快取都清掉。
 """
 import logging
 import os
@@ -28,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import fitz
-from PySide6.QtCore import QCoreApplication, QDateTime, QLocale, Property, QObject, QUrl, Signal, Slot
+from PySide6.QtCore import QCoreApplication, Property, QObject, QUrl, Signal, Slot
 
 from myapp import local_storage, storage
 from myapp.database import DatabaseConnector
@@ -46,8 +47,6 @@ MEDIA_KINDS = ("cam0", "cam1", "audio")  # 顧客鏡頭、員工鏡頭、錄音
 
 # 快取的位置：沒有設定 LOCAL_MEDIA_DIR／LOCAL_CHARTS_DIR 時，和以前一樣在 init/ 底下（模組旁邊的 media/、charts/）
 CACHE_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "init")
-# 報表的來源：還沒有決定（PLAN D7），先看套件裡的 pdf/ 資料夾；repo 裡沒有這個資料夾，所以報表頁是空狀態
-REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pdf")
 
 # 一個查詢取回一筆服務的所有檔案（ENG-04：以前 4 個查詢）。每個鏡頭、錄音取最新的一列；圖表依寫入的順序。
 # UNION 裡個別的 ORDER BY 不保證最後的順序，所以多選 part、seq 兩欄，最後再排一次
@@ -98,6 +97,11 @@ def reports_cache_dir():
 def avatar_cache_dir():
     """帳號照片的快取（new-feature N3，myapp/account.py）：和影片的快取放在同一層，Quit 時一起清掉。"""
     return os.path.join(os.path.dirname(os.path.normpath(media_dir())), "avatars")
+
+
+def report_pdf_dir():
+    """下載的報表 PDF（new-feature N4）：和其他快取放在同一層的 reports-pdf/。"""
+    return os.path.join(os.path.dirname(os.path.normpath(media_dir())), "reports-pdf")
 
 
 def list_key(service_id):
@@ -243,6 +247,7 @@ def download_cache_dirs():
         charts_dir(),
         reports_cache_dir(),
         avatar_cache_dir(),     # 帳號照片（N3，T36）：S3 上有原檔，清掉之後重新下載
+        report_pdf_dir(),       # 下載的報表 PDF（new-feature N4，T37）
     ]
 
 
@@ -925,10 +930,37 @@ class MediaService:
         media_model.open(self.service_id, services=None, charts=charts_model, connector=self.db_connector)
 
 
-# ---------------------------------------------------------------- 報表（PDF）
+# ---------------------------------------------------------------- 報表（PDF，new-feature N4，T37）
 
 DEFAULT_ZOOM = 2.0  # 不知道顯示多大時：144 dpi
 MIN_ZOOM, MAX_ZOOM = 1.0, 4.0
+REPORT_ID = re.compile(r"^[0-9A-Za-z-]{1,64}$")  # 桌面端產生的 uuid4；也是本機的檔名，所以只接受這些字
+DOWNLOAD_REPORT_KEY = "reports:download"  # io lane：同時只下載一份（換一份時取消前一份）
+
+
+def report_path(report_id):
+    """報表 PDF 在本機快取的位置：reports-pdf/<report_id>.pdf。"""
+    if not REPORT_ID.match(report_id or ""):
+        raise ValueError(f"not a report id: {report_id!r}")
+    return os.path.join(report_pdf_dir(), f"{report_id}.pdf")
+
+
+def fetch_report(report_id, key, token=None, report=None):
+    """在 io lane 執行：本機已經有就直接用（同一個 report_id 的內容不會變，R5 重新產生是新的一列）；
+    沒有就從 S3 的 key 下載。先寫到這一次專用的暫存檔，成功才改名：取消、失敗都不留下半個檔案。回傳本機路徑。"""
+    final = report_path(report_id)
+    if os.path.isfile(final):
+        return final
+    os.makedirs(os.path.dirname(final), exist_ok=True)
+    temp = f"{final}.{uuid.uuid4().hex}.download"
+    try:
+        storage.download_with_progress(key, temp, token, report)
+        os.replace(temp, final)
+    except BaseException:
+        with suppress(FileNotFoundError):
+            os.remove(temp)
+        raise
+    return final
 
 
 def render_page(pdf_path, page_number, target_height, out_dir):
@@ -960,70 +992,44 @@ def render_page(pdf_path, page_number, target_height, out_dir):
     return count, index + 1, image
 
 
-def report_title(name):
-    """清單和檢視器上的名稱：檔名去掉 .pdf（清單裡全部都是 PDF，副檔名不提供資訊）。"""
-    stem, extension = os.path.splitext(name)
-    return stem if extension.lower() == ".pdf" else name
-
-
-def modified_text(mtime_ns):
-    """修改日期，例如「Nov 1, 2026」：介面是英文（PLAN D1），不跟著系統的語言。"""
-    moment = QDateTime.fromMSecsSinceEpoch(mtime_ns // 1_000_000)
-    return QLocale(QLocale.Language.English, QLocale.Country.UnitedStates).toString(moment.date(), "MMM d, yyyy")
-
-
-def count_pages(folder, wanted, token=None):
-    """在 pdf lane 執行：wanted 是 [(檔名, 版本)]，回傳 {(檔名, 版本): 頁數}；打不開、讀不出來的是 -1。"""
-    counts = {}
-    for name, version in wanted:
-        if token is not None and token.cancelled:
-            break
-        try:
-            with fitz.open(os.path.join(folder, name)) as document:
-                counts[(name, version)] = document.page_count
-        except Exception:  # noqa: BLE001（壞掉的、不見的 PDF：清單只是不寫頁數，打開時再顯示原因）
-            counts[(name, version)] = -1
-    return counts
-
-
 def describe_report_failure(exc):
-    """報表打不開：(原因, 技術細節)。"""
+    """報表打不開（下載或開檔）：(原因, 技術細節)。原因先講發生什麼，再講下一步（DS-50）。"""
+    _, title, _, _ = user_message(exc)
     if isinstance(exc, fitz.FileDataError):
         reason = _tr("This PDF can't be read. It may be damaged.")
     elif isinstance(exc, (fitz.FileNotFoundError, FileNotFoundError)):
-        reason = _tr("This PDF isn't in the reports folder anymore. It may have been moved or deleted.")
+        reason = _tr("This report isn't on this computer anymore. Retry to download it again.")
+    elif title == S3_OFFLINE.title:
+        reason = _tr("The download of this report was interrupted. Check your network and try again.")
+    elif title == S3_NOT_FOUND.title:
+        reason = _tr("This report isn't in cloud storage. It may have been moved or deleted.")
     else:
         reason = reason_text(exc)
     return reason, technical_text(exc)
 
 
 class PDFHandler(QObject):
-    """報表頁（ReportsView.qml）。PDF 的開檔、畫頁面、數頁數都在 pdf lane（PyMuPDF 只在一條執行緒用，ENG-07）。
+    """報表的檢視器（ReportsView.qml 右邊的卡片，context property pdfHandler）：一次一份。
 
-    - reports：reports_dir 裡的 PDF，新的在前（修改時間）。每一份是 {name, title, pages, modified}：
-      name 是檔名（open() 用它），title 是去掉 .pdf 的名稱，modified 是修改日期（「Nov 1, 2026」），
-      pages 是頁數（0＝還在數，-1＝讀不出來）。列目錄、看修改時間很快，在 GUI 執行緒做；頁數在 pdf lane 數，
-      數完再更新同一份清單（新版介面 PLAN 6-6：每一份寫名稱、頁數、日期）。
-      state：idle（還沒看過資料夾）、empty（沒有來源，PLAN D7）、ready。
-    - 檢視：current（檔名）、currentTitle、page（1 起算）、pageCount、pageSource（頁面圖的 URL）、
-      viewState：idle（還沒選）、loading、error（errorDetail、errorTechnical、failureCount）、ready。
-    - services 是 None（直接建立、沒有給 services 的呼叫端；ServerHome、AdminHome 都會給）時，用自己的一條 pdf lane（T21）。
+    - open_report(report_id, key, title, target_height)：ReportsModel.select() 呼叫。本機沒有就在 io lane 從 S3 下載
+      （reports-pdf/<report_id>.pdf），再在 pdf lane 畫第 1 頁；target_height 是顯示區的高度（裝置像素），決定解析度。
+    - 檢視：current（report_id）、currentTitle、currentFileUrl（本機的 PDF，Open in Default App）、page（1 起算）、
+      pageCount、pageSource（頁面圖的 URL）、viewState：idle（沒有打開）、loading（下載或畫圖中）、
+      error（errorDetail、errorTechnical、failureCount）、ready。
+    - clear()：選到的那一份還在產生、失敗了：不顯示 PDF，取消還在下載、畫圖的。
+    - services 是 None（直接建立、沒有給 services 的呼叫端；ServerHome、AdminHome 都會給）時，用自己的 io、pdf lane（T21）。
     """
 
-    reportsChanged = Signal()
     viewChanged = Signal()
 
-    LIST_KEY = "pdf:list"  # 數頁數的工作；畫頁面的是 pdf:<檔名>（檔名一定以 .pdf 結尾，不會撞名）
-
-    def __init__(self, services=None, reports_dir=None, parent=None):
+    def __init__(self, services=None, parent=None):
         super().__init__(parent)
         self._services = services
         self._own_tasks = None
-        self.reports_dir = reports_dir or REPORTS_DIR
-        self._reports = []
-        self._pages = {}  # (檔名, 修改時間, 大小) → 頁數：同一個檔案沒變就不再數一次
-        self._state = IDLE
         self._current = ""
+        self._key = ""
+        self._title = ""
+        self._path = ""
         self._page = self._page_count = 0
         self._wanted_page = 1
         self._target_height = 0
@@ -1031,14 +1037,7 @@ class PDFHandler(QObject):
         self._view = IDLE
         self._detail = self._technical = ""
         self._failures = 0
-
-    @Property(str, notify=reportsChanged)
-    def state(self):
-        return self._state
-
-    @Property("QVariantList", notify=reportsChanged)
-    def reports(self):
-        return [{key: report[key] for key in ("name", "title", "pages", "modified")} for report in self._reports]
+        self._session = 0  # 每次換一份、clear() 加 1：之前送出的工作的結果都不要了
 
     @Property(str, notify=viewChanged)
     def current(self):
@@ -1046,11 +1045,11 @@ class PDFHandler(QObject):
 
     @Property(str, notify=viewChanged)
     def currentTitle(self):
-        return report_title(self._current)
+        return self._title
 
     @Property(str, notify=viewChanged)
     def currentFileUrl(self):
-        return QUrl.fromLocalFile(os.path.join(self.reports_dir, self._current)).toString() if self._current else ""
+        return QUrl.fromLocalFile(self._path).toString() if self._path else ""
 
     @Property(int, notify=viewChanged)
     def page(self):
@@ -1080,43 +1079,29 @@ class PDFHandler(QObject):
     def failureCount(self):
         return self._failures
 
-    @Slot()
-    def refresh(self):
-        """重新看一次報表資料夾（列目錄、看修改時間很快，在 GUI 執行緒做；數頁數、開 PDF 才到 pdf lane）。"""
-        found = []
-        try:
-            with os.scandir(self.reports_dir) as entries:
-                for entry in entries:
-                    if entry.name.lower().endswith(".pdf") and entry.is_file():
-                        info = entry.stat()
-                        found.append((entry.name, info.st_mtime_ns, info.st_size))
-        except OSError:  # 資料夾不存在（現在就是這樣，D7）或讀不到：都當成還沒有報表
-            found = []
-        found.sort(key=lambda item: (-item[1], item[0]))  # 新的在前；同一個時間依檔名
-        self._reports = [{"name": name, "title": report_title(name), "pages": self._pages.get((name, mtime, size), 0),
-                          "modified": modified_text(mtime), "version": (mtime, size)}
-                         for name, mtime, size in found]
-        self._state = READY if found else EMPTY
-        self.reportsChanged.emit()
-        self._count_pages()
-        if self._current and self._current not in self._names():
-            self._current, self._page, self._page_count, self._source, self._view = "", 0, 0, "", IDLE
-            self.viewChanged.emit()
-
-    @Slot(str, result=bool)
-    @Slot(str, int, result=bool)
-    def open(self, name, target_height=0):
-        """打開 name 的第 1 頁。target_height：顯示區的高度（裝置像素），決定解析度。"""
-        if name not in self._names():
-            return False
-        if name != self._current:
+    def open_report(self, report_id, key, title, target_height=0):
+        """打開 report_id 的第 1 頁（換一份時從第 1 頁開始；同一份再打開一次也回到第 1 頁）。"""
+        report_path(report_id)  # 不是報表 ID 就在這裡丟 ValueError，不會拿去當檔名
+        if report_id != self._current:
+            self._cancel()
             self._failures = 0
-        self._current = name
+            self._path, self._source, self._page, self._page_count = "", "", 0, 0
+        self._current, self._key, self._title = report_id, key, title
         self._wanted_page = 1
         if target_height > 0:
             self._target_height = target_height
-        self._render()
-        return True
+        self._load()
+
+    @Slot()
+    def clear(self):
+        """不顯示任何一份（選到的還在產生、失敗了，或清單裡沒有了）。"""
+        self._cancel()
+        self._current = self._key = self._title = self._path = self._source = ""
+        self._page = self._page_count = 0
+        self._view = IDLE
+        self._detail = self._technical = ""
+        self._failures = 0
+        self.viewChanged.emit()
 
     @Slot(result=bool)
     def nextPage(self):
@@ -1130,25 +1115,20 @@ class PDFHandler(QObject):
     def retry(self):
         if not self._current or self._view != ERROR:
             return False
-        self._render()
+        self._load()
         return True
 
     def bind(self, services):
-        """之後才拿到 services 時（建立時沒有給）：改用 app 共用的 pdf lane。"""
+        """之後才拿到 services 時（建立時沒有給）：改用 app 共用的 lane。"""
         self._services = services
 
     @Slot()
     def forget_pages(self):
-        """設定頁的 Clear Download Cache 清掉了頁面圖（T40）：放掉目前的頁面，下次打開報表頁時重新畫第 1 頁。"""
+        """設定頁的 Clear Download Cache 清掉了頁面圖和下載的 PDF（T40）：放掉目前這一份，下次打開報表頁時
+        重新下載、重新畫第 1 頁（ReportsView 看到 current 不是選到的那一份就會再打開）。"""
         if not self._current and not self._source:
             return
-        self._current, self._page, self._page_count, self._source, self._view = "", 0, 0, "", IDLE
-        self._detail = self._technical = ""
-        self._failures = 0
-        self.viewChanged.emit()
-
-    def _names(self):
-        return {report["name"] for report in self._reports}
+        self.clear()
 
     def _go(self, page):
         if self._view != READY or not 1 <= page <= self._page_count or page == self._page:
@@ -1161,46 +1141,47 @@ class PDFHandler(QObject):
         if self._services is not None:
             return self._services.tasks
         if self._own_tasks is None:
-            self._own_tasks = TaskRunner(self, lanes={"pdf": 1})
+            self._own_tasks = TaskRunner(self, lanes={"io": 1, "pdf": 1})
             app = QCoreApplication.instance()
             if app is not None:  # 和 app 共用的 TaskRunner 一樣：結束時取消，不等工作做完（ENG-14）
                 app.aboutToQuit.connect(self._own_tasks.shutdown)
         return self._own_tasks
 
-    def _count_pages(self):
-        """還不知道頁數的報表，在 pdf lane 一次數完（排在畫頁面之前；只讀 PDF 的目錄，很快）。"""
-        wanted = [(report["name"], report["version"]) for report in self._reports if not report["pages"]]
-        if not wanted:
-            return
-        folder = self.reports_dir
-        self._tasks().submit("pdf", self.LIST_KEY, lambda token, report: count_pages(folder, wanted, token),
-                             on_ok=self._counted, on_err=lambda exc: _log_failure("counting report pages", exc),
-                             replace=True)
+    def _cancel(self):
+        self._session += 1
+        if self._current:
+            tasks = self._tasks()
+            tasks.cancel(DOWNLOAD_REPORT_KEY)
+            tasks.cancel(f"pdf:{self._current}")
 
-    def _counted(self, counts):
-        """counts：{(檔名, 版本): 頁數}。數的期間清單換過也沒關係：只更新檔名和版本都對得上的那幾份。"""
-        self._pages.update({(name, *version): pages for (name, version), pages in counts.items()})
-        changed = False
-        for report in self._reports:
-            pages = counts.get((report["name"], report["version"]))
-            if pages is not None and pages != report["pages"]:
-                report["pages"] = pages
-                changed = True
-        if changed:
-            self.reportsChanged.emit()
+    def _load(self):
+        """下載（本機有就跳過，在 io lane 判斷）→ 畫頁面。"""
+        self._view = LOADING
+        self.viewChanged.emit()
+        session, report_id, key = self._session, self._current, self._key
+        self._tasks().submit("io", DOWNLOAD_REPORT_KEY,
+                             lambda token, report: fetch_report(report_id, key, token, report),
+                             on_ok=lambda path: self._fetched(session, path),
+                             on_err=lambda exc: self._failed(session, exc), replace=True)
+
+    def _fetched(self, session, path):
+        if session != self._session:
+            return
+        self._path = path
+        self._render()
 
     def _render(self):
-        path = os.path.join(self.reports_dir, self._current)
-        page, height, out_dir, name = self._wanted_page, self._target_height, reports_cache_dir(), self._current
+        path, page, height, out_dir = self._path, self._wanted_page, self._target_height, reports_cache_dir()
+        session, report_id = self._session, self._current
         self._view = LOADING
         self.viewChanged.emit()
         # 同一份報表只留最新的要求（連按 Next 時，前一頁的畫圖被取消）
-        self._tasks().submit("pdf", f"pdf:{name}", lambda token, report: render_page(path, page, height, out_dir),
-                             on_ok=lambda result: self._rendered(name, result),
-                             on_err=lambda exc: self._render_failed(name, exc), replace=True)
+        self._tasks().submit("pdf", f"pdf:{report_id}", lambda token, report: render_page(path, page, height, out_dir),
+                             on_ok=lambda result: self._rendered(session, result),
+                             on_err=lambda exc: self._failed(session, exc), replace=True)
 
-    def _rendered(self, name, result):
-        if name != self._current:
+    def _rendered(self, session, result):
+        if session != self._session:
             return
         self._page_count, self._page, image = result
         self._source = QUrl.fromLocalFile(image).toString()
@@ -1209,11 +1190,15 @@ class PDFHandler(QObject):
         self._detail = self._technical = ""
         self.viewChanged.emit()
 
-    def _render_failed(self, name, exc):
-        if name != self._current:
+    def _failed(self, session, exc):
+        if session != self._session:
             return
-        _log_failure(f"opening the report {name}", exc)
+        _log_failure(f"opening the report {self._current}", exc)
         self._detail, self._technical = describe_report_failure(exc)
         self._failures += 1
         self._view = ERROR
+        if isinstance(exc, (fitz.FileDataError, fitz.FileNotFoundError, FileNotFoundError)) and self._path:
+            with suppress(OSError):  # 壞掉的、被清掉的：Retry 時重新下載
+                os.remove(self._path)
+            self._path = ""
         self.viewChanged.emit()

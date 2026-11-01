@@ -20,6 +20,7 @@ ComboBox {
     property color textColor: Theme.textPrimary
     property url leadingIcon: ""                         // 文字前面的圖示（期間的日曆）
     property url chevron: "../components/icons/chevron-down_iconNeutral.svg"
+    property int popupMaxHeight: 320                     // 選單最高多少：選項很多時（月曆的月、年，報表表單的員工、服務）在選單裡捲動
 
     signal picked(string value)
 
@@ -105,7 +106,7 @@ ComboBox {
         width: Math.max(select.width, 180)
         padding: 4
         margins: Theme.spaceS
-        implicitHeight: Math.min(contentItem.implicitHeight + topPadding + bottomPadding, 320)
+        implicitHeight: Math.min(contentItem.implicitHeight + topPadding + bottomPadding, select.popupMaxHeight)
         onOpened: optionList.positionViewAtIndex(select.currentIndex, ListView.Contain)
 
         contentItem: ListView {

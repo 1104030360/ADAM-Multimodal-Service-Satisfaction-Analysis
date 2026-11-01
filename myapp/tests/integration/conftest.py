@@ -107,14 +107,15 @@ def db(mysql_server, seed_accounts, monkeypatch):
 
 @pytest.fixture
 def analysis_service(monkeypatch):
-    """假的分析服務：記下收到的 JSON，回傳 status（預設 200）。ANALYZE_API_URL 會指到它。"""
-    service = SimpleNamespace(status=200, requests=[])
+    """假的分析服務：記下收到的 JSON（路徑, 內容），回傳 status（預設 200）。ANALYZE_API_URL 會指到它。
+    /reports（報表，new-feature N4）回傳 report_status（預設 202，和真的一樣），桌面端由 ANALYZE_API_URL 推出這個位址。"""
+    service = SimpleNamespace(status=200, report_status=202, requests=[])
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             body = self.rfile.read(int(self.headers["Content-Length"]))
             service.requests.append((self.path, json.loads(body)))
-            self.send_response(service.status)
+            self.send_response(service.report_status if self.path == "/reports" else service.status)
             self.end_headers()
 
         def log_message(self, *args):  # 不要把每個請求印到終端機

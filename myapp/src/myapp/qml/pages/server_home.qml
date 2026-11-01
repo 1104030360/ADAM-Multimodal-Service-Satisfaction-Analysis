@@ -66,6 +66,12 @@ Window {
         return showPageNow("server_service_detail_page.qml")
     }
 
+    // 打開一份報表（new-feature N4，T37）：分析頁的 Report、通知的 View 都走這裡。先選好再換頁（同步，回傳報表頁）
+    function openReport(reportId) {
+        reportsModel.select(reportId)
+        return showPageNow("server_reports_page.qml")
+    }
+
     // ⌘1～⌘6：和按側邊欄的按鈕一樣，焦點也移到那個按鈕上（DS-29：換頁後焦點在側邊欄）
     function activateNav(button) {
         button.forceActiveFocus(Qt.ShortcutFocusReason)
@@ -92,7 +98,7 @@ Window {
         case "record_widget.qml": return qsTr("Choose the two cameras and the microphone, then open the recorder.")
         case "analysis.qml": return qsTr("Send recorded services for analysis and see the results.")
         case "server_service_page.qml": return qsTr("Find a past service and open its videos and charts.")
-        case "server_reports_page.qml": return qsTr("Choose a report to read it here.")
+        case "server_reports_page.qml": return qsTr("Reports an admin has published for you.")
         case "server_setting_button.qml": return qsTr("Preferences apply right away. Account changes apply when you save.")
         }
         return ""
@@ -473,6 +479,12 @@ Window {
             if (page && typeof page.showService === "function")
                 page.showService(serviceId)
         }
+    }
+
+    // 通知上的「View」（open-report:<report_id>）：換到報表頁、選那一份（new-feature N4）
+    Connections {
+        target: reportsModel
+        function onOpenRequested(reportId) { window.openReport(reportId) }
     }
 
     // 通知堆疊：內容區右下角，距邊 24（DS-21）。延伸到底部的清單用 toastHost.occupiedHeight 當 bottomMargin

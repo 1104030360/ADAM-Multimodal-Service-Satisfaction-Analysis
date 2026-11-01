@@ -173,7 +173,8 @@ def test_admin_home_controls_and_search_states_have_no_warnings(engine, services
 
 @pytest.mark.parametrize("side", ["staff", "admin"])
 def test_service_detail_and_reports_with_data_have_no_warnings(engine, services, db, s3, qml_warnings, side, tmp_path):
-    """明細頁的每一種狀態（好了、失敗、沒有這個檔案、圖表警告列）和打開 PDF 的報表頁都畫出來，零警告（C2）。"""
+    """明細頁的每一種狀態（好了、失敗、沒有這個檔案、圖表警告列；管理員端的報表卡）和報表頁都畫出來，零警告（C2）。
+    報表頁（new-feature N4）：打開一份 PDF；管理員端再選產生中、失敗的那一份，打開產生報表的表單和員工選單。"""
     import fitz
     from PySide6.QtCore import QBuffer, QByteArray, QIODevice
     from PySide6.QtGui import QColor, QImage
@@ -189,11 +190,21 @@ def test_service_detail_and_reports_with_data_have_no_warnings(engine, services,
     image.save(buffer, "PNG")
     s3.put_object(Bucket="adam-test", Key=f"charts/{sid}_a.png", Body=bytes(png))  # 其他的不在 S3：失敗的狀態
     s3.put_object(Bucket="adam-test", Key=f"audio/{sid}_audio.wav", Body=b"not really audio")
-    reports = tmp_path / "report-source"
-    reports.mkdir()
     document = fitz.Document()
     document.new_page()
-    document.save(reports / f"{sid}.pdf")
+    ready, generating, failed = ("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222",
+                                 "33333333-3333-4333-8333-333333333333")
+    s3.put_object(Bucket="adam-test", Key=f"reports/{ready}.pdf", Body=document.tobytes())
+    db.execute("INSERT INTO tbl_report (report_id, report_kind, service_id, staff_account_id, report_status, s3_key, "
+               "created_by, created_at, published_at, published_by) VALUES "
+               "(%s, 'service', %s, %s, 'ready', %s, %s, NOW(3) + INTERVAL 1 MINUTE, NOW(), %s)",  # 最新的一份
+               (ready, sid, STAFF_ID, f"reports/{ready}.pdf", ADMIN_ID, ADMIN_ID))
+    for report_id, status, reason, last_day in ((generating, "generating", None, "2026-10-31"),
+                                                (failed, "failed", "Timed out", "2026-10-30")):
+        db.execute("INSERT INTO tbl_report (report_id, report_kind, staff_account_id, period_start, period_end, "
+                   "report_status, failure_reason, s3_key, created_by) "
+                   "VALUES (%s, 'staff', %s, '2026-10-01', %s, %s, %s, %s, %s)",
+                   (report_id, STAFF_ID, last_day, status, reason, f"reports/{report_id}.pdf", ADMIN_ID))
 
     module = server_home_init if side == "staff" else admin_home_init
     home = module.launch(engine, STAFF_ID if side == "staff" else ADMIN_ID, services)
@@ -206,10 +217,24 @@ def test_service_detail_and_reports_with_data_have_no_warnings(engine, services,
     page = qml(window, "mainContentLoader.item")  # 留著參照，子物件的 wrapper 才不會失效（T17）
     page.findChild(QObject, "tabBar").setProperty("currentIndex", 1)  # 圖表分頁：警告列、一張好的圖表
     settle()
-    home.pdfmodel.reports_dir = str(reports)
     show_page(window, f"{'server' if side == 'staff' else 'admin'}_reports_page.qml")
-    assert home.pdfmodel.open(f"{sid}.pdf", 600)
-    wait_until(lambda: home.pdfmodel.viewState == "ready")
+    wait_until(lambda: home.pdfmodel.viewState == "ready" and home.pdfmodel.current == ready)
     settle()
+    if side == "admin":
+        page = qml(window, "mainContentLoader.item")
+        for report_id in (generating, failed):
+            home.reportsModel.select(report_id)
+            settle()
+        qml(page, "openGenerator()")
+        dialog = qml(page, "generator")
+        wait_until(lambda: home.reportsModel.staffState == "ready")
+        for kind in ("staff", "company", "service"):
+            qml(dialog, f'chooseKind("{kind}")')
+            settle()
+        qml(dialog, f'staffField.picked("{STAFF_ID}")')
+        wait_until(lambda: home.reportsModel.servicesState == "ready")
+        qml(dialog, "serviceField.popup.open()")
+        settle()
+        qml(dialog, "close()")
+        settle()
     assert qml_warnings == []
-    home.pdfmodel._tasks().shutdown()  # 沒有 services 的 PDFHandler 自己的 pdf lane

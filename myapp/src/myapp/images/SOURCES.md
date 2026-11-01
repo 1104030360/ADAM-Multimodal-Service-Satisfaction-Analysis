@@ -97,6 +97,7 @@
 | `mic_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `record_widget.qml` |  |
 | `pause_actionPrimaryText.svg` | `actionPrimaryText` `#0E1013` | `ServiceDetailView.qml` |  |
 | `play_actionPrimaryText.svg` | `actionPrimaryText` `#0E1013` | `ServiceDetailView.qml` |  |
+| `plus_actionPrimaryText.svg` | `actionPrimaryText` `#0E1013` | `ReportsView.qml`（New Report） |  |
 | `rotate-cw_actionSecondaryText.svg` | `actionSecondaryText` `#ECEEF1` | `record_widget.qml` |  |
 | `scan-face_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `OverviewCard.qml` |  |
 | `search_textFaint.svg` | `textFaint` `#8E959F` | `ServiceSearchField.qml` | Feather |
@@ -162,6 +163,7 @@ bd039cbc60abc0af2d241232fa6fe76da45c974a8928141b266b15435ca26e0c  info.svg
 b22e81c1ed6523da0a711af1fd25086b5bea96dd8f3fba7aa87fc42b025517d5  mic.svg
 d764efc7d23340a615d7cec56ca0a6e7fb10ba2474559a2267535d21b66e0672  pause.svg
 99eaf96106efd57b9ac5abfe436918ac3bf57dca430c5bb1b0941b204ae87141  play.svg
+8abf820bdff94541a7909db589153e96786c283ad3cdda80b815413da7900a43  plus.svg
 dd6ff4af3d5e0a6d2ae6167f62b2edf3b45389ff36abec1a1a5980d53f57a102  power.svg
 7f52a2ff0ceae30cb075fe04ecec64a83eee08b5bf8381ebe2e189126b826485  rotate-cw.svg
 78ad58a828761b1f4a1fbe68acf4a9f4cbc89b2dc66e671888f1038a21498a3f  scan-face.svg

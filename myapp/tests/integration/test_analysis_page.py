@@ -155,8 +155,9 @@ def test_tabs_follow_the_flow_with_counts_and_each_tab_has_its_own_columns(engin
     rows = rows_of(find(page, "completedList"))
     assert [(text(row, "customerCell"), text(row, "staffCell")) for row in rows] == [
         ("91.0 Good", "—"), ("80.6 Fair", "69.6 Needs improvement")]  # 小數一位＋分數帶；-1 是「—」
+    wait_until(lambda: home.reportsModel.statesLoaded)  # Report 欄（new-feature N4，T37）的狀態也唸出來
     assert qml(rows[1], "Accessible.name") == (
-        "S20261030090000, recorded Oct 30, 09:00, customer 80.6 Fair, staff 69.6 Needs improvement")
+        "S20261030090000, recorded Oct 30, 09:00, customer 80.6 Fair, staff 69.6 Needs improvement, Not generated yet")
 
 
 @pytest.mark.parametrize("statuses, tab", [

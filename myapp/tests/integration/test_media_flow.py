@@ -3,10 +3,9 @@
 - Details 按下去就換頁，GUI 執行緒 0 個網路往返；檔案清單 1 個往返（db lane），每個檔案一個 io 工作（UX-22、ENG-04）。
 - 每個檔案在自己的位置顯示進度；失敗只影響它自己，Retry、Details、第 3 次失敗的建議（UX-23、DS-27）。
 - 離開明細頁取消還沒下載完的，下載好的留在快取；再打開不再下載（T21）。
-- 圖表有幾張沒載入：警告列和 Retry（DS-52）。報表沒有來源時是空狀態；有 PDF 時在 pdf lane 畫頁面（D7、ENG-07）。
+- 圖表有幾張沒載入：警告列和 Retry（DS-52）。報表（new-feature N4）在 test_reports_flow.py。
 - 服務人員端、管理員端都跑；每個測試都要求 QML 零警告，GUI 執行緒碰網路就失敗（no_network_on_gui_thread）。
 """
-import os
 import queue
 import threading
 from contextlib import contextmanager
@@ -14,12 +13,11 @@ from dataclasses import dataclass
 from itertools import count
 
 import botocore.exceptions
-import fitz
 import pytest
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QUrl
 from PySide6.QtGui import QColor, QImage
 
-from myapp import media, storage
+from myapp import media, reports, storage
 from myapp.init import admin_home_init, server_home_init
 from myapp.tasks import Cancelled
 from tests.integration.helpers import ADMIN_ID, STAFF_ID, qml, wait_until
@@ -240,8 +238,9 @@ def test_details_switches_page_at_once_and_downloads_in_the_background(side, ui,
         assert qml(window, "header.subtitle") == "Oct 30, 2026 · 12:00"  # Details 傳進來的開始時間
         assert home.mediaModel.state == "loading"
         assert db_proxy.snapshot()["rt"] == 0  # GUI 執行緒 0 個往返（背景的也還沒開始）
-    wait_until(lambda: settled(home))
-    assert db_proxy.snapshot()["rt"] == 1  # 所有檔案的位置一個查詢就拿到（以前 4 個查詢）
+    wait_until(lambda: settled(home) and not busy.now)
+    # 所有檔案的位置一個查詢就拿到（以前 4 個查詢）。管理員端的報表卡多 1 個（CALL sp_list_reports，T37）
+    assert db_proxy.snapshot()["rt"] == (1 if side is STAFF else 2)
     # 新版的頁首（日期、時間、分析狀態）和分數列也在同一個查詢裡（T31 第 3 節）；管理員端前面多服務人員的名字
     assert home.mediaModel.headerText == "Oct 30, 2026 · 12:00–12:05 · Analysis completed"
     assert qml(window, "header.subtitle") == ("" if side is STAFF else "服務人員（佔位） · ") + home.mediaModel.headerText
@@ -472,10 +471,11 @@ def test_opening_the_same_service_again_uses_the_cache(side, ui, services, busy,
     db_proxy.reset()
     seen = len(busy.seen)
     open_detail(side, home, window)
-    wait_until(lambda: settled(home))
+    wait_until(lambda: settled(home) and not busy.now)
     assert len(downloads) == 6  # 一個都沒有重新下載
-    assert busy.seen[seen:] == [media.list_key(SID)]  # 只查了檔案清單，沒有下載的工作
-    assert db_proxy.snapshot()["rt"] == 1
+    # 只查了檔案清單，沒有下載的工作；管理員端的報表卡再查一次報表清單（T37）
+    assert busy.seen[seen:] == [media.list_key(SID)] + ([] if side is STAFF else [reports.LIST_KEY])
+    assert db_proxy.snapshot()["rt"] == (1 if side is STAFF else 2)
     assert home.mediaModel.canPlay and home.chartsModel.readyCount == 3
 
 
@@ -581,129 +581,6 @@ def test_the_detail_page_without_a_service_offers_to_go_back(ui, services, busy)
     assert empty.isVisible() and empty.property("title") == "No service selected"
     qml(empty, "actionTriggered()")
     assert qml(window, "mainContentLoader.source.toString()").endswith(STAFF.search_page)
-
-
-# ── 報表 ────────────────────────────────────────────────────────────────────
-
-def reports_page(side):
-    return "server_reports_page.qml" if side is STAFF else "admin_reports_page.qml"
-
-
-def make_pdf(path, pages):
-    document = fitz.Document()  # 不用 fitz.open：no_network_on_gui_thread 把它包起來了，測試自己做 PDF 不算
-    for number in range(pages):
-        document.new_page().insert_text((72, 72), f"Page {number + 1}")
-    document.save(path)
-    document.close()
-
-
-@BOTH_SIDES
-def test_reports_page_says_there_are_no_reports_yet(side, ui, services, busy):
-    assert not os.path.exists(media.REPORTS_DIR)  # 報表還沒有來源（PLAN D7）
-    home, window = launch(side, ui, services, busy)
-    page = show(window, reports_page(side))
-    empty = find(page, "reportsEmpty")
-    assert empty.isVisible()
-    assert empty.property("title") == "No reports yet"
-    assert empty.property("description") == "Reports will appear here once they're available."
-    assert not find(page, "reportList").isVisible()
-    assert home.pdfmodel.state == "empty"
-
-
-def report_items(page, count=1):
-    """清單裡的 count 個報表按鈕，由上而下（ListView 的項目在畫面更新時才建立，要從畫面樹找，依 y 排）。"""
-    view = find(page, "reportList")
-    wait_until(lambda: len(find_all(view, "reportItem")) == count)
-    return sorted(find_all(view, "reportItem"), key=lambda item: item.y())
-
-
-def item_text(item, name):
-    return find(item, name).property("text")
-
-
-@BOTH_SIDES
-def test_reports_open_newest_first_on_the_pdf_lane_and_page_through(side, ui, services, busy, tmp_path,
-                                                                    monkeypatch):
-    """新版介面 PLAN 6-6：清單寫名稱、頁數、日期，新的在前；一進來就打開最新的一份，翻頁、換一份都在 pdf lane。"""
-    source = tmp_path / "report-source"
-    source.mkdir()
-    make_pdf(source / "October 2026.pdf", pages=2)
-    make_pdf(source / "September 2026.pdf", pages=1)
-    os.utime(source / "September 2026.pdf", (1_790_000_000, 1_790_000_000))  # 2026-09：比較舊
-    (source / "notes.txt").write_text("not a report")
-    opened_on = []
-    real_open = fitz.open  # no_network_on_gui_thread 已經包過：在 GUI 執行緒開就失敗
-    monkeypatch.setattr(fitz, "open", lambda *args, **kwargs: opened_on.append(threading.current_thread().name)
-                        or real_open(*args, **kwargs))
-    home, window = launch(side, ui, services, busy)
-    handler = home.pdfmodel
-    handler.reports_dir = str(source)
-    page = show(window, reports_page(side))
-    assert find(page, "reportCount").property("text") == "2 reports"
-    newest, older = report_items(page, 2)
-    assert [item_text(newest, "reportTitle"), item_text(older, "reportTitle")] == ["October 2026", "September 2026"]
-
-    wait_until(lambda: handler.viewState == "ready")  # 不用先選：最新的一份已經打開
-    assert (handler.current, handler.page, handler.pageCount) == ("October 2026.pdf", 1, 2)
-    assert newest.property("selected") and not older.property("selected")
-    assert find(page, "reportName").property("text") == "October 2026"
-    wait_until(lambda: item_text(newest, "reportMeta").startswith("2 pages · "))  # 頁數在 pdf lane 數好
-    wait_until(lambda: item_text(older, "reportMeta").startswith("1 page · "))
-    assert report_items(page, 2) == [newest, older]  # 頁數更新時項目原地更新，沒有重建（焦點不會不見）
-    assert opened_on and all(name.startswith("pdf-lane") for name in opened_on)
-    image = find(page, "pageImage")
-    wait_until(lambda: qml(image, "status === Image.Ready"))
-    assert find(page, "pageCounter").property("text") == "Page 1 of 2"
-    assert not find(page, "previousPageButton").property("enabled")
-    assert find(page, "previousPageButton").property("text") == "Previous page"  # 只有圖示：名稱給輔助技術
-    qml(find(page, "nextPageButton"), "clicked()")
-    wait_until(lambda: handler.page == 2 and handler.viewState == "ready")
-    assert find(page, "pageCounter").property("text") == "Page 2 of 2"
-    assert not find(page, "nextPageButton").property("enabled")
-
-    qml(older, "clicked()")  # 換一份：從第 1 頁開始
-    wait_until(lambda: handler.current == "September 2026.pdf" and handler.viewState == "ready")
-    assert older.property("selected") and not newest.property("selected")
-    assert find(page, "pageCounter").property("text") == "Page 1 of 1"
-    rendered = sorted(path.name for path in (tmp_path / "reports").iterdir())
-    assert len(rendered) == 3 and all(name.endswith(".png") for name in rendered)
-
-
-@BOTH_SIDES
-def test_coming_back_to_reports_keeps_the_open_page(side, ui, services, busy, tmp_path):
-    source = tmp_path / "report-source"
-    source.mkdir()
-    make_pdf(source / f"{SID}.pdf", pages=3)
-    home, window = launch(side, ui, services, busy)
-    handler = home.pdfmodel
-    handler.reports_dir = str(source)
-    show(window, reports_page(side))
-    wait_until(lambda: handler.viewState == "ready")
-    assert handler.nextPage()
-    wait_until(lambda: handler.page == 2 and handler.viewState == "ready")
-    show(window, side.search_page)
-    page = show(window, reports_page(side))  # 回來：還是剛才那一頁，不會跳回第 1 頁
-    assert (handler.current, handler.page) == (f"{SID}.pdf", 2)
-    assert find(page, "pageCounter").property("text") == "Page 2 of 3"
-
-
-@BOTH_SIDES
-def test_a_report_that_cannot_be_read_shows_an_error_in_the_viewer(side, ui, services, busy, tmp_path):
-    source = tmp_path / "report-source"
-    source.mkdir()
-    (source / "broken.pdf").write_bytes(b"this is not a pdf")
-    home, window = launch(side, ui, services, busy)
-    handler = home.pdfmodel
-    handler.reports_dir = str(source)
-    page = show(window, reports_page(side))
-    wait_until(lambda: handler.viewState == "error")
-    error = find(page, "reportError")
-    assert error.isVisible() and not find(page, "paper").isVisible()
-    assert error.property("detail") == "This PDF can't be read. It may be damaged."
-    assert not find(page, "openExternallyButton").isVisible()
-    [item] = report_items(page)
-    wait_until(lambda: handler.reports[0]["pages"] == -1)
-    assert item_text(item, "reportMeta") == handler.reports[0]["modified"]  # 讀不出頁數：只寫日期
 
 
 @BOTH_SIDES

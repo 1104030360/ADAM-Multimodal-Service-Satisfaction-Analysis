@@ -5,4 +5,5 @@ import QtQuick
 ServiceDetailView {
     backPage: "admin_service_page.qml"
     showStaffName: true
+    showReport: true    // 報表卡：產生、發佈、打開這筆服務的報表（new-feature N4，T37）
 }

@@ -76,6 +76,12 @@ Window {
         return showPageNow("admin_service_detail_page.qml")
     }
 
+    // 打開一份報表（new-feature N4，T37）：明細頁報表卡的 Open、通知的 Open 都走這裡。先選好再換頁（同步，回傳報表頁）
+    function openReport(reportId) {
+        reportsModel.select(reportId)
+        return showPageNow("admin_reports_page.qml")
+    }
+
     // ⌘1～⌘5：和按側邊欄的按鈕一樣，焦點也移到那個按鈕上（DS-29：換頁後焦點在側邊欄）
     function activateNav(button) {
         button.forceActiveFocus(Qt.ShortcutFocusReason)
@@ -100,7 +106,7 @@ Window {
         switch (file) {
         case "admin_add_page.qml": return qsTr("Add a staff or admin account.")
         case "admin_service_page.qml": return qsTr("Find any staff member's services and open their videos and charts.")
-        case "admin_reports_page.qml": return qsTr("Choose a report to read it here.")
+        case "admin_reports_page.qml": return qsTr("Generate reports, check them, and publish them for staff.")
         case "admin_setting_page.qml": return qsTr("Preferences apply right away. Account changes apply when you save.")
         }
         return ""
@@ -401,6 +407,12 @@ Window {
         to: 1
         duration: Theme.durBase
         easing.type: Theme.easeEnter
+    }
+
+    // 通知上的「Open」（open-report:<report_id>）：換到報表頁、選那一份（new-feature N4）
+    Connections {
+        target: reportsModel
+        function onOpenRequested(reportId) { window.openReport(reportId) }
     }
 
     // 通知堆疊（DS-21）：內容區的右下角、距邊 24，蓋在頁面和對話框上面。

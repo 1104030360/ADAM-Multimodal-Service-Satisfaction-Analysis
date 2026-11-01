@@ -22,6 +22,7 @@ from myapp.diagnostics import HelpCenter
 from myapp.home_dashboard import HomeDashboard
 from myapp.notifications import Notifier, user_message
 from myapp.passwords import hash_password
+from myapp.reports import ReportsModel
 from myapp.search import ServiceSearch
 from myapp.services import AppServices
 from myapp.tasks import TaskRunner
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 # launch() 註冊的 context property（tasks、notifier、uiPrefs 是登入前就有的，不算）：登出時設成 null（N1）。
 # launch() 多註冊一個名稱，這裡也要加上（tests/integration/test_log_out.py 會比對 launch() 的程式）
 CONTEXT_NAMES = ("adminHome", "homeDashboard", "serviceManager", "accountManager", "chartsModel", "mediaModel",
-                 "pdfHandler", "serviceSearch", "helpCenter", "myAccount")
+                 "pdfHandler", "serviceSearch", "helpCenter", "myAccount", "reportsModel")
 
 
 # ---------------------------------------------------------------- 服務明細、報表（前端重建 F3）
@@ -679,6 +680,8 @@ class AdminHome(QObject):
         self.pdfmodel = PDFHandler(services)
         self.serviceSearch = ServiceSearch.for_admin(services, parent=self)  # 頁首的搜尋（全部＋員工名字）
         self.myAccount = account.AccountSelfService(services, self._profile, self)  # 設定頁的 Account（T36）
+        # 報表（new-feature N4、N5，T37）：產生、發佈、全部的清單；打開時交給 pdfmodel
+        self.reportsModel = ReportsModel(services, account_id, admin=True, pdf=self.pdfmodel, parent=self)
         self.helpCenter = HelpCenter(services, reports=self.pdfmodel, parent=self)  # 設定頁的 Help 區塊（T40）
         self.helpCenter.storage.cleared.connect(self.myAccount.cacheCleared)  # 照片的快取清掉了：重新下載（T36）
         self._session = ShellSession(services, self)  # Log Out、Quit、⌘Q（N1）；launch() 載入外殼後 attach()
@@ -720,8 +723,9 @@ class AdminHome(QObject):
         self._session.end()
 
     def close(self, owns_services=False):
-        """主畫面關掉時：不再攔 ⌘Q；services 是 launch() 自己建的，就一起收掉。"""
+        """主畫面關掉時：不再攔 ⌘Q、報表停止輪詢；services 是 launch() 自己建的，就一起收掉。"""
         self._session.stop()
+        self.reportsModel.stop()
         if owns_services:
             self.services.tasks.shutdown()
 
@@ -755,6 +759,7 @@ def launch(engine, account_id, services=None):
         "pdfHandler": home.pdfmodel,
         "serviceSearch": home.serviceSearch,
         "myAccount": home.myAccount,
+        "reportsModel": home.reportsModel,
         "helpCenter": home.helpCenter,
     }.items():
         context.setContextProperty(name, obj)

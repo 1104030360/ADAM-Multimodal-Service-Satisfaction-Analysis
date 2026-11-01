@@ -398,25 +398,27 @@ def test_clearing_is_disabled_while_a_download_is_still_running(engine, services
 def test_downloads_and_report_pages_work_again_after_clearing(engine, services, db, s3, qml_warnings, tmp_path,
                                                                monkeypatch, home_init, account_id, page, detail_page,
                                                                reports_page):
-    """清掉之後：明細頁重新下載，報表頁重新畫頁面（不顯示已經刪掉的圖）。"""
+    """清掉之後：明細頁重新下載，報表頁重新下載 PDF、重新畫頁面（不顯示已經刪掉的圖，T37）。"""
     db.add_service(SID, START, account_id=STAFF_ID)
     key = f"charts/{SID}_summary.png"
     db.add_media(SID, "charts", f"s3://adam-test/{key}")
     s3.put_object(Bucket="adam-test", Key=key, Body=png_bytes())
-    source = tmp_path / "report-source"
-    source.mkdir()
+    report_id = "7e57c1ea-0000-4000-8000-000000000001"  # 一份已發佈的報表（兩端都看得到），PDF 在 S3
     document = fitz.Document()
     document.new_page().insert_text((72, 72), "Page 1")
-    document.save(source / "October 2026.pdf")
+    s3.put_object(Bucket="adam-test", Key=f"reports/{report_id}.pdf", Body=document.tobytes())
     document.close()
+    db.execute("INSERT INTO tbl_report (report_id, report_kind, service_id, staff_account_id, report_status, s3_key, "
+               "created_by, published_at, published_by) VALUES (%s, 'service', %s, %s, 'ready', %s, %s, NOW(), %s)",
+               (report_id, SID, STAFF_ID, f"reports/{report_id}.pdf", ADMIN_ID, ADMIN_ID))
 
     opened = open_settings(engine, home_init, account_id, page, services)
     home, window = opened.home, opened.window
-    home.pdfmodel.reports_dir = str(source)
     reports = show(window, reports_page)
     wait_until(lambda: home.pdfmodel.viewState == "ready")
     rendered = media.reports_cache_dir()
-    assert os.listdir(rendered)
+    downloaded = media.report_pdf_dir()
+    assert os.listdir(rendered) and os.listdir(downloaded)
     home.load_service_media(SID, START)
     detail = show(window, detail_page)
     chart = tmp_path / "charts" / f"{SID}_summary.png"
@@ -427,11 +429,12 @@ def test_downloads_and_report_pages_work_again_after_clearing(engine, services, 
     wait_until(lambda: storage.canClear)
     assert storage.clear()
     wait_until(lambda: not storage.clearing and storage.state == "ready")
-    assert not chart.exists() and os.listdir(rendered) == []
+    assert not chart.exists() and os.listdir(rendered) == [] and os.listdir(downloaded) == []
     assert home.pdfmodel.current == "" and home.pdfmodel.pageSource == ""
 
-    reports = show(window, reports_page)  # 重新打開最新的一份，重新畫
+    reports = show(window, reports_page)  # 重新打開選到的那一份：重新下載、重新畫
     wait_until(lambda: home.pdfmodel.viewState == "ready")
+    assert os.listdir(downloaded)
     assert os.path.exists(media.QUrl(home.pdfmodel.pageSource).toLocalFile())
     image = find_all(reports, "pageImage")[0]
     wait_until(lambda: qml(image, "status === Image.Ready"))

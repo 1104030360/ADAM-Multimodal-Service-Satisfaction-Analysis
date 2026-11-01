@@ -15,11 +15,15 @@ import "../components"
 //   第一次就失敗：卡片裡是區塊錯誤＋Retry（DS-27）。已經有資料時更新不到：清單留著，由 serviceModel 跳一則警告。
 // - Analyze 在背景送出：那一列的按鈕忙碌（Sending…），結果用 toast 說（DS-24、DS-52）。
 // - View 經過外殼的 openServiceDetail() 打開服務明細。
+// - Completed 的 Report 欄（UX-20 的 PDF 按鈕，new-feature N4，T37）：管理員發佈了才有 Report（經過外殼的 openReport()
+//   打開）；還沒有 PDF 寫「Not generated yet」，有 PDF 還沒發佈寫「Not published yet」（R6：只給狀態，不給報表）。
+//   狀態在 reportsModel.serviceStates（頁面開著時每 15 秒更新）。
 // - 這一頁的資料都在 serviceModel（Python）：日期、長度、「Sent 21 min ago」也是，頁面不自己算時間。
 Item {
     id: analysisPage
 
     readonly property var vm: typeof serviceModel !== "undefined" ? serviceModel : null
+    readonly property var reportsVm: typeof reportsModel !== "undefined" ? reportsModel : null
     property var shell: null                        // 外殼（setWindow）：View 用它打開明細
     property string selectedTab: ""                 // 還不知道預設的分頁時是空字串：一個都不選，不先跳到別的分頁
     property string highlightedServiceId: ""        // View Results 標出的那一列（靜止的底色，不閃，DS-42）
@@ -129,6 +133,11 @@ Item {
             shell.openServiceDetail(serviceId, startTime)
     }
 
+    function openReport(reportId) {
+        if (shell && typeof shell.openReport === "function")
+            shell.openReport(reportId)
+    }
+
     // 分數：小數一位（serviceModel 已經四捨五入），旁邊一定寫分數帶（PLAN 第 2 節）；沒有分數是「—」
     function scoreText(score) {
         return Theme.hasScore(score) ? Number(score).toFixed(1) : "—"
@@ -144,9 +153,10 @@ Item {
         if (kind === "analyzing")
             return [id, recorded, total - id - recorded]
         const action = kind === "completed" ? 120 : 160
-        const rest = total - id - recorded - action
+        const report = kind === "completed" ? 150 : 0      // Report 欄（new-feature N4）
+        const rest = total - id - recorded - action - report
         if (kind === "completed")
-            return [id, recorded, Math.round(rest / 2), rest - Math.round(rest / 2), action]
+            return [id, recorded, Math.round(rest / 2), rest - Math.round(rest / 2), report, action]
         return [id, recorded, rest, action]
     }
 
@@ -176,7 +186,15 @@ Item {
         }
     }
 
-    Component.onCompleted: chooseDefaultTab()
+    Component.onCompleted: {
+        chooseDefaultTab()
+        if (reportsVm)
+            reportsVm.pageOpened("analysis")    // Report 欄的狀態：現在讀一次，頁面開著時每 15 秒
+    }
+    Component.onDestruction: {
+        if (reportsVm)
+            reportsVm.pageClosed("analysis")
+    }
 
     // ── 分頁按鈕：外框裡三個膠囊，選到的是亮底深字（設計稿 StaffAnalysis）
     component StatusTab: Button {
@@ -321,6 +339,14 @@ Item {
         readonly property var widths: analysisPage.columnWidths(kind, width)
         readonly property bool highlighted: kind === "completed" && serviceId === analysisPage.highlightedServiceId
         readonly property string lengthText: length !== "" ? length : "—"
+        // 報表的狀態（Completed）：published（附 reportId）、unpublished、none；還沒查到是空字串（顯示「—」）
+        readonly property var reportInfo: analysisPage.reportsVm && analysisPage.reportsVm.serviceStates[serviceId] !== undefined
+                                          ? analysisPage.reportsVm.serviceStates[serviceId] : null
+        readonly property string reportState: !analysisPage.reportsVm || !analysisPage.reportsVm.statesLoaded ? ""
+                                              : reportInfo ? reportInfo.state : "none"
+        readonly property string reportText: reportState === "published" ? qsTr("report published")
+                                           : reportState === "unpublished" ? qsTr("Not published yet")
+                                           : reportState === "none" ? qsTr("Not generated yet") : "—"
 
         width: ListView.view ? ListView.view.width : 0
         height: Theme.tableRow
@@ -330,7 +356,8 @@ Item {
             const recordedText = qsTr("recorded %1").arg(recorded)
             if (kind === "completed")
                 return [serviceId, recordedText, qsTr("customer %1").arg(customerCell.text),
-                        qsTr("staff %1").arg(staffCell.text)].join(", ")
+                        qsTr("staff %1").arg(staffCell.text)].concat(row.reportState !== "" ? [row.reportText] : [])
+                       .join(", ")
             if (kind === "analyzing")
                 return [serviceId, recordedText, sentText].join(", ")
             const parts = [serviceId, recordedText, qsTr("length %1").arg(lengthText)]
@@ -443,6 +470,39 @@ Item {
                 visible: row.kind === "completed"
                 width: visible ? row.widths[3] : 0
                 score: row.staffScore
+            }
+
+            Item {      // Report（Completed）：發佈了是 Report 按鈕，其他寫狀態
+                objectName: "reportCell"
+                visible: row.kind === "completed"
+                width: visible ? row.widths[4] : 0
+                height: Theme.tableRow
+
+                Text {
+                    objectName: "reportStateText"
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - Theme.spaceM
+                    visible: row.reportState !== "published"
+                    text: row.reportText
+                    color: Theme.textMuted
+                    font.pixelSize: Theme.fontCaption
+                    elide: Text.ElideRight
+                }
+
+                Loader {
+                    anchors.verticalCenter: parent.verticalCenter
+                    active: row.kind === "completed" && row.reportState === "published"
+                    sourceComponent: BusyButton {
+                        objectName: "reportButton"
+                        text: qsTr("Report")
+                        Accessible.name: qsTr("Open the report for %1").arg(row.serviceId)
+                        onActiveFocusChanged: {
+                            if (activeFocus)
+                                analysisPage.ensureVisible(row)
+                        }
+                        onClicked: analysisPage.openReport(row.reportInfo.reportId)
+                    }
+                }
             }
 
             Item {      // 動作：Not analyzed 的 Analyze、Completed 的 View；靠右
@@ -750,7 +810,7 @@ Item {
                     Layout.fillWidth: true
                     kind: "completed"
                     description: qsTr("Overall scores. Good 85 and up, Fair 70–84, Needs improvement below 70.")
-                    titles: [qsTr("Service ID"), qsTr("Recorded"), qsTr("Customer"), qsTr("Staff")]
+                    titles: [qsTr("Service ID"), qsTr("Recorded"), qsTr("Customer"), qsTr("Staff"), qsTr("Report")]
                     emptyTitle: qsTr("No completed analyses yet")
                     emptyDescription: qsTr("Services you analyze appear here when they're done.")
                     // 有沒送出的才給捷徑：Not analyzed 也是空的話，按了只會到另一個空的分頁
