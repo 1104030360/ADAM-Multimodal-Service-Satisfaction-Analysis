@@ -87,3 +87,48 @@ c40d5f3133df70f9eaf3fdf03234c74995b10b2cc330e2d3b2ad73aeb0cf4409  history.svg
 fc3d8f3566fbce5eeb689eff876627c3c8dc242ff2e5516e3dc0783c3bb56a60  user-round-plus.svg
 c7e6ee719aeb7c0e71d6afefa3f8946fcd7232506e881d9666a86f8904ba23bd  circle-user-round.svg
 ```
+
+## 共用元件的圖示（`qml/components/icons/`）
+
+前端重建 F1 的共用元件（通知、狀態標籤、忙碌按鈕、錯誤與空狀態）用的 15 個圖示，2026-10-31 加入。它們放在 `myapp/src/myapp/qml/components/icons/`，不在這個資料夾，但來源和授權一起記在這裡。
+
+- **來源**：[Lucide](https://lucide.dev) 1.58.0，和上面的側邊欄圖示是同一個官方 npm tarball `lucide-static-1.58.0.tgz`（integrity `sha512-VFE2ZEq3yEwjBH0El9CA9lHgDWKKXPKgKxFzX+/JN1FPa4maQbtl/pT4B62aJkUEpODT5octDsyGy7tPVE2svQ==`）。用 `tar` 直接從 tarball 取出，沒有另外下載。
+- **授權**：ISC。全文在 `icons/LICENSE-lucide.txt`，和 tarball 裡的 `LICENSE` 逐位元組相同。每個 SVG 都保留了原本第一行的 `<!-- @license lucide-static v1.58.0 - ISC -->`。
+  - `info`、`x`、`clock`、`upload`、`circle-x`、`circle-alert`、`triangle-alert` 是 Lucide `LICENSE` 列出的 Feather 衍生圖示（列在舊名 `x-circle`、`alert-circle`、`alert-triangle` 底下），同一份授權檔裡 Feather 的 MIT 授權也適用。
+- **修改**（ISC 允許）：只把 `stroke="currentColor"` 換成固定的顏色，其餘位元組和原檔相同。顏色在檔案裡預先上好，不在執行時染色（CONTRACTS §2：避免 layer 的成本）。
+- **格式**：SVG，不轉成 PNG。Qt 的 SVG 外掛（`libqsvg`，PySide6 6.12 內建）畫得出這 15 個檔案，沒有任何警告；`Image` 設了 `sourceSize` 時會依螢幕的 devicePixelRatio 重新點陣化，Retina 上也是清楚的。`tests/unit/test_qml_components.py` 會檢查：畫得出來、沒有警告、畫出來的線條就是檔名寫的那個 Theme 顏色。
+- **檔名**：`<Lucide 名稱>_<Theme token>.svg`。token 就是 `Theme.qml` 的屬性名稱；測試會比對檔案裡的顏色和那個 token 的值。改了 `Theme.qml` 的顏色，要重新產生對應的圖示。
+
+| 檔案 | 用在 | 顏色 |
+|---|---|---|
+| `circle-check_successOnDark.svg` | 通知：成功 | `successOnDark` `#81C784` |
+| `info_infoOnDark.svg` | 通知：資訊 | `infoOnDark` `#90CAF9` |
+| `triangle-alert_warningOnDark.svg` | 通知：警告 | `warningOnDark` `#FFB74D` |
+| `circle-alert_errorOnDark.svg` | 通知：錯誤 | `errorOnDark` `#FF9A90` |
+| `upload_chromeIcon.svg` | 通知：進行中 | `chromeIcon` `#E6E8EB` |
+| `x_chromeIcon.svg` | 通知的關閉鈕 | `chromeIcon` `#E6E8EB` |
+| `circle-dashed_textPrimary.svg` | 狀態標籤：Not Analyzed | `textPrimary` `#333333` |
+| `clock_infoOnLight.svg` | 狀態標籤：Analyzing | `infoOnLight` `#1565C0` |
+| `circle-check_successOnLight.svg` | 狀態標籤：Completed | `successOnLight` `#2E7D32` |
+| `circle-x_errorOnLight.svg` | 狀態標籤：Failed | `errorOnLight` `#C62828` |
+| `circle-alert_errorOnLight.svg` | 區塊錯誤（20 px）、欄位錯誤（14 px） | `errorOnLight` `#C62828` |
+| `inbox_textDisabled.svg` | 空狀態（40 px，裝飾） | `textDisabled` `#8E959F` |
+| `loader-circle_textOnDark.svg` | 忙碌按鈕：primary | `textOnDark` `#FFFFFF` |
+| `loader-circle_textSecondary.svg` | 忙碌按鈕：secondary、danger | `textSecondary` `#596069` |
+| `loader-circle_chromeOnLight.svg` | 忙碌按鈕：chrome（深色背景上的亮色按鈕） | `chromeOnLight` `#0E1013` |
+
+來源 SVG 的 SHA-256（上色之前）：
+
+```text
+136cb1a270216ccd678be230acbab73771349372b8ecb9283116528d5c4ae269  circle-alert.svg
+e963fb03e3180118ca0b99fba7cc9644769dc61a35280e3da75fc3a65fd450c4  circle-check.svg
+2ea5a8a81920485da3eb70bdc8e2c349df0311fd7888ba0e9d85dcac0db3b512  circle-dashed.svg
+2b16f7f66feba8412175c1b3c45f793cb603f803b6c9de6daa16a7a928850cbd  circle-x.svg
+863f184bbb4460fd133fb3da9b84b9158017d6af5b187c9f09b79cae0d1f972d  clock.svg
+7d54bce88627817f1eafb17b4bb79ea2ee444c6a661b843afc49e731b859ccd8  inbox.svg
+bd039cbc60abc0af2d241232fa6fe76da45c974a8928141b266b15435ca26e0c  info.svg
+8ef4c230a13382644c11c1042e120c9cc00196856765bf84bde2362d671d0b50  loader-circle.svg
+57b21e3ead643bb1eb69e0eed7fbcd8820b77491124c26b1bb342b0e1079711a  triangle-alert.svg
+868173535cd3a65071d2527e5284ad1d1a3144464f8a107fdab47314c2a945e8  upload.svg
+4ab0e1e5031230da80a2ddaf9c8639bde234a974a1bc94b7dfbac7af14f55a25  x.svg
+```

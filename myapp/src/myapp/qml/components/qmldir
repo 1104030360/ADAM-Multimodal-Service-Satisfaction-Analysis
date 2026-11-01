@@ -1,0 +1,10 @@
+singleton Theme 1.0 Theme.qml
+Toast 1.0 Toast.qml
+ToastHost 1.0 ToastHost.qml
+StatusChip 1.0 StatusChip.qml
+TransferProgress 1.0 TransferProgress.qml
+BusyButton 1.0 BusyButton.qml
+EmptyState 1.0 EmptyState.qml
+InlineError 1.0 InlineError.qml
+FieldError 1.0 FieldError.qml
+ConfirmDialog 1.0 ConfirmDialog.qml
