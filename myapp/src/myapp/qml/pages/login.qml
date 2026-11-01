@@ -1,5 +1,6 @@
 import QtQuick 2.15
-import QtQuick.Controls 2.15
+// 這頁的輸入框自訂了 background；macOS 預設的原生樣式不支援自訂，所以改用 Basic 樣式
+import QtQuick.Controls.Basic 2.15
 import QtQuick.Layouts 1.15
 import QtQuick.Window 2.15
 
@@ -9,19 +10,19 @@ Window {
     width: 1024
     height: 768
     title: "Welcome to ADAM"
+    color: "#0B0C0E" // 和開場畫面的底色一樣，淡入時不會先閃白
 
     StackView {
         id: stackView
         anchors.fill: parent
 
+        // StackView 會自己把頁面調整成和它一樣大，頁面不要再綁 parent 的大小或設 anchors
         initialItem: Item {
-            width: parent.width
-            height: parent.height
-
             Image {
                 id: logo
-                source: "../../images/logo.jpg" // 请确保这是正确的文件路径
+                source: "../../images/logo.jpg"
                 anchors.fill: parent
+                fillMode: Image.PreserveAspectCrop
                 opacity: 0 // 初始透明度为 0
 
                 Behavior on opacity {
@@ -50,13 +51,12 @@ Window {
         Component {
             id: loginComponent
             Rectangle {
-                anchors.fill: parent
                 color: "transparent" // 背景透明以显示背景图片
 
                 Image {
                     id: login_image
                     anchors.fill: parent
-                    source: "../../images/ADAM_login.png"
+                    source: "../../images/ADAM_login.jpg"
                     fillMode: Image.PreserveAspectCrop
                 }
 
@@ -66,24 +66,28 @@ Window {
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width * 0.4
                     height: parent.height * 0.6
-                    opacity: 0.5
-                    color: "#f0f0f0"
+                    opacity: 0.78
+                    color: "#0E1013"
                     radius: 20
+                    border.color: "#596069"
+                    border.width: 1
                 }
 
                 Text {
                     id: logo_text
                     anchors.horizontalCenter: parent.horizontalCenter
+                    // letterSpacing 也會加在最後一個字母後面，字會往左偏 16 / 2 = 8 px，這裡移回中間
+                    anchors.horizontalCenterOffset: 8
                     y: login_rectangle.y + 50
                     width: 203
                     height: 60
-                    color: "#2C3E50"
+                    color: "#F3F4F6"
                     text: qsTr("ADAM")
                     font.pixelSize: 60
                     horizontalAlignment: Text.AlignHCenter
-                    font.bold: true
-                    font.weight: Font.Bold
-                    font.family: "Arial"
+                    font.family: "Helvetica Neue"
+                    font.weight: Font.Light
+                    font.letterSpacing: 16 // 和開場畫面的細字、寬字距一致
                 }
 
                 TextField {
@@ -92,12 +96,17 @@ Window {
                     y: logo_text.y + logo_text.height + 60
                     width: 300
                     height: 36
+                    leftPadding: 16 // 文字不要貼到圓角
                     placeholderText: qsTr("Username")
                     font.pixelSize: 18
+                    color: "#ECEEF1"
+                    placeholderTextColor: "#8E959F"
+                    selectionColor: "#4B515A"
+                    selectedTextColor: "#FFFFFF"
                     background: Rectangle {
-                        color: "#FFFFFF"
-                        radius: 20
-                        border.color: "#BDC3C7"
+                        color: "#17191D"
+                        radius: 18
+                        border.color: username_textfield.activeFocus ? "#A9B0BA" : "#606770"
                         border.width: 1
                     }
                 }
@@ -108,13 +117,18 @@ Window {
                     y: username_textfield.y + username_textfield.height + 40
                     width: 300
                     height: 36
+                    leftPadding: 16
                     placeholderText: qsTr("Password")
                     font.pixelSize: 18
                     echoMode: TextInput.Password // 隐藏输入的密码
+                    color: "#ECEEF1"
+                    placeholderTextColor: "#8E959F"
+                    selectionColor: "#4B515A"
+                    selectedTextColor: "#FFFFFF"
                     background: Rectangle {
-                        color: "#FFFFFF"
-                        radius: 20
-                        border.color: "#BDC3C7"
+                        color: "#17191D"
+                        radius: 18
+                        border.color: password_textfield.activeFocus ? "#A9B0BA" : "#606770"
                         border.width: 1
                     }
                 }
@@ -125,7 +139,8 @@ Window {
                     y: password_textfield.y + password_textfield.height + 50
                     width: 200
                     height: 50
-                    color: mouseArea.containsMouse ? (mouseArea.pressed ? "#21618C" : "#2980B9") : "#3498DB"
+                    // 顏色只由這個綁定決定；在 onPressed 裡寫 button.color = ... 會把綁定拆掉，hover 的顏色就會卡住
+                    color: mouseArea.pressed ? "#C3C8CF" : (mouseArea.containsMouse ? "#FFFFFF" : "#E6E8EB")
                     radius: 10
 
                     MouseArea {
@@ -151,21 +166,14 @@ Window {
                                 error_message.visible = true
                             }
                         }
-
-                        onPressed: {
-                            button.color = "#21618C"
-                        }
-
-                        onReleased: {
-                            button.color = mouseArea.containsMouse ? "#2980B9" : "#3498DB"
-                        }
                     }
 
                     Text {
                         text: "Login"
                         anchors.centerIn: parent
-                        color: "#ffffff"
+                        color: "#0E1013"
                         font.pixelSize: 16
+                        font.weight: Font.DemiBold
                     }
                 }
 
@@ -173,7 +181,7 @@ Window {
                     id: error_message
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: button.y + button.height + 20
-                    color: "red"
+                    color: "#FF9A90"
                     visible: false
                 }
             }

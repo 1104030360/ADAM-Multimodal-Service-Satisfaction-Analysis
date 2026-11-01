@@ -1,6 +1,8 @@
 """整合測試用的小工具：放測試資料、讀 QML 畫面。"""
 import socket
+import time
 
+from PySide6.QtCore import QCoreApplication
 from PySide6.QtQml import QQmlEngine, QQmlExpression
 from PySide6.QtQuick import QQuickItem  # noqa: F401  import 之後，PySide6 才會把 QML 物件轉成 QQuickItem
 
@@ -59,6 +61,15 @@ def qml(obj, expression):
     value, is_undefined = expr.evaluate()
     assert not expr.hasError(), expr.error().toString()
     return None if is_undefined else value
+
+
+def wait_until(condition, timeout=5.0):
+    """一邊處理 Qt 事件（動畫、轉場、計時器、視窗狀態），一邊等 condition() 成立。"""
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, f"等了 {timeout} 秒還沒成立"
+        QCoreApplication.processEvents()
+        time.sleep(0.01)
 
 
 def table_row(model, row):

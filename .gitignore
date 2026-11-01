@@ -42,6 +42,9 @@ Thumbs.db
 *.jpeg
 *.heic
 *.bmp
+# 例外：app 畫面用到的圖片（圖示、開場畫面、登入背景）要進 git，來源與授權見 myapp/src/myapp/images/SOURCES.md
+!myapp/src/myapp/images/**/*.png
+!myapp/src/myapp/images/**/*.jpg
 
 # 其他
 output.*

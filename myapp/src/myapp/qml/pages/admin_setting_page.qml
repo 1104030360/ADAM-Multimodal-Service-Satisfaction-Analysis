@@ -15,18 +15,17 @@ Item {
             font.pixelSize: 24
         }
 
+        // 兩個勾選框都直接看主視窗現在是不是全螢幕，視窗模式一變就會跟著更新
         CheckBox {
             id: exitFullscreenCheckbox
             width: 150
             text: "視窗模式"
-            checked: window ? !window.visible : false// 与全屏复选框相反
+            ButtonGroup.group: windowModeGroup
+            checked: window ? window.visibility !== Window.FullScreen : false
             onClicked: {
                 if (window) {
-                    if (checked) {
-                        window.showNormal() // 退出全屏模式
-                    }
+                    window.showNormal() // 退出全屏模式
                 }
-                fullscreenCheckbox.checked = !checked // 点击后更新全屏复选框状态
             }
         }
 
@@ -34,16 +33,19 @@ Item {
             id: fullscreenCheckbox
             width: 150
             text: "全螢幕模式"
-            checked: !fullscreenCheckbox.checked // 默认全屏时选中
+            ButtonGroup.group: windowModeGroup
+            checked: window ? window.visibility === Window.FullScreen : true // 主視窗一打開就是全螢幕
             onClicked: {
                 if (window) {
-                    if (checked) {
-                        window.showFullScreen() // 恢复全屏模式
-                    }
+                    window.showFullScreen() // 恢复全屏模式
                 }
-                exitFullscreenCheckbox.checked = !checked // 点击后更新退出全屏复选框状态
             }
         }
+    }
+
+    // 兩個選項互斥：同一組只會勾一個，已經勾選的那個再按也不會被取消
+    ButtonGroup {
+        id: windowModeGroup
     }
 
     property var window
