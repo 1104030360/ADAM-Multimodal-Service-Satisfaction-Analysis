@@ -25,7 +25,8 @@ from tests.integration.latency_proxy import db_proxy  # noqa: F401  fixture：ap
 SCHEMA = Path(__file__).resolve().parents[3] / "docs" / "rebuild" / "db_schema.sql"
 MYSQL_IMAGE = "mysql:8.4"
 TABLES = ["tbl_report", "tbl_text_storage", "tbl_charts_storage", "tbl_audio_storage", "tbl_video_storage",
-          "tbl_service_score", "tbl_service", "tbl_account"]
+          "tbl_service_score", "tbl_service", "tbl_account",
+          "tbl_coaching_event", "tbl_coaching_marker", "tbl_coaching_action"]   # PLAN1 W2（T45）
 
 
 def docker(*args, **kwargs):

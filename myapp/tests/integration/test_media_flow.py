@@ -17,7 +17,7 @@ import pytest
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QUrl
 from PySide6.QtGui import QColor, QImage
 
-from myapp import media, reports, storage
+from myapp import coaching, media, reports, storage
 from myapp.init import admin_home_init, server_home_init
 from myapp.tasks import Cancelled
 from tests.integration.helpers import ADMIN_ID, STAFF_ID, qml, wait_until
@@ -239,8 +239,9 @@ def test_details_switches_page_at_once_and_downloads_in_the_background(side, ui,
         assert home.mediaModel.state == "loading"
         assert db_proxy.snapshot()["rt"] == 0  # GUI 執行緒 0 個往返（背景的也還沒開始）
     wait_until(lambda: settled(home) and not busy.now)
-    # 所有檔案的位置一個查詢就拿到（以前 4 個查詢）。管理員端的報表卡多 1 個（CALL sp_list_reports，T37）
-    assert db_proxy.snapshot()["rt"] == (1 if side is STAFF else 2)
+    # 所有檔案的位置一個查詢就拿到（以前 4 個查詢）。管理員端的報表卡多 1 個（CALL sp_list_reports，T37），
+    # 輔導卡再多 1 個（CALL sp_coaching_for_service，T45）
+    assert db_proxy.snapshot()["rt"] == (1 if side is STAFF else 3)
     # 新版的頁首（日期、時間、分析狀態）和分數列也在同一個查詢裡（T31 第 3 節）；管理員端前面多服務人員的名字
     assert home.mediaModel.headerText == "Oct 30, 2026 · 12:00–12:05 · Analysis completed"
     assert qml(window, "header.subtitle") == ("" if side is STAFF else "服務人員（佔位） · ") + home.mediaModel.headerText
@@ -473,9 +474,10 @@ def test_opening_the_same_service_again_uses_the_cache(side, ui, services, busy,
     open_detail(side, home, window)
     wait_until(lambda: settled(home) and not busy.now)
     assert len(downloads) == 6  # 一個都沒有重新下載
-    # 只查了檔案清單，沒有下載的工作；管理員端的報表卡再查一次報表清單（T37）
-    assert busy.seen[seen:] == [media.list_key(SID)] + ([] if side is STAFF else [reports.LIST_KEY])
-    assert db_proxy.snapshot()["rt"] == (1 if side is STAFF else 2)
+    # 只查了檔案清單，沒有下載的工作；管理員端的報表卡再查一次報表清單（T37），輔導卡查一次這筆服務的行動（T45）
+    assert busy.seen[seen:] == [media.list_key(SID)] + ([] if side is STAFF else [reports.LIST_KEY,
+                                                                                  coaching.CARD_KEY])
+    assert db_proxy.snapshot()["rt"] == (1 if side is STAFF else 3)
     assert home.mediaModel.canPlay and home.chartsModel.readyCount == 3
 
 

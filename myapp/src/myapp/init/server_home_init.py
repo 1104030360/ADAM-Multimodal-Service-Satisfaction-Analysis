@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from myapp import devices
 from myapp.account import AccountProfile, AccountSelfService
+from myapp.coaching import CoachingModel
 from myapp.db_lane import DbLane
 from myapp.device_setup import IN_USE_FINISHING, IN_USE_RECORDER, IN_USE_RECORDING, DeviceSetup
 from myapp.diagnostics import HelpCenter
@@ -55,7 +56,7 @@ ANALYSIS_REFRESH_TOAST_KEY = "analysis-refresh"
 # launch() 多註冊一個名稱，這裡也要加上（tests/integration/test_log_out.py 會比對 launch() 的程式）
 CONTEXT_NAMES = ("serverHome", "deviceFinder", "homeDashboard", "serviceModel", "serviceManager", "chartsModel",
                  "mediaModel", "pdfHandler", "serviceSearch", "helpCenter", "myAccount",
-                 "reportsModel")
+                 "reportsModel", "coachingModel")
 
 _FIRST_ROLE = int(Qt.ItemDataRole.UserRole)
 
@@ -1464,6 +1465,8 @@ class ServerHome(QObject):
         self.serviceSearch = ServiceSearch.for_staff(services, account_id, parent=self)  # 頁首的搜尋（只查自己的）
         # 報表（new-feature N4、N5，T37）：已發佈的清單、分析頁的 Report 欄；打開時交給 pdfmodel
         self.reportsModel = ReportsModel(services, account_id, admin=False, pdf=self.pdfmodel, parent=self)
+        # 員工輔導（PLAN1 W2，T45）：My Actions 頁（只有自己的改善行動）
+        self.coachingModel = CoachingModel(services, account_id, admin=False, parent=self)
         self.helpCenter = HelpCenter(services, reports=self.pdfmodel, parent=self)  # 設定頁的 Help 區塊（T40）
         if self.myAccount is not None:  # 清掉下載快取時照片的檔案也沒了：重新下載（T36）
             self.helpCenter.storage.cleared.connect(self.myAccount.cacheCleared)
@@ -1506,6 +1509,7 @@ class ServerHome(QObject):
             self.watcher.stop()
         self.serviceModel.stop()
         self.reportsModel.stop()
+        self.coachingModel.stop()
         self.deviceFinder.setup.closeSetup()  # 設備設定還開著的話，放開鏡頭和麥克風（T41）
         self.attention.clear()
         self._session.stop()
@@ -1647,6 +1651,7 @@ def launch(engine, account_id, services=None):
     context.setContextProperty("myAccount", home.myAccount)  # 設定頁的 Account（T36）
     context.setContextProperty("reportsModel", home.reportsModel)
     context.setContextProperty("helpCenter", home.helpCenter)
+    context.setContextProperty("coachingModel", home.coachingModel)  # My Actions（PLAN1 W2，T45）
 
     opened = len(engine.rootObjects())
     qml_file = Path(__file__).resolve().parent.parent / "qml/pages/server_home.qml"

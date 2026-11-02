@@ -15,7 +15,7 @@ Window {
     // QuitGuard 登記（錄影中、存檔中時 deviceFinder 也登記），攔下來之後從 quitRequested 走同一條路
     onClosing: (close) => { if (!exitButton.requestQuit()) close.accepted = false }
 
-    // 鍵盤（Tab、⌘1～⌘6）走到側邊欄裡看不到的按鈕：捲過去（視窗太矮時側邊欄可以捲動）
+    // 鍵盤（Tab、⌘1～⌘7）走到側邊欄裡看不到的按鈕：捲過去（視窗太矮時側邊欄可以捲動）
     onActiveFocusItemChanged: if (railScroller) railScroller.reveal(activeFocusItem)
 
     // 已經有一個離開的對話框開著：不再開第二個（⌘Q 可能同時被兩個登記擋下來，N1 的「不疊兩層」）
@@ -28,7 +28,7 @@ Window {
     Binding { target: Theme; property: "animationScale"; value: uiPrefs ? uiPrefs.animationScale : 1 }
 
     // ── 換頁（DS-29、ENG-19、T23）
-    // 內容區現在的頁面（檔名）：側邊欄的「目前頁面」照它畫。側邊欄、⌘1～⌘6 在要求換頁的當下就改；
+    // 內容區現在的頁面（檔名）：側邊欄的「目前頁面」照它畫。側邊欄、⌘1～⌘7 在要求換頁的當下就改；
     // 頁面自己換頁（Details、Back）、通知的 View Results 則跟著 Loader 的 source 改
     property string currentPage: ""
     property bool shellCompleted: false     // 第一頁和外殼一起建好之後才算「換頁」：淡入、唸頁名
@@ -39,7 +39,7 @@ Window {
         return path.slice(path.lastIndexOf("/") + 1)
     }
 
-    // 側邊欄、⌘1～⌘6：在背景載入、分好幾個畫格建立（Loader.asynchronous，ENG-19），GUI 執行緒不會卡住。
+    // 側邊欄、⌘1～⌘7：在背景載入、分好幾個畫格建立（Loader.asynchronous，ENG-19），GUI 執行緒不會卡住。
     // 舊頁面馬上拿掉；同一頁再按一次不重新載入。頁面自己換頁和 View Results 照舊同步（T23）
     function showPage(file) {
         if (currentPage === file)
@@ -72,7 +72,24 @@ Window {
         return showPageNow("server_reports_page.qml")
     }
 
-    // ⌘1～⌘6：和按側邊欄的按鈕一樣，焦點也移到那個按鈕上（DS-29：換頁後焦點在側邊欄）
+    // 從 My Actions 打開的明細（「‹ My Actions」）：側邊欄標 My Actions，不是 Services（PLAN1 W2，T45）
+    readonly property bool detailFromActions: currentPage === "server_service_detail_page.qml"
+                                              && pageValue("backPage", "") === "server_actions_page.qml"
+
+    // 打開一筆服務的明細，影片載入之後跳到第 seconds 秒（PLAN1 W2 的時間註記，T45）；seconds < 0 不跳。
+    // backPage：頁首「‹」回去的頁面（My Actions），「‹」的字是它的頁名。coachingModel.openServiceRequested 走這裡
+    function openServiceDetailAt(serviceId, startTime, seconds, backPage) {
+        const page = openServiceDetail(serviceId, startTime)
+        if (page && backPage) {
+            page.backPage = backPage
+            page.backText = pageName(backPage)
+        }
+        if (page && seconds >= 0)
+            page.seekTo(seconds * 1000)
+        return page
+    }
+
+    // ⌘1～⌘7：和按側邊欄的按鈕一樣，焦點也移到那個按鈕上（DS-29：換頁後焦點在側邊欄）
     function activateNav(button) {
         button.forceActiveFocus(Qt.ShortcutFocusReason)
         button.click()
@@ -87,6 +104,7 @@ Window {
         case "server_service_page.qml": return servicesButton.text
         case "server_service_detail_page.qml": return qsTr("Service Details")
         case "server_reports_page.qml": return reportsButton.text
+        case "server_actions_page.qml": return actionsButton.text
         case "server_setting_button.qml": return settingsButton.text
         }
         return ""
@@ -99,6 +117,7 @@ Window {
         case "analysis.qml": return qsTr("Send recorded services for analysis and see the results.")
         case "server_service_page.qml": return qsTr("Find a past service and open its videos and charts.")
         case "server_reports_page.qml": return qsTr("Reports an admin has published for you.")
+        case "server_actions_page.qml": return qsTr("Goals an admin set for you. Check the example, then respond.")
         case "server_setting_button.qml": return qsTr("Preferences apply right away. Account and device changes apply when you save.")
         }
         return ""
@@ -192,7 +211,7 @@ Window {
                     text: qsTr("Services")
                     iconName: "history"
                     current: window.currentPage === "server_service_page.qml"
-                             || window.currentPage === "server_service_detail_page.qml"
+                             || (window.currentPage === "server_service_detail_page.qml" && !window.detailFromActions)
                     onClicked: window.showPage("server_service_page.qml")
                 }
 
@@ -203,6 +222,16 @@ Window {
                     iconName: "file-chart-column"
                     current: window.currentPage === "server_reports_page.qml"
                     onClicked: window.showPage("server_reports_page.qml")
+                }
+
+                // 員工輔導（PLAN1 W2，T45）：主管訂給自己的改善目標、回應、確認
+                SidebarButton {
+                    id: actionsButton
+                    objectName: "actionsButton"
+                    text: qsTr("My Actions")
+                    iconName: "target"
+                    current: window.currentPage === "server_actions_page.qml" || window.detailFromActions
+                    onClicked: window.showPage("server_actions_page.qml")
                 }
 
                 SidebarButton {
@@ -364,14 +393,16 @@ Window {
             }
         }
 
-        // ⌘1～⌘6：照側邊欄的順序換頁（UX-41）。Qt 在 macOS 上的 Ctrl 就是 ⌘。
+        // ⌘1～⌘7：照側邊欄的順序換頁（UX-41）。Qt 在 macOS 上的 Ctrl 就是 ⌘。PLAN1 W2 的 My Actions 放在 Settings 前面
+        // （⌘6），Settings 從 ⌘6 變成 ⌘7。
         // 放在側邊欄裡、不直接放在 Window 底下：模態對話框（Quit while uploading? 等）開著時就不會觸發
         Shortcut { sequence: "Ctrl+1"; onActivated: window.activateNav(homeButton) }
         Shortcut { sequence: "Ctrl+2"; onActivated: window.activateNav(recordButton) }
         Shortcut { sequence: "Ctrl+3"; onActivated: window.activateNav(analysisButton) }
         Shortcut { sequence: "Ctrl+4"; onActivated: window.activateNav(servicesButton) }
         Shortcut { sequence: "Ctrl+5"; onActivated: window.activateNav(reportsButton) }
-        Shortcut { sequence: "Ctrl+6"; onActivated: window.activateNav(settingsButton) }
+        Shortcut { sequence: "Ctrl+6"; onActivated: window.activateNav(actionsButton) }
+        Shortcut { sequence: "Ctrl+7"; onActivated: window.activateNav(settingsButton) }
         // ⌘W：關掉主視窗，和紅色按鈕一樣走 onClosing（N1）
         Shortcut { sequence: "Ctrl+W"; onActivated: window.close() }
     }
@@ -485,6 +516,15 @@ Window {
     Connections {
         target: reportsModel
         function onOpenRequested(reportId) { window.openReport(reportId) }
+    }
+
+    // 員工輔導（PLAN1 W2，T45）：My Actions 的時間註記、Open Service 換到明細頁並跳到那一秒（只有自己行動裡的服務）
+    Connections {
+        target: typeof coachingModel !== "undefined" ? coachingModel : null
+        function onOpenServiceRequested(serviceId, startTime, seconds, backPage) {
+            window.openServiceDetailAt(serviceId, startTime, seconds, backPage)
+        }
+        function onOpenActionRequested(actionId) { window.showPageNow("server_actions_page.qml") }
     }
 
     // 通知堆疊：內容區右下角，距邊 24（DS-21）。延伸到底部的清單用 toastHost.occupiedHeight 當 bottomMargin

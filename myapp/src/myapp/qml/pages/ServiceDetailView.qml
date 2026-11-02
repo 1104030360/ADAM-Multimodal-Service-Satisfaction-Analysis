@@ -28,6 +28,11 @@ Item {
     property string backPage: ""
     property bool showStaffName: false      // 管理員端：頁首的說明前面加上這筆服務的服務人員
     property bool showReport: false         // 管理員端：分析完成的服務多一張報表卡（new-feature N4，ServiceReportCard.qml）
+    property bool showCoaching: false       // 管理員端：影片下面的輔導卡（PLAN1 W2，CoachingCard.qml，T45）
+    property string backText: qsTr("Services")  // 頁首「‹」的字：從 My Actions、Coaching 打開時換成那一頁（T45）
+    // 時間註記（PLAN1 W2，T45）：打開之後要跳到第幾毫秒；影片載入（duration > 0）之後才跳。外殼的 openServiceDetailAt 設
+    property real pendingSeekMs: -1
+    readonly property real playbackMs: player.master.position     // 輔導卡在「目前的位置」加時間註記
     readonly property var media: typeof mediaModel !== "undefined" ? mediaModel : null
     readonly property var charts: typeof chartsModel !== "undefined" ? chartsModel : null
     readonly property string pageState: media ? media.state : "idle"
@@ -42,7 +47,7 @@ Item {
     readonly property string headerSubtitle: !media ? ""
         : showStaffName && media.staffName !== "" && media.headerText !== "" ? media.staffName + " · " + media.headerText
         : media.headerText
-    readonly property string headerBackText: qsTr("Services")
+    readonly property string headerBackText: backText
 
     // 影片框的高度：4:3，但不超過「整頁不必捲動就看得到控制列」的高度（設計稿的比例，在 900 高的視窗也能操作）
     readonly property real videoWidth: cam0Box.width
@@ -75,6 +80,34 @@ Item {
     // 回到 Services（同步換頁，和以前的 Back 一樣：換頁的當下就取消還沒下載完的檔案）
     function goBack() {
         window.showPageNow(detail.backPage)
+    }
+
+    // 跳到第 ms 毫秒（PLAN1 W2 的時間註記，T45）：影片還在下載、載入時先記著，載入之後（applyPendingSeek）再跳。
+    // 三個檔案一起跳（player.seekAll），不會開始播放
+    function seekTo(ms) {
+        pendingSeekMs = Math.max(0, ms)
+        applyPendingSeek()
+    }
+
+    function applyPendingSeek() {
+        const status = player.master.mediaStatus
+        if (pendingSeekMs < 0 || !canPlay || player.master.duration <= 0 || !player.master.seekable
+            || (status !== MediaPlayer.LoadedMedia && status !== MediaPlayer.BufferedMedia))
+            return
+        player.seekAll(Math.min(pendingSeekMs, player.master.duration))
+        pendingSeekMs = -1
+    }
+
+    onCanPlayChanged: applyPendingSeek()
+    Connections {       // 播放器載入到可以 seek 才跳（FFmpeg 先給 duration、後來才 seekable）
+        target: player.master
+        function onDurationChanged() { detail.applyPendingSeek() }
+        function onSeekableChanged() { detail.applyPendingSeek() }
+        function onMediaStatusChanged() { detail.applyPendingSeek() }
+    }
+    Connections {       // 換了一筆服務：上一筆沒跳成的不帶過去
+        target: detail
+        function onOpenedServiceChanged() { detail.pendingSeekMs = -1 }
     }
 
     // 「customer video」這類說法，用在等待、下載中、沒有這個檔案的文字裡
@@ -1078,6 +1111,24 @@ Item {
                             }
                         }
                     }
+                }
+            }
+
+            // ── 輔導（管理員端；PLAN1 W2，T45）：看影片時寫評語、在目前的位置加時間註記、從這筆服務建立改善目標
+            Loader {
+                objectName: "coachingCardLoader"
+                Layout.fillWidth: true
+                active: detail.showCoaching && detail.media !== null && detail.pageState === "ready"
+                        && detail.media.serviceFound
+                visible: active
+                sourceComponent: CoachingCard {
+                    objectName: "coachingCard"
+                    vm: typeof coachingModel !== "undefined" ? coachingModel : null
+                    serviceId: detail.media ? detail.media.serviceId : ""
+                    staffName: detail.media ? detail.media.staffName : ""
+                    positionMs: detail.playbackMs
+                    canMark: detail.canPlay
+                    onSeekRequested: (ms) => detail.seekTo(ms)
                 }
             }
         }

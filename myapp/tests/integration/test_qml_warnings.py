@@ -16,9 +16,11 @@ pytestmark = pytest.mark.integration
 
 LOGIN_QML = Path(main.__file__).parent / "qml" / "pages" / "login.qml"
 STAFF_PAGES = ["server_home_button.qml", "record_widget.qml", "analysis.qml", "server_service_page.qml",
-               "server_service_detail_page.qml", "server_reports_page.qml", "server_setting_button.qml"]
+               "server_service_detail_page.qml", "server_reports_page.qml", "server_setting_button.qml",
+               "server_actions_page.qml"]
 ADMIN_PAGES = ["admin_home_page.qml", "admin_add_page.qml", "admin_service_page.qml",
-               "admin_service_detail_page.qml", "admin_reports_page.qml", "admin_setting_page.qml"]
+               "admin_service_detail_page.qml", "admin_reports_page.qml", "admin_setting_page.qml",
+               "admin_coaching_page.qml"]
 
 
 @pytest.fixture

@@ -39,7 +39,7 @@ Window {
     }
 
     // ── 換頁（DS-29、ENG-19、T23）：和服務人員端的外殼（server_home.qml）同一套做法
-    // 內容區現在的頁面（檔名）：側邊欄的「目前頁面」照它畫。側邊欄、⌘1～⌘5 在要求換頁的當下就改；
+    // 內容區現在的頁面（檔名）：側邊欄的「目前頁面」照它畫。側邊欄、⌘1～⌘6 在要求換頁的當下就改；
     // 頁面自己換頁（Details、Back）則跟著 Loader 的 source 改
     property string currentPage: ""
     property bool shellCompleted: false     // 第一頁和外殼一起建好之後才算「換頁」：淡入、唸頁名
@@ -50,7 +50,7 @@ Window {
         return path.slice(path.lastIndexOf("/") + 1)
     }
 
-    // 側邊欄、⌘1～⌘5：在背景載入、分好幾個畫格建立（Loader.asynchronous，ENG-19），GUI 執行緒不會卡住。
+    // 側邊欄、⌘1～⌘6：在背景載入、分好幾個畫格建立（Loader.asynchronous，ENG-19），GUI 執行緒不會卡住。
     // 舊頁面馬上拿掉；同一頁再按一次不重新載入。頁面自己換頁照舊同步（T23）
     function showPage(file) {
         if (currentPage === file)
@@ -82,7 +82,24 @@ Window {
         return showPageNow("admin_reports_page.qml")
     }
 
-    // ⌘1～⌘5：和按側邊欄的按鈕一樣，焦點也移到那個按鈕上（DS-29：換頁後焦點在側邊欄）
+    // 從 Coaching 打開的明細（「‹ Coaching」）：側邊欄標 Coaching，不是 Services（PLAN1 W2，T45）
+    readonly property bool detailFromCoaching: currentPage === "admin_service_detail_page.qml"
+                                               && pageValue("backPage", "") === "admin_coaching_page.qml"
+
+    // 打開一筆服務的明細，影片載入之後跳到第 seconds 秒（PLAN1 W2 的時間註記，T45）；seconds < 0 不跳。
+    // backPage：頁首「‹」回去的頁面（Coaching），「‹」的字是它的頁名。coachingModel.openServiceRequested 走這裡
+    function openServiceDetailAt(serviceId, startTime, seconds, backPage) {
+        const page = openServiceDetail(serviceId, startTime)
+        if (page && backPage) {
+            page.backPage = backPage
+            page.backText = pageName(backPage)
+        }
+        if (page && seconds >= 0)
+            page.seekTo(seconds * 1000)
+        return page
+    }
+
+    // ⌘1～⌘6：和按側邊欄的按鈕一樣，焦點也移到那個按鈕上（DS-29：換頁後焦點在側邊欄）
     function activateNav(button) {
         button.forceActiveFocus(Qt.ShortcutFocusReason)
         button.click()
@@ -96,6 +113,7 @@ Window {
         case "admin_service_page.qml": return servicesButton.text
         case "admin_service_detail_page.qml": return qsTr("Service Details")
         case "admin_reports_page.qml": return reportsButton.text
+        case "admin_coaching_page.qml": return coachingButton.text
         case "admin_setting_page.qml": return settingsButton.text
         }
         return ""
@@ -107,6 +125,7 @@ Window {
         case "admin_add_page.qml": return qsTr("Add a staff or admin account.")
         case "admin_service_page.qml": return qsTr("Find any staff member's services and open their videos and charts.")
         case "admin_reports_page.qml": return qsTr("Generate reports, check them, and publish them for staff.")
+        case "admin_coaching_page.qml": return qsTr("Follow up on improvement goals: link a later service, then complete or adjust.")
         case "admin_setting_page.qml": return qsTr("Preferences apply right away. Account changes apply when you save.")
         }
         return ""
@@ -186,7 +205,7 @@ Window {
                     text: qsTr("Services")
                     iconName: "history"
                     current: window.currentPage === "admin_service_page.qml"
-                             || window.currentPage === "admin_service_detail_page.qml"
+                             || (window.currentPage === "admin_service_detail_page.qml" && !window.detailFromCoaching)
                     onClicked: window.showPage("admin_service_page.qml")
                 }
 
@@ -197,6 +216,16 @@ Window {
                     iconName: "file-chart-column"
                     current: window.currentPage === "admin_reports_page.qml"
                     onClicked: window.showPage("admin_reports_page.qml")
+                }
+
+                // 員工輔導（PLAN1 W2，T45）：改善行動的清單、後續服務、完成或調整
+                SidebarButton {
+                    id: coachingButton
+                    objectName: "coachingButton"
+                    text: qsTr("Coaching")
+                    iconName: "clipboard-check"
+                    current: window.currentPage === "admin_coaching_page.qml" || window.detailFromCoaching
+                    onClicked: window.showPage("admin_coaching_page.qml")
                 }
 
                 SidebarButton {
@@ -301,13 +330,15 @@ Window {
             }
         }
 
-        // ⌘1～⌘5：照側邊欄的順序換頁（UX-41）。Qt 在 macOS 上的 Ctrl 就是 ⌘。管理員端只有 5 頁，⌘6 沒有作用。
+        // ⌘1～⌘6：照側邊欄的順序換頁（UX-41）。Qt 在 macOS 上的 Ctrl 就是 ⌘。管理員端有 6 頁（PLAN1 W2 加了 Coaching，
+        // 放在 Settings 前面，Settings 從 ⌘5 變成 ⌘6），⌘7 沒有作用。
         // 放在側邊欄裡、不直接放在 Window 底下：模態對話框開著時就不會觸發
         Shortcut { sequence: "Ctrl+1"; onActivated: window.activateNav(homeButton) }
         Shortcut { sequence: "Ctrl+2"; onActivated: window.activateNav(addAccountButton) }
         Shortcut { sequence: "Ctrl+3"; onActivated: window.activateNav(servicesButton) }
         Shortcut { sequence: "Ctrl+4"; onActivated: window.activateNav(reportsButton) }
-        Shortcut { sequence: "Ctrl+5"; onActivated: window.activateNav(settingsButton) }
+        Shortcut { sequence: "Ctrl+5"; onActivated: window.activateNav(coachingButton) }
+        Shortcut { sequence: "Ctrl+6"; onActivated: window.activateNav(settingsButton) }
         // ⌘W：關掉主視窗，和紅色按鈕一樣走 onClosing（N1）
         Shortcut { sequence: "Ctrl+W"; onActivated: window.close() }
     }
@@ -413,6 +444,16 @@ Window {
     Connections {
         target: reportsModel
         function onOpenRequested(reportId) { window.openReport(reportId) }
+    }
+
+    // 員工輔導（PLAN1 W2，T45）：時間註記、Open Service 換到明細頁並跳到那一秒；「Open in Coaching」、通知的 Open
+    // 換到 Coaching（coachingModel 已經選好那一項）。登出之後 coachingModel 是 null，Connections 不接
+    Connections {
+        target: typeof coachingModel !== "undefined" ? coachingModel : null
+        function onOpenServiceRequested(serviceId, startTime, seconds, backPage) {
+            window.openServiceDetailAt(serviceId, startTime, seconds, backPage)
+        }
+        function onOpenActionRequested(actionId) { window.showPageNow("admin_coaching_page.qml") }
     }
 
     // 通知堆疊（DS-21）：內容區的右下角、距邊 24，蓋在頁面和對話框上面。

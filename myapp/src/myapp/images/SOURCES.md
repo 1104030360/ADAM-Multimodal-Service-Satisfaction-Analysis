@@ -48,7 +48,7 @@
 
 ## 介面的圖示（`qml/components/icons/`）
 
-共用元件、頁面和側邊欄的 68 個 SVG 圖示。它們放在 `myapp/src/myapp/qml/components/icons/`（側邊欄的在 `nav/`），不在這個資料夾，但來源和授權一起記在這裡。
+共用元件、頁面和側邊欄的 78 個 SVG 圖示。它們放在 `myapp/src/myapp/qml/components/icons/`（側邊欄的在 `nav/`），不在這個資料夾，但來源和授權一起記在這裡。
 
 - **來源**：[Lucide](https://lucide.dev)（https://github.com/lucide-icons/lucide）的 npm 套件 `lucide-static` 1.58.0，官方 tarball `lucide-static-1.58.0.tgz`（integrity `sha512-VFE2ZEq3yEwjBH0El9CA9lHgDWKKXPKgKxFzX+/JN1FPa4maQbtl/pT4B62aJkUEpODT5octDsyGy7tPVE2svQ==`，SHA-1 `838a9ef1c25275491cae326439c576ba0b930ef4`，和 npm registry 記錄的相同）。
   - 2026-11-01 新版介面（`docs/rebuild/new-UIUX/`）把 tarball 裡的 2159 個圖示放在本機的 `docs/rebuild/assets/sources/lucide-all/`，用 `docs/rebuild/assets/scripts/make_icon.py` 上色，兩個都被 git 忽略。
@@ -77,7 +77,8 @@
 | `chevron-right_textDisabled.svg` | `textDisabled` `#6E747D` | `ReportsView.qml` | Feather |
 | `circle-alert_errorOnDark.svg` | `errorOnDark` `#FF9A90` | `FieldError.qml`、`InlineError.qml`、`ServiceSearchField.qml`、`SettingsDevices.qml`、`Toast.qml`、`login.qml`、`record_widget.qml` | Feather |
 | `circle-check_successOnDark.svg` | `successOnDark` `#81C784` | `SettingsDevices.qml`、`StatusChip.qml`、`Toast.qml`、`OverviewCard.qml`、`ServiceOutcomeCard.qml`、`record_widget.qml` |  |
-| `circle-dashed_textPrimary.svg` | `textPrimary` `#ECEEF1` | `StatusChip.qml`、`ServiceOutcomeCard.qml` |  |
+| `circle-dashed_textPrimary.svg` | `textPrimary` `#ECEEF1` | `StatusChip.qml`、`ServiceOutcomeCard.qml`、`CoachingChip.qml` |  |
+| `circle-slash_textMuted.svg` | `textMuted` `#9AA1AB` | `CoachingChip.qml`（Cancelled） |  |
 | `circle-user-round_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `PageHeader.qml` |  |
 | `circle-x_errorOnDark.svg` | `errorOnDark` `#FF9A90` | `StatusChip.qml`、`ServiceOutcomeCard.qml` | Feather |
 | `clipboard-list_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `ServiceOutcomeCard.qml` |  |
@@ -95,6 +96,8 @@
 | `loader-circle_actionPrimaryText.svg` | `actionPrimaryText` `#0E1013` | `BusyButton.qml` |  |
 | `loader-circle_chromeOnLight.svg` | `chromeOnLight` `#0E1013` | `BusyButton.qml` |  |
 | `loader-circle_textSecondary.svg` | `textSecondary` `#B4BAC2` | `BusyButton.qml`、`ServiceSearchField.qml`、`SettingsDevices.qml`、`record_widget.qml` |  |
+| `map-pin_actionSecondaryText.svg` | `actionSecondaryText` `#ECEEF1` | `CoachingCard.qml`（Add Marker） |  |
+| `map-pin_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `CoachingCard.qml`、`CoachingDetail.qml`（時間註記） |  |
 | `mic-off_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `SettingsDevices.qml` |  |
 | `mic_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `SettingsDevices.qml`、`record_widget.qml` |  |
 | `pause_actionPrimaryText.svg` | `actionPrimaryText` `#0E1013` | `ServiceDetailView.qml` |  |
@@ -103,6 +106,9 @@
 | `rotate-cw_actionSecondaryText.svg` | `actionSecondaryText` `#ECEEF1` | `SettingsDevices.qml`、`record_widget.qml` |  |
 | `scan-face_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `OverviewCard.qml` |  |
 | `search_textFaint.svg` | `textFaint` `#8E959F` | `ServiceSearchField.qml` | Feather |
+| `target_chromeIcon.svg` | `chromeIcon` `#E6E8EB` | `CoachingView.qml`（選到的行動） | Feather |
+| `target_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `CoachingCard.qml`、`CoachingView.qml` | Feather |
+| `target_textFaint.svg` | `textFaint` `#8E959F` | `CoachingView.qml` | Feather |
 | `triangle-alert_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `OverviewCard.qml` | Feather |
 | `triangle-alert_textOnDark.svg` | `textOnDark` `#FFFFFF` | `OverviewCard.qml` | Feather |
 | `triangle-alert_warningOnDark.svg` | `warningOnDark` `#FFB74D` | `SettingsDevices.qml`、`Toast.qml`、`ServiceDetailView.qml`、`ServiceOutcomeCard.qml`、`record_widget.qml` | Feather |
@@ -116,6 +122,8 @@
 | `x_chromeIcon.svg` | `chromeIcon` `#E6E8EB` | `Toast.qml` | Feather |
 | `nav/brain-circuit_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | 側邊欄（`SidebarButton.qml`） |  |
 | `nav/brain-circuit_navItemCurrentText.svg` | `navItemCurrentText` `#0E1013` | 側邊欄（`SidebarButton.qml`） |  |
+| `nav/clipboard-check_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | 側邊欄（`SidebarButton.qml`）：Coaching |  |
+| `nav/clipboard-check_navItemCurrentText.svg` | `navItemCurrentText` `#0E1013` | 側邊欄（`SidebarButton.qml`）：Coaching |  |
 | `nav/file-chart-column_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | 側邊欄（`SidebarButton.qml`） |  |
 | `nav/file-chart-column_navItemCurrentText.svg` | `navItemCurrentText` `#0E1013` | 側邊欄（`SidebarButton.qml`） |  |
 | `nav/history_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | 側邊欄（`SidebarButton.qml`） |  |
@@ -126,6 +134,8 @@
 | `nav/power_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | 側邊欄（`SidebarButton.qml`）：Quit | Feather |
 | `nav/settings_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | 側邊欄（`SidebarButton.qml`） |  |
 | `nav/settings_navItemCurrentText.svg` | `navItemCurrentText` `#0E1013` | 側邊欄（`SidebarButton.qml`） |  |
+| `nav/target_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | 側邊欄（`SidebarButton.qml`）：My Actions | Feather |
+| `nav/target_navItemCurrentText.svg` | `navItemCurrentText` `#0E1013` | 側邊欄（`SidebarButton.qml`）：My Actions | Feather |
 | `nav/user-round-plus_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | 側邊欄（`SidebarButton.qml`） |  |
 | `nav/user-round-plus_navItemCurrentText.svg` | `navItemCurrentText` `#0E1013` | 側邊欄（`SidebarButton.qml`） |  |
 | `nav/video_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | 側邊欄（`SidebarButton.qml`） |  |
@@ -148,8 +158,10 @@ f2f751f120735e513fbd1f89fa9a5785832eda8dc301c442fd918582641c3f9a  chevron-right.
 136cb1a270216ccd678be230acbab73771349372b8ecb9283116528d5c4ae269  circle-alert.svg
 e963fb03e3180118ca0b99fba7cc9644769dc61a35280e3da75fc3a65fd450c4  circle-check.svg
 2ea5a8a81920485da3eb70bdc8e2c349df0311fd7888ba0e9d85dcac0db3b512  circle-dashed.svg
+114f00547cfafa38cb5d319c372376a00ed9870bceb60a05899d38aefb41706c  circle-slash.svg
 c7e6ee719aeb7c0e71d6afefa3f8946fcd7232506e881d9666a86f8904ba23bd  circle-user-round.svg
 2b16f7f66feba8412175c1b3c45f793cb603f803b6c9de6daa16a7a928850cbd  circle-x.svg
+419ad1a8415d07a13d97035407452511c7c60fcda4fda1c47819ea1f21308386  clipboard-check.svg
 ac4c40e513f4024ba4e96460d59e1693c6f6d6f281773f0d852a004d6be9d618  clipboard-list.svg
 863f184bbb4460fd133fb3da9b84b9158017d6af5b187c9f09b79cae0d1f972d  clock.svg
 195448b5abcebcebbb2931d3b4d3079fbe26590f8b197033158c4cc4c9100a48  download.svg
@@ -164,6 +176,7 @@ dbfcfe7ae82b8d9d092c2165d21aa6b93330f8b4c04e6d5e1b270b905f13df9a  house.svg
 bd039cbc60abc0af2d241232fa6fe76da45c974a8928141b266b15435ca26e0c  info.svg
 8ef4c230a13382644c11c1042e120c9cc00196856765bf84bde2362d671d0b50  loader-circle.svg
 595115f16ef08ee211d577e0dab39e448faf9ba85b67ac21704e01656c7724ce  log-out.svg
+86f1f02ac1041c5f63d6375380415150fa8de97ce8744aa2f0154cd94c382758  map-pin.svg
 b22e81c1ed6523da0a711af1fd25086b5bea96dd8f3fba7aa87fc42b025517d5  mic.svg
 4feda43e74b4dc00d72e65cfae9caf534c6ed1bd9f09c1a49088826006bec3e0  mic-off.svg
 d764efc7d23340a615d7cec56ca0a6e7fb10ba2474559a2267535d21b66e0672  pause.svg
@@ -174,6 +187,7 @@ dd6ff4af3d5e0a6d2ae6167f62b2edf3b45389ff36abec1a1a5980d53f57a102  power.svg
 78ad58a828761b1f4a1fbe68acf4a9f4cbc89b2dc66e671888f1038a21498a3f  scan-face.svg
 014a4a94c906b6a363be5c070d22a3323eff9b40e4caca52b97e0c098b690a85  search.svg
 109df42e03bb5382fc66f3195e30463cc8ff6f2edd8d8597e62c2de862bd0140  settings.svg
+844c331f6ab8cf6f418c582d2acb5dd671fa610199f7c00f68f3043fcb7ba6f7  target.svg
 57b21e3ead643bb1eb69e0eed7fbcd8820b77491124c26b1bb342b0e1079711a  triangle-alert.svg
 868173535cd3a65071d2527e5284ad1d1a3144464f8a107fdab47314c2a945e8  upload.svg
 fc3d8f3566fbce5eeb689eff876627c3c8dc242ff2e5516e3dc0783c3bb56a60  user-round-plus.svg

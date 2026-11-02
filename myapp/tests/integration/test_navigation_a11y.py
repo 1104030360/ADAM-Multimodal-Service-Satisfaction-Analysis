@@ -30,13 +30,15 @@ QML_DIR = Path(main.__file__).parent / "qml"
 LOGIN_QML = QML_DIR / "pages" / "login.qml"
 NAV_ICONS = QML_DIR / "components" / "icons" / "nav"
 
-# 側邊欄由上到下：(objectName, 文字（DS-51）, 頁面, Lucide 圖示)；順序也是 ⌘1～⌘6
+# 側邊欄由上到下：(objectName, 文字（DS-51）, 頁面, Lucide 圖示)；順序也是 ⌘1～⌘7（管理員端 ⌘1～⌘6）。
+# PLAN1 W2（T45）：服務人員的 My Actions、管理員的 Coaching 放在 Settings 前面
 STAFF = SimpleNamespace(module=server_home_init, account=STAFF_ID, detail_page="server_service_detail_page.qml", pages=[
     ("homeButton", "Home", "server_home_button.qml", "house"),
     ("recordButton", "Record", "record_widget.qml", "video"),
     ("analysisButton", "Analysis", "analysis.qml", "brain-circuit"),
     ("servicesButton", "Services", "server_service_page.qml", "history"),
     ("reportsButton", "Reports", "server_reports_page.qml", "file-chart-column"),
+    ("actionsButton", "My Actions", "server_actions_page.qml", "target"),
     ("settingsButton", "Settings", "server_setting_button.qml", "settings"),
 ])
 ADMIN = SimpleNamespace(module=admin_home_init, account=ADMIN_ID, detail_page="admin_service_detail_page.qml", pages=[
@@ -44,6 +46,7 @@ ADMIN = SimpleNamespace(module=admin_home_init, account=ADMIN_ID, detail_page="a
     ("addAccountButton", "Add Account", "admin_add_page.qml", "user-round-plus"),
     ("servicesButton", "Services", "admin_service_page.qml", "history"),
     ("reportsButton", "Reports", "admin_reports_page.qml", "file-chart-column"),
+    ("coachingButton", "Coaching", "admin_coaching_page.qml", "clipboard-check"),
     ("settingsButton", "Settings", "admin_setting_page.qml", "settings"),
 ])
 # 最下面的兩個（N1）：Log Out、Quit。不會是目前頁面
@@ -211,8 +214,8 @@ def test_command_number_keys_switch_pages_in_sidebar_order(side, engine, service
         else:
             assert button.hasActiveFocus() and button.property("visualFocus")  # 和按那個按鈕一樣，焦點在它上面
     assert announced(ui.window) == "|".join(side.pages[index][1] for index in order)
-    if side is ADMIN:  # 管理員端只有 5 頁：⌘6 沒有作用
-        QTest.keyClick(ui.window, Qt.Key.Key_6, CTRL)
+    if side is ADMIN:  # 管理員端只有 6 頁：⌘7 沒有作用
+        QTest.keyClick(ui.window, Qt.Key.Key_7, CTRL)
         assert qml(ui.window, "currentPage") == side.pages[0][2]
 
 
