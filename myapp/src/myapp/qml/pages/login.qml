@@ -55,11 +55,12 @@ Window {
         anchors.fill: parent
         focus: true     // 開場圖拿得到按鍵（按任意鍵跳過）
 
-        // 開場圖換成登入表單：表單在上面淡入 durBase，開場圖留在下面不動，不滑動（DS-42）。
-        // 時間是 0 時不套用：Animator 的時間是 0 會停在起點（第二波的教訓）
+        // 開場圖換成登入表單：表單在上面淡入 durBase，開場圖留在下面不動，不滑動（DS-42）。時間是 0 時不套用。
+        // 淡入用 NumberAnimation（在 GUI 執行緒跑），不用 OpacityAnimator：登出後 showAgain() 在視窗還藏著時換上新表單，
+        // Animator 要等 render thread 畫下一格才會走，結果停在 from 的 0，登入視窗只剩一片黑的底色（T47 第 13 節）
         replaceEnter: Transition {
             enabled: Theme.durBase > 0
-            OpacityAnimator { id: formFadeIn; from: 0; to: 1; duration: Theme.durBase; easing.type: Theme.easeEnter }
+            NumberAnimation { id: formFadeIn; property: "opacity"; from: 0; to: 1; duration: Theme.durBase; easing.type: Theme.easeEnter }
         }
         replaceExit: Transition {
             enabled: Theme.durBase > 0

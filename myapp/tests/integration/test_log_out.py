@@ -108,19 +108,13 @@ def context(app, name):
 
 
 @BOTH_SIDES
-def test_logging_out_of_full_screen_leaves_full_screen_before_the_login_window_shows(app, side):
-    """macOS：全螢幕的外殼直接藏起來，會留下一整片黑的桌面空間，登入視窗在另一個空間看不到（使用者在真機上
-    遇到的，T47）。所以先離開全螢幕，登入視窗才出現；這個帳號記住的全螢幕（S1）不會被登出時的離開全螢幕改掉。"""
+def test_logging_out_of_full_screen_keeps_the_accounts_full_screen_mode(app, side):
+    """全螢幕的外殼直接藏起來（macOS 會自己切回桌面空間，真機量過，T47 第 13 節）。登出時視窗的變化不是使用者
+    選的：這個帳號記住的全螢幕（S1）不會被改掉，同一個帳號再登入還是全螢幕。"""
     shell = app.log_in(side.username, side.password)
     assert shell.visibility() == QWindow.Visibility.FullScreen  # 第一次登入是全螢幕（S1）
-    order = []
-    shell.visibilityChanged.connect(lambda visibility: order.append(("shell", visibility)))
-    app.login.visibleChanged.connect(lambda visible: order.append(("login", visible)))
     log_out(app, shell)
-    assert order[0][0] == "shell" and order[0][1] != QWindow.Visibility.FullScreen, order
-    assert order.index(("login", True)) > 0, order  # 先離開全螢幕，登入視窗才出現
-
-    shell = app.log_in(side.username, side.password)  # 同一個帳號再登入：還是全螢幕
+    shell = app.log_in(side.username, side.password)
     assert shell.visibility() == QWindow.Visibility.FullScreen
 
 
@@ -225,6 +219,9 @@ def test_log_out_returns_to_a_fresh_login_form_and_the_next_account_sees_its_own
 
     form = qml(app.login, "stackView.currentItem")
     assert form.objectName() == "loginForm" and qml(app.login, "stackView.depth") == 1  # 沒有開場圖
+    # 看得到：新表單在登入視窗還藏著的時候換上去，淡入要真的走完。用 render thread 的 Animator 的話，
+    # 視窗沒在畫就停在 0，使用者只看到一片黑的底色（真機上遇到的，T47 第 13 節）
+    wait_until(lambda: qml(form, "opacity") == 1 and qml(form, "visible"))
     assert (qml(form, "username_textfield.text"), qml(form, "password_textfield.text")) == ("", "")
     assert qml(form, "error_message.text") == ""
     wait_until(lambda: qml(form, "username_textfield.activeFocus"))  # 一回來就能打帳號

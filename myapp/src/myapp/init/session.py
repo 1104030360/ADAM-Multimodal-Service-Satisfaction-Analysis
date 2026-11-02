@@ -12,15 +12,11 @@
 """
 import logging
 
-from PySide6.QtCore import QObject, QTimer, Signal, Slot
-from PySide6.QtGui import QWindow
+from PySide6.QtCore import QObject, Signal, Slot
 
 from .record_widget import QuitGuard
 
 logger = logging.getLogger(__name__)
-
-# 登出時離開全螢幕最多等多久（macOS 的離開動畫約 0.7 秒）：收不到視窗模式改變的通知，時間到也照樣換回登入視窗
-LEAVE_FULL_SCREEN_TIMEOUT_MS = 1500
 
 
 class ShellSession(QObject):
@@ -36,8 +32,6 @@ class ShellSession(QObject):
         self._registered = {}   # launch() 註冊的 context property：名稱 → 物件
         self._window = None
         self._ended = False
-        self._finished = False  # 登出的後半（登入視窗出現、外殼刪掉）做過了
-        self._leaving_full_screen = False   # 登出時正在離開全螢幕（接了外殼的 visibilityChanged）
 
     @property
     def ended(self):
@@ -68,8 +62,8 @@ class ShellSession(QObject):
     def end(self):
         """登出（外殼問過了，home 也停掉了自己的東西）。回傳 False 表示已經登出過。
 
-        順序：取消背景工作 → 清掉通知 →（全螢幕的話先離開全螢幕）→ 登入視窗出現 → 外殼藏起來、刪掉。
-        登入視窗先出現，app 一直有看得到的視窗，不會因為「最後一個視窗關了」就結束。
+        順序：取消背景工作 → 清掉通知 → 登入視窗出現 → 外殼藏起來、刪掉。登入視窗先出現，app 一直有看得到的視窗，
+        不會因為「最後一個視窗關了」就結束。
         """
         if self._ended:
             return False
@@ -80,44 +74,16 @@ class ShellSession(QObject):
         # 下一個帳號不該看到這個帳號的通知（例如 Analysis complete 的 View Results）。沒存完的錄影記在本機，
         # 同一個帳號下次登入時再跳出來（T26）
         self.services.notifier.clear()
-        # 登入視窗開著的時候，不留這個帳號的偏好（S1、S2）：還沒寫入的音量先寫進它自己的 key，其他回到預設。
-        # 要在離開全螢幕之前換：UiPrefs 只記「現在這個帳號」的視窗模式變化，登出時的離開全螢幕不是使用者選的，
-        # 不能讓這個帳號下次登入變成視窗模式
-        self.services.ui_prefs.useAccount("")
-        window = self._window
-        if window is not None and window.visibility() == QWindow.Visibility.FullScreen:
-            # macOS：全螢幕的視窗住在自己的桌面空間。直接藏起來，那個空間會留下一整片黑，登入視窗在另一個空間，
-            # 使用者看不到、也登入不了（使用者在真機上遇到的，T47）。先離開全螢幕，變回視窗之後才換成登入視窗
-            self._leaving_full_screen = True
-            window.visibilityChanged.connect(self._left_full_screen)
-            QTimer.singleShot(LEAVE_FULL_SCREEN_TIMEOUT_MS, self, self._finish_log_out)
-            window.showNormal()
-            return True
-        self._finish_log_out()
-        return True
-
-    @Slot(QWindow.Visibility)
-    def _left_full_screen(self, visibility):
-        """登出時外殼的視窗模式變了：離開全螢幕了就接著做登出的後半。
-
-        等下一輪事件再做：這個通知可能是 showNormal() 做到一半發的，當場藏起來，showNormal() 接著又會把視窗顯示回來。
-        """
-        if visibility != QWindow.Visibility.FullScreen:
-            QTimer.singleShot(0, self, self._finish_log_out)
-
-    @Slot()
-    def _finish_log_out(self):
-        """登出的後半：登入視窗出現，外殼藏起來、刪掉。離開全螢幕之後（或等太久）只做一次。"""
-        if self._finished:
-            return
-        self._finished = True
         self.loggedOut.emit()
         window, self._window = self._window, None
         if window is not None:
-            if self._leaving_full_screen:
-                window.visibilityChanged.disconnect(self._left_full_screen)
+            # 全螢幕也直接藏：macOS 會自己切回原本的桌面空間，登入視窗就在使用者眼前（真機量過，T47 第 13 節）
             window.hide()
             window.deleteLater()    # 不能當場刪：登出是從這個視窗的 QML（按鈕的 handler）呼叫的
+        # 登入視窗開著的時候，不留這個帳號的偏好（S1、S2）：還沒寫入的音量先寫進它自己的 key，其他回到預設。
+        # 外殼已經藏起來了：它的視窗模式變化不會記到別的帳號（UiPrefs 只記現在這個帳號、還開著的視窗）
+        self.services.ui_prefs.useAccount("")
+        return True
 
     @Slot()
     def _window_destroyed(self):

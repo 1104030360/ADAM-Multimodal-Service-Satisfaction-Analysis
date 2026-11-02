@@ -434,8 +434,7 @@ def test_log_out_while_uploading_asks_with_the_upload_warning(engine, staff, ser
     qml(window, "logoutButton.click()")
     wait_until(lambda: qml(dialog, "opened"))
     qml(confirm, "clicked()")  # Log Out Anyway
-    assert home.session.ended
-    wait_until(lambda: not window.isVisible())  # 全螢幕時先離開全螢幕，之後才藏起來（T47）
+    assert home.session.ended and not window.isVisible()
     assert finder.recorder is None  # 錄影視窗也關了
     wait_until(lambda: not services.tasks.isBusy(f"upload:{sid}"))  # 上傳取消了
     assert db.rows("SELECT COUNT(*) FROM tbl_service") == [(0,)]
