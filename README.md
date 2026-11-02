@@ -37,7 +37,7 @@ The desktop client accesses MySQL and S3 directly and calls an HTTP API to reque
 | MySQL 8.4 | Accounts, service states, scores, file locations, and report publication records |
 | S3 / boto3 | Upload and download recordings, charts, transcripts, report data, PDFs, and profile photos |
 | Analysis/report API | Process recordings, write analysis results, and generate PDFs |
-| Ollama Cloud (optional) | Generate service-report explanations from existing scores, statistics, and translated transcripts |
+| Ollama Cloud (optional) | Generate service-report explanations, service outcomes, and to-dos from existing scores and translated transcripts |
 
 ### Real analyzer and test service
 
@@ -45,12 +45,25 @@ There are two distinct service implementations in this local checkout:
 
 | Implementation | Local path | Behavior |
 | --- | --- | --- |
-| AWS-adapted real analyzer | `docs/rebuild/analyzer/` | Runs the video, audio, and text-analysis pipeline; generates scores, charts, and transcripts |
+| AWS-adapted real analyzer | `docs/rebuild/analyzer/` | Runs the full video, audio, and text pipeline on the EC2 CPU (Whisper, pyannote, Wav2Vec2, DeepFace); generates scores, charts, transcripts, and report data |
 | Placeholder test service | `docs/rebuild/analysis_service/` | Generates test scores, charts, and transcripts to exercise the application workflow |
 
 The original analysis source is also present in `service_analyzer/`. These directories are excluded from Git. Their absence from a fresh clone does not mean that the real analysis code does not exist or cannot already be deployed.
 
-**EC2 is the host; the deployed code determines which implementation runs.** The EC2 tutorial starts with the test service, while rebuild step 6 describes deploying the real analyzer. Local documentation alone does not establish which image is currently running on an EC2 instance.
+**EC2 is the host; the deployed code determines which implementation runs.** The EC2 tutorial starts with the test service. Since 2026-11-02 the EC2 instance runs the real analyzer (`adam-analyzer:1`, Whisper `medium`), deployed with `docs/rebuild/real-analyze/DEPLOY.md` after an end-to-end run on that instance. Its `/healthz` reports `"models":"ready"`, which the test service does not; check it before relying on this, because local documentation alone does not establish which image is running.
+
+### Real analysis pipeline
+
+![ADAM real analysis pipeline: pyannote, faster-whisper, OpenCC and opus-mt, Wav2Vec2, and DeepFace on one EC2 instance](assets/readme/analysis-pipeline.svg)
+
+The real analyzer runs every model on the EC2 instance's CPU and calls no AWS AI service. Amazon Transcribe and Amazon Translate are listed only under the AWS Paid plan, so speech-to-text and translation also run locally:
+
+- **Who spoke when:** pyannote 3.1 runs once per service. Its speaker turns feed both the transcript and the voice-emotion step, so both use the same staff/customer mapping (the speaker with more turns is staff).
+- **Text:** faster-whisper (CTranslate2, int8) transcribes the Chinese speech; each word goes to the speaker turn it overlaps most; OpenCC converts the text to Taiwan Traditional Chinese, and opus-mt-zh-en translates each sentence to English for VADER. Sentences that pyannote did not hear (Whisper hallucinations in silence) are dropped.
+- **Voice and face:** Wav2Vec2 scores voice emotion per speaker turn; DeepFace scores the customer (`cam0`) and staff (`cam1`) cameras once per second.
+- **Results:** scores, five charts, the transcript, and report data are saved to RDS and S3. Reports draw the Audio, Text, and Facial charts from the report data; Ollama Cloud optionally adds explanations and the service outcome.
+
+Models are downloaded once into `/opt/adam/models` (the gated pyannote models need a Hugging Face token for that one download) and loaded offline afterwards. On the EC2 instance (m7i-flex.large: 2 vCPU, 8 GiB), the whole service analyses a 1-minute two-person conversation in about 3 minutes with the default `medium` Whisper model (1.7% character error rate on the test dialogue, every word attributed to the right speaker) and peaks at about 5 GiB of memory. `WHISPER_MODEL` selects `small`, `medium`, or `large-v3-turbo`. A local end-to-end test with real models, the Whisper size comparison, and the EC2 deployment steps are in `docs/rebuild/analyzer/e2e/` and `docs/rebuild/real-analyze/`.
 
 ### Report explanations
 

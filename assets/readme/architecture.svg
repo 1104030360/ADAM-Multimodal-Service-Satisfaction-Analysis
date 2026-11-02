@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1140" viewBox="0 0 1600 1140" role="img" aria-labelledby="title desc">
 <title id="title">ADAM architecture</title>
-<desc id="desc">The PySide6 and QML desktop records services, reviews media and displays reports. It connects directly to S3 and RDS and calls an analysis/report API on EC2. The deployed service may be the real analyzer or a placeholder test implementation. Optional Ollama Cloud calls generate report explanations.</desc>
+<desc id="desc">The PySide6 and QML desktop records services, reviews media and displays reports. It connects directly to S3 and RDS and calls an analysis/report API on EC2. The deployed service may be the real analyzer, which runs Whisper and the other models on the EC2 CPU, or a placeholder test implementation. Optional Ollama Cloud calls generate report explanations.</desc>
 <!-- Colors and typography follow myapp/src/myapp/qml/components/Theme.qml. -->
 <defs>
 <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#E6E8EB"/></marker>
@@ -40,7 +40,7 @@ text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title
 <text x="824" y="280" class="heading" >EC2 · Analysis &amp; reports API</text>
 <text x="824" y="318" class="body" >POST /analyze   ·   POST /reports</text>
 <text x="824" y="352" class="body" >Run analysis, store results and generate PDFs</text>
-<text x="824" y="383" class="small" >Real analyzer or test service, selected by deployed image</text>
+<text x="824" y="383" class="small" >Real analyzer on the CPU since 2026-11-02 (/healthz: models ready)</text>
 <rect x="792" y="490" width="332" height="244" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
 <text x="824" y="535" class="heading" >Amazon S3</text>
 <text x="824" y="577" class="body" >Media · Charts · Text</text>
@@ -65,9 +65,9 @@ text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title
 <rect x="804" y="823" width="322" height="34" rx="9" fill="#0B0C0E"/><text x="965" y="846" class="label" text-anchor="middle" fill="#ECEEF1">Query / update database (TLS)</text>
 <rect x="48" y="900" width="660" height="170" rx="16" fill="#1A1D21" stroke="#2C3036" stroke-width="1.5"/>
 <text x="80" y="938" class="heading" >Analyzer implementations</text>
-<text x="80" y="975" class="small" >Real analyzer: docs/rebuild/analyzer/</text>
+<text x="80" y="975" class="small" >Real analyzer: docs/rebuild/analyzer/ · Whisper on the CPU</text>
 <text x="80" y="1008" class="small" >Test service: docs/rebuild/analysis_service/</text>
-<text x="80" y="1041" class="small" >Both can run on EC2; verify the deployed image.</text>
+<text x="80" y="1041" class="small" >EC2 runs the real analyzer; check /healthz for the image.</text>
 <text x="792" y="895" class="label" >OPTIONAL EXTERNAL AI · OUTSIDE AWS</text>
 <rect x="792" y="920" width="728" height="150" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
 <text x="824" y="961" class="heading" >Ollama Cloud</text>
