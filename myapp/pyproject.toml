@@ -1,10 +1,80 @@
 # This project was generated with 0.3.19 using template: https://github.com/beeware/briefcase-template@v0.3.19
-[tool.briefcase]
-project_name = "myapp"
-bundle = "com.example"
+
+# 套件清單只寫在這裡：uv sync 照它（與 uv.lock）安裝 .venv，briefcase 也從這裡讀 requires
+[project]
+name = "myapp"
 version = "0.0.1"
+# PEP 639 的寫法；原本 [tool.briefcase] 的 license.file 會讓 briefcase 每次都印一大段警告
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+requires-python = "==3.13.*"
+# 桌面用戶端（macOS、Python 3.13）的直接依賴。PyAudio 需要先安裝 PortAudio：brew install portaudio
+dependencies = [
+    "PySide6_Essentials==6.12.0",
+    "PySide6_Addons==6.12.0",
+    "opencv-python==4.10.0.84",
+    "PyAudio==0.2.14",
+    "mysql-connector-python==26.10.0",
+    "python-dotenv==1.2.4",
+    "PyMuPDF==1.25.5",
+    "requests==2.34.2",
+    "boto3[crt]==1.43.122",
+]
+
+# 測試用的套件。briefcase dev --test 會把它們當成 test_requires 安裝；
+# 下面 dev 群組的 "myapp[test]" 讓 uv sync 也一起安裝，所以版本只寫在這裡
+[project.optional-dependencies]
+test = [
+    "pytest==9.2.0",
+    "pytest-cov==7.1.0",
+    "moto[s3]==5.2.5",
+]
+
+# 開發工具：uv sync 預設會安裝 dev 群組，但它們不會進到打包出來的 app
+[dependency-groups]
+dev = [
+    "briefcase==0.4.7",
+    "myapp[test]",
+]
+
+[tool.uv]
+# 這個 app 只在 macOS 上執行，uv.lock 只為 macOS 解析
+environments = ["sys_platform == 'darwin'"]
+# uv add 新增套件時寫成 ==（和上面一樣釘死版本）
+add-bounds = "exact"
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests/unit", "tests/integration"]  # 先跑快的單元測試
+pythonpath = ["src"]          # 測試要 import myapp，而套件放在 src/ 底下
+addopts = ["-ra"]             # 結尾列出 skip、xfail 的原因
+strict = true                 # 未註冊的 marker、xfail 意外通過、設定打錯都算失敗
+empty_parameter_set_mark = "fail_at_collect"  # parametrize 拿到空清單（例如路徑寫錯）就報錯，不是默默略過
+filterwarnings = [
+    # PyMuPDF（SWIG 產生的擴充模組）在 Python 3.13 的已知警告，和這個專案的程式無關
+    "ignore:builtin type .* has no __module__ attribute:DeprecationWarning",
+]
+markers = [
+    "integration: 需要 Docker（拋棄式 MySQL 8.4 容器）。只跑單元測試：uv run pytest -m \"not integration\"",
+]
+
+[tool.coverage.run]
+source = ["myapp"]
+branch = true
+omit = [
+    # Briefcase 範本留下的 QMainWindow；沒有任何地方 import 它（__main__.py 走的是 main.py）
+    "*/myapp/app.py",
+    # 早期用 cv2.imshow 的錄影原型；沒有任何地方 import，而且它 import 的 google-cloud-storage 已經不在依賴裡
+    "*/myapp/init/test.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 75
+
+[tool.briefcase]
+bundle = "com.example"
 url = "https://example.com/myapp"
-license.file = "LICENSE"
 author = "Timmy"
 author_email = "5961timtim@gmail.com"
 
@@ -27,134 +97,11 @@ test_sources = [
     "tests",
 ]
 
-requires = [
-    "absl-py==1.0.0",
-    "arrow==1.3.0",
-    "astunparse==1.6.3",
-    "beautifulsoup4==4.12.3",
-    "binaryornot==0.4.4",
-    "blinker==1.8.2",
-    "briefcase==0.3.19",
-    "build==1.2.1",
-    "cachetools==5.4.0",
-    "certifi==2024.7.4",
-    "chardet==5.2.0",
-    "charset-normalizer==3.3.2",
-    "click==8.1.7",
-    "colorama==0.4.6",
-    "comtypes==1.4.6",
-    "contourpy==1.2.1",
-    "cookiecutter==2.6.0",
-    "cycler==0.12.1",
-    "deepface==0.0.92",
-    "dmgbuild==1.6.2",
-    "ds-store==1.3.1",
-    "filelock==3.15.4",
-    "fire==0.6.0",
-    "Flask==3.0.3",
-    "flatbuffers==24.3.25",
-    "fonttools==4.53.1",
-    "gast==0.6.0",
-    "gdown==5.2.0",
-    "gitdb==4.0.11",
-    "GitPython==3.1.43",
-    "google-api-core==2.19.1",
-    "google-auth==2.32.0",
-    "google-auth-oauthlib==0.4.6",
-    "google-cloud-core==2.4.1",
-    "google-cloud-storage==1.42.3",
-    "google-crc32c==1.5.0",
-    "google-pasta==0.2.0",
-    "google-resumable-media==2.7.1",
-    "googleapis-common-protos==1.63.2",
-    "grpcio==1.65.1",
-    "gunicorn==22.0.0",
-    "h5py==3.11.0",
-    "idna==3.7",
-    "iniconfig==2.0.0",
-    "itsdangerous==2.2.0",
-    "Jinja2==3.1.4",
-    "keras==3.4.1",
-    "kiwisolver==1.4.5",
-    "libclang==18.1.1",
-    "mac-alias==2.2.2",
-    "Markdown==3.6",
-    "markdown-it-py==3.0.0",
-    "MarkupSafe==2.1.5",
-    "matplotlib==3.8.0",
-    "mdurl==0.1.2",
-    "ml-dtypes==0.4.0",
-    "mtcnn==0.1.1",
-    "mysql-connector-python==8.0.26",
-    "namex==0.0.8",
-    "numpy==1.26.4",
-    "oauthlib==3.2.2",
-    "opencv-python==4.10.0.84",
-    "opencv-python-headless==4.5.5.64",
-    "opt-einsum==3.3.0",
-    "optree==0.12.1",
-    "packaging==24.1",
-    "pandas==2.2.2",
-    "pillow==10.4.0",
-    "pip==24.2",
-    "platformdirs==4.2.2",
-    "pluggy==1.5.0",
-    "proto-plus==1.24.0",
-    "protobuf==3.20.3",
-    "psutil==5.9.8",
-    "pyasn1==0.6.0",
-    "pyasn1-modules==0.4.0",
-    "Pygments==2.18.0",
-    "pyobjc-core==10.3.1",
-    "pyobjc-framework-AVFoundation==10.3.1",
-    "pyobjc-framework-Cocoa==10.3.1",
-    "pyobjc-framework-CoreAudio==10.3.1",
-    "pyobjc-framework-CoreMedia==10.3.1",
-    "pyobjc-framework-Quartz==10.3.1",
-    "pyparsing==3.1.2",
-    "pyproject_hooks==1.1.0",
-    "PySide6==6.7.3",
-    "PySide6_Addons==6.7.3",
-    "PySide6_Essentials==6.7.3",
-    "PySocks==1.7.1",
-    "pytest==8.3.3",
-    "python-dateutil==2.9.0.post0",
-    "python-slugify==8.0.4",
-    "pytz==2024.1",
-    "PyYAML==6.0.1",
-    "requests==2.32.3",
-    "requests-oauthlib==2.0.0",
-    "retina-face==0.0.17",
-    "rich==13.7.1",
-    "rsa==4.9",
-    "setuptools==72.0.0",
-    "shiboken6==6.7.3",
-    "six==1.16.0",
-    "smmap==5.0.1",
-    "soupsieve==2.5",
-    "std-nslog==1.0.3",
-    "tensorboard==2.17.0",
-    "tensorboard-data-server==0.7.2",
-    "tensorboard-plugin-wit==1.8.1",
-    "tensorflow==2.17.0",
-    "termcolor==2.4.0",
-    "text-unidecode==1.3",
-    "tf_keras==2.17.0",
-    "tomli_w==1.0.0",
-    "tqdm==4.66.4",
-    "types-python-dateutil==2.9.0.20240316",
-    "typing_extensions==4.12.2",
-    "tzdata==2024.1",
-    "urllib3==2.2.2",
-    "Werkzeug==3.0.3",
-    "wheel==0.43.0",
-    "wrapt==1.16.0",
-    "PyAudio"
-]
+# briefcase dev 用 uv 建立自己的隔離環境（.briefcase/myapp/uv-dev.*）
+env_manager = "uv"
 
-test_requires = [
-    "pytest",
-]
+permission.camera = "錄製服務過程時需要使用鏡頭。"
+permission.microphone = "錄製服務過程時需要使用麥克風。"
 
 [tool.briefcase.app.myapp.macOS]
 universal_build = false

@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1240" viewBox="0 0 1600 1240" role="img" aria-labelledby="title desc">
+<title id="title">ADAM workflow</title>
+<desc id="desc">Staff select recording devices, record a session, upload three files and submit analysis. Completed services provide scores, media and charts. Administrators generate, preview and publish reports to the relevant staff member; company-period reports remain admin-only. Failed uploads and analysis can be retried.</desc>
+<!-- Colors and typography follow myapp/src/myapp/qml/components/Theme.qml. -->
+<defs>
+<marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#E6E8EB"/></marker>
+<marker id="arrow-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#C3C8CF"/></marker>
+<marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#9AA1AB"/></marker>
+<marker id="arrow-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#8E959F"/></marker>
+<style>
+text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title{font-size:30px;font-weight:500;fill:#F3F4F6}.subtitle{font-size:21px;fill:#9AA1AB}.section{font-size:28px;font-weight:700}.heading{font-size:26px;font-weight:700}.body{font-size:21px}.small{font-size:19px;fill:#B4BAC2}.label{font-size:19px;font-weight:600}.kicker{font-size:16px;font-weight:600;letter-spacing:1px;fill:#9AA1AB}.white{fill:#15171B}.step{font-size:16px;font-weight:600;letter-spacing:1px;fill:#9AA1AB}.teal{fill:#C3C8CF}.purple{fill:#9AA1AB}
+.wordmark{font-size:48px;font-weight:300;letter-spacing:12px;fill:#F3F4F6}.badge{font-size:17px;font-weight:600;fill:#0E1013}.white{fill:#ECEEF1}.status-warning{font-size:18px;font-weight:600;fill:#FFB74D}.status-info{font-size:18px;font-weight:600;fill:#90CAF9}.status-success{font-size:18px;font-weight:600;fill:#81C784}
+</style>
+</defs>
+<rect width="1600" height="1240" fill="#0B0C0E"/>
+<text x="48" y="84" class="wordmark">ADAM</text><text x="330" y="80" class="title">User workflow</text>
+<text x="48" y="126" class="subtitle" >Record and review services; administrators preview and publish reports.</text>
+<rect x="48" y="148" width="1504" height="88" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="80" y="203" class="heading white" >Sign in to ADAM</text>
+<text x="580" y="203" class="body white" >Level 1 → Staff     |     Levels 2–5 → Administrators</text>
+<text x="48" y="296" class="section" >01  Staff | Record and review a service</text>
+<rect x="48" y="330" width="272" height="218" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="72" y="364" class="step" >STEP 01</text>
+<text x="72" y="402" class="heading" >Record</text>
+<text x="72" y="444" class="small" >Select 2 cameras + mic</text>
+<text x="72" y="476" class="small" >Start / stop recording</text>
+<text x="72" y="521" class="label" >One session, one ID</text>
+<path d="M 320 440 H 356" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-blue)"/>
+<rect x="356" y="330" width="272" height="218" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="380" y="364" class="step" >STEP 02</text>
+<text x="380" y="402" class="heading" >Upload</text>
+<text x="380" y="444" class="small" >2 videos + 1 audio file</text>
+<text x="380" y="476" class="small" >Then save all DB records</text>
+<rect x="372" y="497" width="240" height="36" rx="18" fill="#2D2116"/><text x="380" y="521" class="status-warning">Status 1 · Not analyzed</text>
+<path d="M 628 440 H 664" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-blue)"/>
+<rect x="664" y="330" width="272" height="218" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="688" y="364" class="step" >STEP 03</text>
+<text x="688" y="402" class="heading" >Analysis</text>
+<text x="688" y="444" class="small" >Submit analysis request</text>
+<text x="688" y="476" class="small" >Track progress</text>
+<rect x="680" y="497" width="240" height="36" rx="18" fill="#152539"/><text x="688" y="521" class="status-info">Status 2 · Analyzing</text>
+<path d="M 936 440 H 972" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-blue)"/>
+<rect x="972" y="330" width="272" height="218" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="996" y="364" class="step" >STEP 04</text>
+<text x="996" y="402" class="heading" >Completed</text>
+<text x="996" y="444" class="small" >Scores and charts saved</text>
+<text x="996" y="476" class="small" >Refresh list and notify</text>
+<rect x="988" y="497" width="240" height="36" rx="18" fill="#1A291F"/><text x="996" y="521" class="status-success">Status 3 · Completed</text>
+<path d="M 1244 440 H 1280" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-blue)"/>
+<rect x="1280" y="330" width="272" height="218" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="1304" y="364" class="step" >STEP 05</text>
+<text x="1304" y="402" class="heading" >Services</text>
+<text x="1304" y="444" class="small" >Open this service</text>
+<text x="1304" y="476" class="small" >View media and charts</text>
+<text x="1304" y="521" class="label" >View your own results</text>
+<rect x="48" y="578" width="1504" height="68" rx="14" fill="#2D2116" stroke="#9C5100" stroke-width="1.5"/>
+<text x="80" y="620" class="body" >Retry on failure: keep recordings for upload retries; failed analysis can return to Not analyzed and be submitted again.</text>
+<text x="48" y="724" class="section" >02  Administrators | Generate and publish reports</text>
+<rect x="48" y="760" width="352" height="220" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="72" y="794" class="kicker">ADMINISTRATOR</text>
+<text x="72" y="833" class="heading" >Reports</text>
+<text x="72" y="875" class="body" >Choose report scope</text>
+<text x="72" y="909" class="small" >Service / staff / company</text>
+<text x="72" y="953" class="label" >Create report job</text>
+<path d="M 400 870 H 432" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-blue)"/>
+<rect x="432" y="760" width="352" height="220" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="456" y="794" class="kicker">ANALYSIS / REPORT SERVICE</text>
+<text x="456" y="833" class="heading" >Generate PDF</text>
+<text x="456" y="875" class="body" >Generate and save PDF</text>
+<text x="456" y="909" class="small" >Optional AI for service reports</text>
+<text x="456" y="953" class="label" >Ready for preview</text>
+<path d="M 784 870 H 816" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-blue)"/>
+<rect x="816" y="760" width="352" height="220" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="840" y="794" class="kicker">ADMINISTRATOR</text>
+<text x="840" y="833" class="heading" >Preview &amp; publish</text>
+<text x="840" y="875" class="body" >Admin reviews the PDF</text>
+<text x="840" y="909" class="small" >Publish service / staff reports</text>
+<text x="840" y="953" class="label" >Ready ≠ published</text>
+<path d="M 1168 870 H 1200" fill="none" stroke="#C3C8CF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-teal)"/>
+<rect x="1200" y="760" width="352" height="220" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="1224" y="794" class="kicker teal" >STAFF</text>
+<text x="1224" y="833" class="heading" >Staff Reports</text>
+<text x="1224" y="875" class="body" >Staff opens published reports</text>
+<text x="1224" y="909" class="small" >Only their own reports</text>
+<text x="1224" y="953" class="label" >Download and preview PDF</text>
+<rect x="48" y="1010" width="1504" height="68" rx="14" fill="#1A1D21" stroke="#2C3036" stroke-width="1.5"/>
+<text x="80" y="1052" class="body" >Company-period reports are admin-only. If AI explanations fail, the PDF still displays Explanation unavailable.</text>
+<rect x="48" y="1112" width="1504" height="66" rx="14" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="80" y="1153" class="body" >Both roles: Home dashboard · Settings &amp; profile · Help &amp; connection checks · Log Out / Quit confirmation</text>
+<text x="48" y="1211" class="small" >Placeholder outputs are for workflow tests. The real analyzer runs the model pipeline.</text>
+</svg>
