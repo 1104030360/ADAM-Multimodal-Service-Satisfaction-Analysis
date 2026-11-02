@@ -16,6 +16,7 @@ Built with **Python 3.13, PySide6, and QML**, ADAM provides separate staff and a
 | Record | Record two cameras and one microphone; upload recordings | — |
 | Analysis | Submit analysis, track progress, retry failures, and receive completion notifications | — |
 | Services | Search personal service records; play media and inspect charts | Search service records across staff; play media and inspect charts |
+| Coaching | Respond to goals and acknowledge them in My Actions | Add time markers and goals; review later services and complete, adjust, or withdraw goals |
 | Reports | Read service and period reports published for the signed-in staff member | Generate service, staff-period, and company-period PDFs; preview and publish eligible reports |
 | Add Account | — | Create and manage accounts within the current permission level |
 | Settings | Profile, photo, password, preferences, notifications, and recording devices | Profile, photo, password, and preferences |
@@ -25,7 +26,7 @@ Account level `1` opens the staff interface; levels `2–5` open the administrat
 
 ## Architecture
 
-![ADAM architecture: desktop client, AWS services, and optional external AI](assets/readme/architecture.svg)
+![ADAM architecture: desktop client, real analyzer deployed on EC2, S3, RDS, and optional Ollama Cloud](assets/readme/architecture.png)
 
 The desktop client accesses MySQL and S3 directly and calls an HTTP API to request analysis and PDF generation. AWS deployments use **Amazon RDS for MySQL 8.4**, **Amazon S3**, and an analysis/report service on **Amazon EC2**. Local development can use MySQL, moto, and a test API.
 
@@ -54,7 +55,7 @@ The original analysis source is also present in `service_analyzer/`. These direc
 
 ### Real analysis pipeline
 
-![ADAM real analysis pipeline: pyannote, faster-whisper, OpenCC and opus-mt, Wav2Vec2, and DeepFace on one EC2 instance](assets/readme/analysis-pipeline.svg)
+![ADAM real analysis pipeline: Whisper medium with word-level speaker alignment, CPU emotion models, saved results, and the recorded EC2 benchmark](assets/readme/analysis-pipeline.png)
 
 The real analyzer runs every model on the EC2 instance's CPU and calls no AWS AI service. Amazon Transcribe and Amazon Translate are listed only under the AWS Paid plan, so speech-to-text and translation also run locally:
 
@@ -86,7 +87,7 @@ File locations use `s3://<bucket>/<key>` URLs or the corresponding object keys. 
 
 ## Workflow
 
-![ADAM workflow: record, upload, analyze, review, and publish reports](assets/readme/user-workflow.svg)
+![ADAM workflow: record, upload, analyze, review, publish reports, and follow up through Coaching and My Actions](assets/readme/user-workflow.png)
 
 ### Staff
 
@@ -246,7 +247,7 @@ See [GitHub Actions CI and deployment planning](.github/CI.md) for the macOS wor
 ADAM/
 ├── README.md
 ├── .github/                    GitHub Actions CI and deployment notes
-├── assets/readme/              Architecture and workflow SVGs
+├── assets/readme/              Diagrams: SVG sources and PNG previews
 └── myapp/
     ├── LICENSE
     ├── pyproject.toml          Dependencies, Briefcase, and pytest

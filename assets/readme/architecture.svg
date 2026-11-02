@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1140" viewBox="0 0 1600 1140" role="img" aria-labelledby="title desc">
 <title id="title">ADAM architecture</title>
-<desc id="desc">The PySide6 and QML desktop records services, reviews media and displays reports. It connects directly to S3 and RDS and calls an analysis/report API on EC2. The deployed service may be the real analyzer, which runs Whisper and the other models on the EC2 CPU, or a placeholder test implementation. Optional Ollama Cloud calls generate report explanations.</desc>
+<desc id="desc">The PySide6 and QML desktop records services, reviews results and reports, and supports Coaching and My Actions. It connects directly to private S3 storage and RDS for MySQL over TLS. The real analysis/report service was deployed on EC2 on November 2, 2026, using image adam-analyzer:1 and Whisper medium with int8 on the CPU. Optional Ollama Cloud calls add report explanations, service outcomes and to-dos with checked transcript citations. Deployment status is recorded in the project notes, not a live health check.</desc>
 <!-- Colors and typography follow myapp/src/myapp/qml/components/Theme.qml. -->
 <defs>
 <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#E6E8EB"/></marker>
@@ -14,18 +14,18 @@ text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title
 </defs>
 <rect width="1600" height="1140" fill="#0B0C0E"/>
 <text x="48" y="84" class="wordmark">ADAM</text><text x="330" y="80" class="title">System architecture</text>
-<text x="48" y="126" class="subtitle" >The desktop accesses data and files directly; a separate service runs analysis and generates reports.</text>
+<text x="48" y="126" class="subtitle" >Real models run on EC2; the desktop records, reviews, publishes reports and follows up through coaching.</text>
 <rect x="1260" y="40" width="292" height="44" rx="22" fill="#E6E8EB" stroke="#E6E8EB" stroke-width="1.5"/>
-<text x="1406" y="69" class="badge" text-anchor="middle">macOS · Python 3.13</text>
+<text x="1406" y="69" class="badge" text-anchor="middle">DEPLOYED · 2026-11-02</text>
 <rect x="48" y="160" width="450" height="630" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
 <rect x="760" y="160" width="792" height="630" rx="20" fill="#111316" stroke="#24272C" stroke-width="1.5"/>
 <text x="80" y="204" class="kicker" >DESKTOP CLIENT</text>
 <text x="80" y="249" class="section" >PySide6 / QML</text>
-<text x="792" y="204" class="section" >AWS deployment</text>
+<text x="792" y="204" class="section" >AWS · Real analysis service</text>
 <rect x="80" y="280" width="386" height="112" rx="14" fill="#1A1D21" stroke="#2C3036" stroke-width="1.5"/>
 <text x="104" y="317" class="heading" >Record &amp; review</text>
 <text x="104" y="350" class="body" >2 cameras + microphone</text>
-<text x="104" y="378" class="small" >Sign-in · Home · Services · Reports</text>
+<text x="104" y="378" class="small" >Dashboards · Reports · Coaching</text>
 <rect x="80" y="410" width="386" height="112" rx="14" fill="#1A1D21" stroke="#2C3036" stroke-width="1.5"/>
 <text x="104" y="447" class="heading" >Background tasks</text>
 <text x="104" y="481" class="body" >TaskRunner / DbLane</text>
@@ -34,24 +34,24 @@ text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title
 <text x="104" y="578" class="heading" >Recordings &amp; cache</text>
 <text x="104" y="612" class="body" >Recordings retained for retry</text>
 <text x="104" y="644" class="small" >Download media and preview PDFs</text>
-<text x="80" y="704" class="body" >Staff / admin sessions</text>
-<text x="80" y="741" class="small" >AWS profile + MySQL account</text>
+<text x="80" y="704" class="body" >Staff / admin · My Actions</text>
+<text x="80" y="741" class="small" >macOS · Python 3.13 · Briefcase</text>
 <rect x="792" y="240" width="728" height="166" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
 <text x="824" y="280" class="heading" >EC2 · Analysis &amp; reports API</text>
 <text x="824" y="318" class="body" >POST /analyze   ·   POST /reports</text>
-<text x="824" y="352" class="body" >Run analysis, store results and generate PDFs</text>
-<text x="824" y="383" class="small" >Real analyzer on the CPU since 2026-11-02 (/healthz: models ready)</text>
+<text x="824" y="352" class="body" >Whisper medium · int8 · m7i-flex.large · CPU</text>
+<text x="824" y="383" class="small" >adam-analyzer:1 · model files loaded offline</text>
 <rect x="792" y="490" width="332" height="244" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
 <text x="824" y="535" class="heading" >Amazon S3</text>
 <text x="824" y="577" class="body" >Media · Charts · Text</text>
 <text x="824" y="614" class="body" >PDF reports · Avatars</text>
-<text x="824" y="657" class="small" >Private bucket</text>
+<text x="824" y="657" class="small" >Report data · Private bucket</text>
 <text x="824" y="692" class="small" >boto3 upload / download</text>
 <rect x="1160" y="490" width="360" height="244" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
 <text x="1192" y="535" class="heading" >RDS for MySQL 8.4</text>
 <text x="1192" y="577" class="body" >Accounts · Services · Scores</text>
-<text x="1192" y="614" class="body" >File keys · Report status</text>
-<text x="1192" y="657" class="small" >SQL / Stored procedures</text>
+<text x="1192" y="614" class="body" >File keys · Reports · Coaching</text>
+<text x="1192" y="657" class="small" >Outcomes · SQL / Procedures</text>
 <text x="1192" y="692" class="small" >Verified TLS connection</text>
 <path d="M 498 305 H 792" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-blue)"/>
 <rect x="529" y="259" width="232" height="34" rx="9" fill="#0B0C0E"/><text x="645" y="282" class="label" text-anchor="middle" fill="#ECEEF1">Submit API requests</text>
@@ -64,15 +64,15 @@ text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title
 <path d="M 498 741 H 590 V 843 H 1340 V 734" marker-start="url(#arrow-blue)" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-blue)"/>
 <rect x="804" y="823" width="322" height="34" rx="9" fill="#0B0C0E"/><text x="965" y="846" class="label" text-anchor="middle" fill="#ECEEF1">Query / update database (TLS)</text>
 <rect x="48" y="900" width="660" height="170" rx="16" fill="#1A1D21" stroke="#2C3036" stroke-width="1.5"/>
-<text x="80" y="938" class="heading" >Analyzer implementations</text>
-<text x="80" y="975" class="small" >Real analyzer: docs/rebuild/analyzer/ · Whisper on the CPU</text>
-<text x="80" y="1008" class="small" >Test service: docs/rebuild/analysis_service/</text>
-<text x="80" y="1041" class="small" >EC2 runs the real analyzer; check /healthz for the image.</text>
+<text x="80" y="938" class="heading" >Recorded deployment · November 2, 2026</text>
+<text x="80" y="975" class="small" >EC2 end-to-end test passed with real models.</text>
+<text x="80" y="1008" class="small" >GET /healthz → models: ready</text>
+<text x="80" y="1041" class="small" >Placeholder service remains available for workflow tests.</text>
 <text x="792" y="895" class="label" >OPTIONAL EXTERNAL AI · OUTSIDE AWS</text>
 <rect x="792" y="920" width="728" height="150" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
 <text x="824" y="961" class="heading" >Ollama Cloud</text>
-<text x="824" y="999" class="body" >Scores + statistics + translated transcript → report explanations</text>
-<text x="824" y="1035" class="small" >Disabled or unavailable → Explanation unavailable</text>
+<text x="824" y="999" class="body" >Report explanations · Service outcome · To-dos</text>
+<text x="824" y="1035" class="small" >Transcript citations checked; AI failure does not block PDFs.</text>
 <path d="M 1520 340 H 1574 V 990 H 1520" fill="none" stroke="#9AA1AB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="10 9" marker-end="url(#arrow-purple)"/>
 <path d="M 48 1100 H 100" stroke="#E6E8EB" stroke-width="4"/>
 <text x="112" y="1107" class="small" >API / database</text>

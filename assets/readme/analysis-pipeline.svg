@@ -1,21 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1110" viewBox="0 0 1600 1110" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1230" viewBox="0 0 1600 1230" role="img" aria-labelledby="title desc">
 <title id="title">ADAM real analysis pipeline</title>
-<desc id="desc">The real analyzer runs on one EC2 instance on the CPU. pyannote finds who spoke when; faster-whisper transcribes the Chinese speech and each sentence is attributed to a speaker; OpenCC converts it to Taiwan Traditional Chinese and opus-mt-zh-en translates it for VADER text sentiment. Wav2Vec2 scores voice emotion per speaker and DeepFace scores facial emotion from the customer and staff cameras. Scores, five charts, the transcript and the report data are saved to RDS and S3; reports draw Audio, Text and Facial charts, and Ollama Cloud optionally fills the service outcome and report explanations.</desc>
+<desc id="desc">The real analyzer, deployed on EC2 on November 2, 2026, runs every analysis model on the CPU. pyannote finds speaker turns shared by voice emotion and word-level transcript alignment. faster-whisper medium with int8 transcribes Chinese; OpenCC converts it to Taiwan Traditional Chinese, and opus-mt-zh-en translates it for VADER. Wav2Vec2 scores voice emotion and DeepFace scores facial emotion from the customer and staff cameras. RDS holds scores, state and file references; S3 holds five charts, the transcript and report data. Reports draw Audio, Text and Facial charts, and optional Ollama Cloud calls add service outcomes, to-dos and report explanations. The recorded EC2 test used a 59-second synthetic dialogue, disposable MySQL and moto: 166 seconds for analysis, 1.7 percent character error rate and 5.08 GiB peak RSS.</desc>
 <!-- Colors and typography follow myapp/src/myapp/qml/components/Theme.qml, like architecture.svg. -->
 <defs>
-<marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#E6E8EB"/></marker>
-<marker id="arrow-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#C3C8CF"/></marker>
-<marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#9AA1AB"/></marker>
+<marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#E6E8EB"/></marker>
+<marker id="arrow-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#C3C8CF"/></marker>
+<marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#9AA1AB"/></marker>
 <style>
 text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title{font-size:30px;font-weight:500;fill:#F3F4F6}.subtitle{font-size:21px;fill:#9AA1AB}.heading{font-size:26px;font-weight:700}.body{font-size:21px}.small{font-size:19px;fill:#B4BAC2}.label{font-size:19px;font-weight:600}.kicker{font-size:16px;font-weight:600;letter-spacing:1px;fill:#9AA1AB}
 .wordmark{font-size:48px;font-weight:300;letter-spacing:12px;fill:#F3F4F6}.badge{font-size:17px;font-weight:600;fill:#0E1013}
 </style>
 </defs>
-<rect width="1600" height="1110" fill="#0B0C0E"/>
+<rect width="1600" height="1230" fill="#0B0C0E"/>
 <text x="48" y="84" class="wordmark">ADAM</text><text x="330" y="80" class="title">Real analysis pipeline</text>
-<text x="48" y="126" class="subtitle">Runs on one EC2 instance, CPU only. Models are downloaded once and loaded offline; no AWS AI services.</text>
+<text x="48" y="126" class="subtitle">Deployed on EC2 · m7i-flex.large (2 vCPU, 8 GiB). Models load offline; no AWS AI calls.</text>
 <rect x="1200" y="40" width="352" height="44" rx="22" fill="#E6E8EB" stroke="#E6E8EB" stroke-width="1.5"/>
-<text x="1376" y="69" class="badge" text-anchor="middle">EC2 · m7i-flex.large · CPU</text>
+<text x="1376" y="69" class="badge" text-anchor="middle">Whisper medium · int8 · CPU</text>
 
 <!-- Column headings -->
 <text x="48" y="186" class="kicker">INPUT · S3</text>
@@ -43,10 +43,10 @@ text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title
 <!-- Text lane -->
 <rect x="618" y="206" width="250" height="114" rx="14" fill="#1A1D21" stroke="#2C3036" stroke-width="1.5"/>
 <text x="642" y="244" class="heading">faster-whisper</text>
-<text x="642" y="276" class="small">Chinese speech → text;</text>
-<text x="642" y="302" class="small">sentences → speakers</text>
+<text x="642" y="276" class="small">Chinese speech → text</text>
+<text x="642" y="302" class="small">Words → speaker turns</text>
 <rect x="898" y="206" width="250" height="114" rx="14" fill="#1A1D21" stroke="#2C3036" stroke-width="1.5"/>
-<text x="922" y="244" class="heading">OpenCC · opus-mt</text>
+<text x="922" y="244" class="body">OpenCC · opus-mt</text>
 <text x="922" y="276" class="small">Taiwan Traditional;</text>
 <text x="922" y="302" class="small">English for VADER</text>
 <rect x="1178" y="206" width="374" height="114" rx="14" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
@@ -84,12 +84,12 @@ text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title
 <path d="M 1148 600 H 1178" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
 
 <!-- Results -->
-<path d="M 1365 670 V 742" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<path d="M 1552 263 H 1574 V 700 H 1320 V 746 M 1552 413 H 1574 M 1552 600 H 1574" fill="none" stroke="#E6E8EB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-blue)"/>
 <text x="48" y="728" class="kicker">AFTER EACH ANALYSIS</text>
 <rect x="1088" y="746" width="464" height="226" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
 <text x="1116" y="790" class="heading">Saved results</text>
-<text x="1116" y="826" class="body">RDS: scores · 5 charts · transcript</text>
-<text x="1116" y="860" class="body">S3: charts · text · report-data</text>
+<text x="1116" y="826" class="body">RDS: scores · state · file keys</text>
+<text x="1116" y="860" class="body">S3: 5 charts · text · report-data</text>
 <text x="1116" y="902" class="small">Total score: original .pkl model if</text>
 <text x="1116" y="930" class="small">present, otherwise the average</text>
 <rect x="568" y="746" width="480" height="226" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
@@ -108,11 +108,17 @@ text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title
 <path d="M 1320 972 V 1008 H 288 V 980" fill="none" stroke="#9AA1AB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="10 9" marker-end="url(#arrow-purple)"/>
 <rect x="726" y="991" width="164" height="34" rx="9" fill="#0B0C0E"/><text x="808" y="1014" class="label" text-anchor="middle" fill="#9AA1AB">Transcript</text>
 
+<!-- Recorded benchmark; a synthetic test, not a production workload guarantee. -->
+<rect x="48" y="1048" width="1504" height="110" rx="16" fill="#1A1D21" stroke="#2C3036" stroke-width="1.5"/>
+<text x="76" y="1078" class="kicker">EC2 VALIDATION · 59-SECOND SYNTHETIC DIALOGUE</text>
+<text x="76" y="1113" class="heading">166 s analysis · 1.7% character error rate · 5.08 GiB peak RSS</text>
+<text x="76" y="1142" class="small">Recorded 2026-11-02 · End-to-end test using disposable MySQL and moto (S3 emulator)</text>
+
 <!-- Legend -->
-<path d="M 48 1072 H 100" stroke="#E6E8EB" stroke-width="4"/>
-<text x="112" y="1079" class="small">Analysis steps</text>
-<path d="M 330 1072 H 382" stroke="#C3C8CF" stroke-width="4"/>
-<text x="394" y="1079" class="small">Files</text>
-<path d="M 520 1072 H 572" stroke="#9AA1AB" stroke-width="4" stroke-dasharray="10 9"/>
-<text x="584" y="1079" class="small">Optional AI outside AWS</text>
+<path d="M 48 1192 H 100" stroke="#E6E8EB" stroke-width="4"/>
+<text x="112" y="1199" class="small">Analysis steps</text>
+<path d="M 330 1192 H 382" stroke="#C3C8CF" stroke-width="4"/>
+<text x="394" y="1199" class="small">Files</text>
+<path d="M 520 1192 H 572" stroke="#9AA1AB" stroke-width="4" stroke-dasharray="10 9"/>
+<text x="584" y="1199" class="small">Optional AI outside AWS</text>
 </svg>

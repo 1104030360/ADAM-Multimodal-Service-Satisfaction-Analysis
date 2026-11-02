@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1240" viewBox="0 0 1600 1240" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1612" viewBox="0 0 1600 1612" role="img" aria-labelledby="title desc">
 <title id="title">ADAM workflow</title>
-<desc id="desc">Staff select recording devices, record a session, upload three files and submit analysis. Completed services provide scores, media and charts. Administrators generate, preview and publish reports to the relevant staff member; company-period reports remain admin-only. Failed uploads and analysis can be retried.</desc>
+<desc id="desc">Staff select recording devices, record a session, upload three files and submit real analysis on EC2. Completed services provide scores, media and charts. Optional service outcomes and to-dos require matching transcript quotes. Administrators generate and preview PDFs before publishing service and staff reports; company-period reports remain admin-only. In Coaching, an administrator sets a goal and can mark video moments; the staff member responds in My Actions; the administrator links a later analyzed service from the same staff member and reviews it before completing or adjusting the goal. Acknowledgment alone does not complete a goal. Goals can be withdrawn with a reason, and history is retained.</desc>
 <!-- Colors and typography follow myapp/src/myapp/qml/components/Theme.qml. -->
 <defs>
 <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#E6E8EB"/></marker>
@@ -12,9 +12,9 @@ text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title
 .wordmark{font-size:48px;font-weight:300;letter-spacing:12px;fill:#F3F4F6}.badge{font-size:17px;font-weight:600;fill:#0E1013}.white{fill:#ECEEF1}.status-warning{font-size:18px;font-weight:600;fill:#FFB74D}.status-info{font-size:18px;font-weight:600;fill:#90CAF9}.status-success{font-size:18px;font-weight:600;fill:#81C784}
 </style>
 </defs>
-<rect width="1600" height="1240" fill="#0B0C0E"/>
+<rect width="1600" height="1612" fill="#0B0C0E"/>
 <text x="48" y="84" class="wordmark">ADAM</text><text x="330" y="80" class="title">User workflow</text>
-<text x="48" y="126" class="subtitle" >Record and review services; administrators preview and publish reports.</text>
+<text x="48" y="126" class="subtitle" >Record a service, review real analysis, and turn evidence into reports and coaching.</text>
 <rect x="48" y="148" width="1504" height="88" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
 <text x="80" y="203" class="heading white" >Sign in to ADAM</text>
 <text x="580" y="203" class="body white" >Level 1 → Staff     |     Levels 2–5 → Administrators</text>
@@ -36,7 +36,7 @@ text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title
 <rect x="664" y="330" width="272" height="218" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
 <text x="688" y="364" class="step" >STEP 03</text>
 <text x="688" y="402" class="heading" >Analysis</text>
-<text x="688" y="444" class="small" >Submit analysis request</text>
+<text x="688" y="444" class="small" >Submit to real EC2 service</text>
 <text x="688" y="476" class="small" >Track progress</text>
 <rect x="680" y="497" width="240" height="36" rx="18" fill="#152539"/><text x="688" y="521" class="status-info">Status 2 · Analyzing</text>
 <path d="M 936 440 H 972" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-blue)"/>
@@ -55,6 +55,7 @@ text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title
 <text x="1304" y="521" class="label" >View your own results</text>
 <rect x="48" y="578" width="1504" height="68" rx="14" fill="#2D2116" stroke="#9C5100" stroke-width="1.5"/>
 <text x="80" y="620" class="body" >Retry on failure: keep recordings for upload retries; failed analysis can return to Not analyzed and be submitted again.</text>
+<text x="80" y="681" class="small">Optional service outcome + to-dos require transcript quotes; unavailable AI never blocks analysis.</text>
 <text x="48" y="724" class="section" >02  Administrators | Generate and publish reports</text>
 <rect x="48" y="760" width="352" height="220" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
 <text x="72" y="794" class="kicker">ADMINISTRATOR</text>
@@ -85,7 +86,39 @@ text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title
 <text x="1224" y="953" class="label" >Download and preview PDF</text>
 <rect x="48" y="1010" width="1504" height="68" rx="14" fill="#1A1D21" stroke="#2C3036" stroke-width="1.5"/>
 <text x="80" y="1052" class="body" >Company-period reports are admin-only. If AI explanations fail, the PDF still displays Explanation unavailable.</text>
-<rect x="48" y="1112" width="1504" height="66" rx="14" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
-<text x="80" y="1153" class="body" >Both roles: Home dashboard · Settings &amp; profile · Help &amp; connection checks · Log Out / Quit confirmation</text>
-<text x="48" y="1211" class="small" >Placeholder outputs are for workflow tests. The real analyzer runs the model pipeline.</text>
+<!-- Coaching and My Actions -->
+<text x="48" y="1130" class="section">03  Coaching ↔ My Actions | Improve with evidence from later services</text>
+<rect x="48" y="1164" width="352" height="220" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="72" y="1198" class="kicker">ADMIN · SERVICE DETAIL</text>
+<text x="72" y="1237" class="heading">Set a coaching goal</text>
+<text x="72" y="1279" class="body">Optional: Add Moment</text>
+<text x="72" y="1313" class="small">Set one goal, reason, and date</text>
+<text x="72" y="1357" class="label">Send to the staff member</text>
+<path d="M 400 1274 H 432" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<rect x="432" y="1164" width="352" height="220" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="456" y="1198" class="kicker">STAFF · MY ACTIONS</text>
+<text x="456" y="1237" class="heading">Watch &amp; respond</text>
+<text x="456" y="1279" class="body">Open the marked moments</text>
+<text x="456" y="1313" class="small">Reply or acknowledge with Got It</text>
+<text x="456" y="1357" class="label">Acknowledged ≠ completed</text>
+<path d="M 784 1274 H 816" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<rect x="816" y="1164" width="352" height="220" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="840" y="1198" class="kicker">ADMIN · COACHING</text>
+<text x="840" y="1237" class="heading">Link a follow-up</text>
+<text x="840" y="1279" class="body">A later analyzed service</text>
+<text x="840" y="1313" class="small">From the same staff member</text>
+<text x="840" y="1357" class="label">Wait / Check Again if needed</text>
+<path d="M 1168 1274 H 1200" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<rect x="1200" y="1164" width="352" height="220" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="1224" y="1198" class="kicker">ADMIN · COACHING</text>
+<text x="1224" y="1237" class="heading">Review &amp; decide</text>
+<text x="1224" y="1279" class="body">Watch the follow-up evidence</text>
+<text x="1224" y="1313" class="small">Complete or keep practicing</text>
+<text x="1224" y="1357" class="label">Record a conclusion / reason</text>
+<rect x="48" y="1410" width="1504" height="76" rx="14" fill="#1A1D21" stroke="#2C3036" stroke-width="1.5"/>
+<text x="80" y="1440" class="body">Goals can be edited or withdrawn with a reason. Changes, conversations, and reviewed services stay in the history.</text>
+<text x="80" y="1469" class="small">Completing a goal requires a linked follow-up and a conclusion; a better AI score alone cannot complete it.</text>
+<path d="M 48 1522 H 1552" stroke="#24272C" stroke-width="1.5"/>
+<text x="48" y="1559" class="small">Both roles: Home · Settings &amp; profile · Help &amp; connection checks · Log Out / Quit confirmation</text>
+<text x="48" y="1589" class="small">Updated 2026-11-02 · Real analysis runs on EC2; report AI and service outcomes use optional Ollama Cloud.</text>
 </svg>
