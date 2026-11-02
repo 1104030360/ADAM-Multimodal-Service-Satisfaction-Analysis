@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt, QUrl
+from PySide6.QtGui import QWindow
 from PySide6.QtTest import QTest
 
 from myapp import main
@@ -104,6 +105,23 @@ def log_out(app, shell):
 
 def context(app, name):
     return app.engine.rootContext().contextProperty(name)
+
+
+@BOTH_SIDES
+def test_logging_out_of_full_screen_leaves_full_screen_before_the_login_window_shows(app, side):
+    """macOS：全螢幕的外殼直接藏起來，會留下一整片黑的桌面空間，登入視窗在另一個空間看不到（使用者在真機上
+    遇到的，T47）。所以先離開全螢幕，登入視窗才出現；這個帳號記住的全螢幕（S1）不會被登出時的離開全螢幕改掉。"""
+    shell = app.log_in(side.username, side.password)
+    assert shell.visibility() == QWindow.Visibility.FullScreen  # 第一次登入是全螢幕（S1）
+    order = []
+    shell.visibilityChanged.connect(lambda visibility: order.append(("shell", visibility)))
+    app.login.visibleChanged.connect(lambda visible: order.append(("login", visible)))
+    log_out(app, shell)
+    assert order[0][0] == "shell" and order[0][1] != QWindow.Visibility.FullScreen, order
+    assert order.index(("login", True)) > 0, order  # 先離開全螢幕，登入視窗才出現
+
+    shell = app.log_in(side.username, side.password)  # 同一個帳號再登入：還是全螢幕
+    assert shell.visibility() == QWindow.Visibility.FullScreen
 
 
 # ── Quit ─────────────────────────────────────────────────────────────────────
