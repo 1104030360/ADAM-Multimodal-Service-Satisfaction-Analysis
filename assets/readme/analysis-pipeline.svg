@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1230" viewBox="0 0 1600 1230" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1110" viewBox="0 0 1600 1110" role="img" aria-labelledby="title desc">
 <title id="title">ADAM real analysis pipeline</title>
-<desc id="desc">The real analyzer, deployed on EC2 on November 2, 2026, runs every analysis model on the CPU. pyannote finds speaker turns shared by voice emotion and word-level transcript alignment. faster-whisper medium with int8 transcribes Chinese; OpenCC converts it to Taiwan Traditional Chinese, and opus-mt-zh-en translates it for VADER. Wav2Vec2 scores voice emotion and DeepFace scores facial emotion from the customer and staff cameras. RDS holds scores, state and file references; S3 holds five charts, the transcript and report data. Reports draw Audio, Text and Facial charts, and optional Ollama Cloud calls add service outcomes, to-dos and report explanations. The recorded EC2 test used a 59-second synthetic dialogue, disposable MySQL and moto: 166 seconds for analysis, 1.7 percent character error rate and 5.08 GiB peak RSS.</desc>
+<desc id="desc">An EC2 worker receives accepted analysis jobs from SQS and runs every analysis model on the CPU. pyannote finds speaker turns shared by voice emotion and word-level transcript alignment. faster-whisper medium with int8 transcribes Chinese; OpenCC converts it to Taiwan Traditional Chinese, and opus-mt-zh-en translates it for VADER. Wav2Vec2 scores voice emotion and DeepFace scores facial emotion from the customer and staff cameras. RDS holds scores, state, file references and the completed job; S3 holds five charts, the transcript and report data. The API generates PDF reports from committed results. Optional Ollama Cloud calls add service outcomes, to-dos and report explanations.</desc>
 <!-- Colors and typography follow myapp/src/myapp/qml/components/Theme.qml, like architecture.svg. -->
 <defs>
 <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#E6E8EB"/></marker>
@@ -11,15 +11,15 @@ text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title
 .wordmark{font-size:48px;font-weight:300;letter-spacing:12px;fill:#F3F4F6}.badge{font-size:17px;font-weight:600;fill:#0E1013}
 </style>
 </defs>
-<rect width="1600" height="1230" fill="#0B0C0E"/>
+<rect width="1600" height="1110" fill="#0B0C0E"/>
 <text x="48" y="84" class="wordmark">ADAM</text><text x="330" y="80" class="title">Real analysis pipeline</text>
-<text x="48" y="126" class="subtitle">Deployed on EC2 · m7i-flex.large (2 vCPU, 8 GiB). Models load offline; no AWS AI calls.</text>
+<text x="48" y="126" class="subtitle">SQS → EC2 worker · CPU only. Model files load offline; the API runs separately.</text>
 <rect x="1200" y="40" width="352" height="44" rx="22" fill="#E6E8EB" stroke="#E6E8EB" stroke-width="1.5"/>
 <text x="1376" y="69" class="badge" text-anchor="middle">Whisper medium · int8 · CPU</text>
 
 <!-- Column headings -->
 <text x="48" y="186" class="kicker">INPUT · S3</text>
-<text x="348" y="186" class="kicker">AUDIO AND VIDEO MODELS</text>
+<text x="348" y="186" class="kicker">MODELS · EC2 WORKER</text>
 <text x="1178" y="186" class="kicker">SCORES AND CHARTS</text>
 
 <!-- Inputs -->
@@ -84,16 +84,17 @@ text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title
 <path d="M 1148 600 H 1178" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
 
 <!-- Results -->
-<path d="M 1552 263 H 1574 V 700 H 1320 V 746 M 1552 413 H 1574 M 1552 600 H 1574" fill="none" stroke="#E6E8EB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-blue)"/>
+<path d="M 1552 263 H 1574 V 700 H 1320 V 746" fill="none" stroke="#E6E8EB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-blue)"/>
+<path d="M 1552 413 H 1574 M 1552 600 H 1574" fill="none" stroke="#E6E8EB" stroke-width="3" stroke-linecap="round"/>
 <text x="48" y="728" class="kicker">AFTER EACH ANALYSIS</text>
 <rect x="1088" y="746" width="464" height="226" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
 <text x="1116" y="790" class="heading">Saved results</text>
 <text x="1116" y="826" class="body">RDS: scores · state · file keys</text>
 <text x="1116" y="860" class="body">S3: 5 charts · text · report-data</text>
-<text x="1116" y="902" class="small">Total score: original .pkl model if</text>
-<text x="1116" y="930" class="small">present, otherwise the average</text>
+<text x="1116" y="902" class="small">Commit results + status 3, then</text>
+<text x="1116" y="930" class="small">acknowledge the SQS message</text>
 <rect x="568" y="746" width="480" height="226" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
-<text x="596" y="790" class="heading">Reports · POST /reports</text>
+<text x="596" y="790" class="heading">API · POST /reports</text>
 <text x="596" y="826" class="body">PDF: Audio · Text · Facial charts</text>
 <text x="596" y="860" class="body">drawn from report-data</text>
 <text x="596" y="902" class="small">AI explanation is optional;</text>
@@ -108,17 +109,11 @@ text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title
 <path d="M 1320 972 V 1008 H 288 V 980" fill="none" stroke="#9AA1AB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="10 9" marker-end="url(#arrow-purple)"/>
 <rect x="726" y="991" width="164" height="34" rx="9" fill="#0B0C0E"/><text x="808" y="1014" class="label" text-anchor="middle" fill="#9AA1AB">Transcript</text>
 
-<!-- Recorded benchmark; a synthetic test, not a production workload guarantee. -->
-<rect x="48" y="1048" width="1504" height="110" rx="16" fill="#1A1D21" stroke="#2C3036" stroke-width="1.5"/>
-<text x="76" y="1078" class="kicker">EC2 VALIDATION · 59-SECOND SYNTHETIC DIALOGUE</text>
-<text x="76" y="1113" class="heading">166 s analysis · 1.7% character error rate · 5.08 GiB peak RSS</text>
-<text x="76" y="1142" class="small">Recorded 2026-11-02 · End-to-end test using disposable MySQL and moto (S3 emulator)</text>
-
 <!-- Legend -->
-<path d="M 48 1192 H 100" stroke="#E6E8EB" stroke-width="4"/>
-<text x="112" y="1199" class="small">Analysis steps</text>
-<path d="M 330 1192 H 382" stroke="#C3C8CF" stroke-width="4"/>
-<text x="394" y="1199" class="small">Files</text>
-<path d="M 520 1192 H 572" stroke="#9AA1AB" stroke-width="4" stroke-dasharray="10 9"/>
-<text x="584" y="1199" class="small">Optional AI outside AWS</text>
+<path d="M 48 1072 H 100" stroke="#E6E8EB" stroke-width="4"/>
+<text x="112" y="1079" class="small">Analysis steps</text>
+<path d="M 330 1072 H 382" stroke="#C3C8CF" stroke-width="4"/>
+<text x="394" y="1079" class="small">Files</text>
+<path d="M 520 1072 H 572" stroke="#9AA1AB" stroke-width="4" stroke-dasharray="10 9"/>
+<text x="584" y="1079" class="small">Optional AI outside AWS</text>
 </svg>
