@@ -6,5 +6,5 @@ ServiceDetailView {
     backPage: "admin_service_page.qml"
     showStaffName: true
     showReport: true    // 報表卡：產生、發佈、打開這筆服務的報表（new-feature N4，T37）
-    showCoaching: true  // 輔導卡：評語、時間註記、從這筆服務建立改善目標（PLAN1 W2，T45）
+    showCoaching: true  // 輔導面板（影片旁邊）：時間註記、從這筆服務訂目標（PLAN1 W2，T45、T47）
 }

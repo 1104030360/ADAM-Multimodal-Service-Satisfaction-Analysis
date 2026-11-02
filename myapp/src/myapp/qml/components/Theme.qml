@@ -95,6 +95,14 @@ QtObject {
     readonly property color paperGreenTint: "#DCF2D3"      // 新增：Text 分數卡的底（successTint 同上）；chromeOnLight 16.0:1
     readonly property color paperMintTint: "#CFEFE6"       // 新增：Facial 分數卡的底，和 Text 不同的綠（PLAN 7.4）；chromeOnLight 15.6:1
 
+    // ── 輔導的改版（PLAN1 W2，T47；設計稿「Coaching, redesigned」）：上面的 token 沒有的值
+    readonly property color bubbleMine: "#2A2F36"          // 新增：對話裡自己的訊息，textTitle 在上面 12.2:1
+    readonly property color panelInset: "#111316"          // 新增：卡片裡凹下去的區塊（Next step、Watch the example）；等於 railBg
+    readonly property color successBorder: "#2E4A36"       // 新增：成功的方塊的框線（Goal sent、Completed）
+    readonly property color infoBorder: "#2A4565"          // 新增：資訊的方塊的框線（New goal）
+    readonly property color infoTintStrong: "#1F3550"      // 新增：New goal 方塊裡圖示的圓底
+    readonly property color stepLineDone: "#5A6069"        // 新增：進度的四個步驟之間，做完的那一段線
+
     // ── 圖表（PLAN 第 3、5 節）
     readonly property color compareBar: "#60666F"          // 新增：長條圖裡用來比較的灰色長條，和卡片 3.1:1
     readonly property color guide: "#3A3F46"               // 新增：圖表的虛線（85、70）

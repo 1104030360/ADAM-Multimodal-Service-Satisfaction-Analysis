@@ -3,7 +3,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import "../components"
 
-// 輔導頁面的多行輸入框（PLAN1 W2，T45）：主管評語、回應、結論、調整和撤回的原因。外觀和 CoachingField 一樣，
+// 輔導頁面的多行輸入框（PLAN1 W2，T45；T47）：輔導面板的目標和為什麼、結論、調整和撤回的原因。外觀和 CoachingField 一樣，
 // 至少 minimumLines 行高，字多時跟著長高（不在框裡捲動：整頁會捲）。Tab 移到下一個控制項，不輸入 Tab 字元。
 TextArea {
     id: area

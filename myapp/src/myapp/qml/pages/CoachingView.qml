@@ -1,28 +1,28 @@
 pragma ComponentBehavior: Bound
 import QtQuick
-// 自訂了清單項目的 background／contentItem，要用 Basic 樣式（T13）
+// 自訂了清單項目、分頁的 background／contentItem，要用 Basic 樣式（T13）
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../components"
 
-// 員工輔導（PLAN1 W2，T45）：管理員的 Coaching（admin_coaching_page.qml）和服務人員的 My Actions
-// （server_actions_page.qml）都是這一頁。頁面標題和說明在外殼的頁首，這裡不畫。
+// 員工輔導（PLAN1 W2；T47 依設計稿「Coaching, redesigned」改版）：管理員的 Coaching（admin_coaching_page.qml）和服務人員的
+// My Actions（server_actions_page.qml）都是這一頁。頁面標題和說明在外殼的頁首，這裡不畫。
 // - 資料在 coachingModel（myapp/coaching.py）：打開時讀一次（pageOpened），不輪詢；寫入之後由它在同一個工作裡重讀。
-//   服務人員只看得到自己的行動（sp_coaching_list 決定），管理員看得到全部。
-// - 管理員：最上面一張卡片是兩個指標（有後續證據的完成比例、回顧時間）和進行中的數量，跟著員工的篩選。
-// - 左邊是清單：目標、狀態標籤、（管理員）員工和期限；管理員的清單上面有篩選（狀態、期限、員工）。
-//   員工在主管最後一次動作之後回應過的標「Staff replied」；服務人員還沒確認的標「New」。一進來選第一項。
-// - 右邊是選到的那一項（CoachingDetail.qml）。內容比視窗高時整頁捲動。
+//   服務人員只看得到自己的目標（sp_coaching_list 決定），管理員看得到全部。
+// - 管理員：最上面一行是兩個指標（有後續證據的完成比例、回顧時間的中位數）和進行中、過期的數量。清單分
+//   Open · n、Completed · n（有撤回的才多 Cancelled · n）；舊版的狀態、期限、員工三個篩選拿掉了（T47 第 4 節）。
+//   一列：頭像、員工、期限（過期是紅字）、一行目標、下一步的標籤（Pick a Follow-up、Waiting for a Later Service、
+//   Ready to Review、Overdue、Completed）。
+// - 服務人員：「2 goals」，一列：目標、標籤（New、In Progress、Completed）、期限或完成的日子。
+// - 右邊是選到的那一項（CoachingDetail.qml）；一進來選第一項。內容比視窗高時整頁捲動，清單很長時在卡片裡捲。
 Item {
     id: page
 
     readonly property var vm: typeof coachingModel !== "undefined" ? coachingModel : null
     readonly property bool admin: vm !== null && vm.isAdmin
     readonly property string listState: vm ? vm.listState : "idle"
-    readonly property bool hasSelection: vm !== null && vm.selectedId !== ""
-    readonly property int gap: Theme.sectionGap
-    readonly property int listWidth: Math.round(Math.min(420, Math.max(300, (width - gap) * 0.33)))
-    readonly property int itemHeight: 76
+    readonly property int gap: Theme.spaceL
+    readonly property int listWidth: Math.round(Math.min(380, Math.max(300, (width - gap) * 0.3)))
     readonly property alias detail: detailPanel       // 測試用
     property string openedView: ""                    // pageOpened 時的名字：登出後 vm 是 null，關頁面時照樣登出
 
@@ -70,70 +70,113 @@ Item {
         onActiveChanged: if (!active) elapsed = false
     }
 
-    // 指標的一格：標籤、大字、說明
-    component Metric: ColumnLayout {
+    // 最上面一行的一格：大字、說明、（淡色的）補充
+    component Metric: Row {
         id: metric
-        property string label: ""
         property string value: ""
+        property string label: ""
         property string note: ""
-        Layout.fillWidth: true
-        Layout.preferredWidth: 1
-        spacing: 4
+        property color noteColor: Theme.textFaint
+        spacing: 10
         Accessible.role: Accessible.StaticText
-        Accessible.name: qsTr("%1: %2, %3").arg(label).arg(value === "—" ? qsTr("no data") : value).arg(note)
+        Accessible.name: [value === "—" ? qsTr("No data") : value, label, note].join(" ")
 
         Text {
-            Layout.fillWidth: true
-            text: metric.label
-            color: Theme.textSecondary
-            font.pixelSize: Theme.fontCaption
-            elide: Text.ElideRight
-            Accessible.ignored: true
-        }
-        Text {
+            id: metricValue
             objectName: "metricValue"
-            Layout.fillWidth: true
             text: metric.value
             color: Theme.textTitle
-            font.pixelSize: Theme.fontHeadline
+            font.pixelSize: Theme.fontTitle
             font.weight: Font.Bold
             font.features: { "tnum": 1 }
             Accessible.ignored: true
         }
         Text {
+            anchors.baseline: metricValue.baseline
+            text: metric.label
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontCaption
+            Accessible.ignored: true
+        }
+        Text {
             objectName: "metricNote"
-            Layout.fillWidth: true
+            anchors.baseline: metricValue.baseline
             text: metric.note
-            color: Theme.textMuted
-            font.pixelSize: Theme.fontSmall
-            elide: Text.ElideRight
+            color: metric.noteColor
+            font.pixelSize: Theme.fontCaption
+            font.features: { "tnum": 1 }
             Accessible.ignored: true
         }
     }
 
-    // 清單裡的一項：整塊可以點（76 高），Tab、Space、Return 都能按
+    // 管理員清單的分頁：Open · 3、Completed · 2（設計稿的分段切換）
+    component Segment: Button {
+        id: segment
+        required property string value
+        required property int count
+        readonly property bool selected: page.vm !== null && page.vm.tab === value
+        Layout.fillWidth: true
+        Layout.preferredWidth: 1
+        implicitHeight: Theme.controlHeight
+        focusPolicy: Qt.StrongFocus
+        Accessible.role: Accessible.PageTab
+        Accessible.name: text
+        Accessible.selectable: true
+        Accessible.selected: selected
+        Keys.onReturnPressed: click()
+        Keys.onEnterPressed: click()
+        onClicked: {
+            if (page.vm)
+                page.vm.setTab(value)
+        }
+
+        contentItem: Text {
+            text: segment.text
+            color: segment.selected ? Theme.segmentSelectedText : Theme.segmentIdleText
+            font.pixelSize: Theme.fontCaption
+            font.weight: Font.DemiBold
+            font.features: { "tnum": 1 }
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+        background: Rectangle {
+            radius: 12
+            color: segment.selected ? Theme.segmentSelected : segment.hovered ? Theme.actionSecondaryHover : "transparent"
+            Rectangle {     // 鍵盤焦點框（DS-30）
+                visible: segment.visualFocus
+                anchors.fill: parent
+                anchors.margins: 2
+                radius: 10
+                color: "transparent"
+                border.color: segment.selected ? Theme.segmentSelectedText : Theme.focusOnDark
+                border.width: 2
+            }
+        }
+    }
+
+    // 清單裡的一項：整塊可以點，Tab、Space、Return 都能按
     component ActionItem: ItemDelegate {
         id: item
 
         required property int index
         required property string actionId
         required property string goal
-        required property string metaText
+        required property string staffName
+        required property string initials
+        required property string dueText
+        required property bool dueAlert
         required property string chipState
-        required property bool replied
-        required property bool unread
         readonly property bool selected: page.vm !== null && page.vm.selectedId === actionId
-        readonly property string flagText: replied ? qsTr("Staff replied") : unread ? qsTr("New") : ""
 
         objectName: "actionItem"
         width: ListView.view ? ListView.view.width : 0
-        height: page.itemHeight
         padding: 12
         focusPolicy: Qt.StrongFocus
         text: goal
         highlighted: selected
-        Accessible.name: goal
-        Accessible.description: [chip.label, metaText, flagText].filter(part => part !== "").join(", ")
+        Accessible.name: page.admin ? qsTr("%1: %2").arg(staffName).arg(goal) : goal
+        Accessible.description: [chip.label, dueText].filter(part => part !== "").join(", ")
         Accessible.selectable: true
         Accessible.selected: selected
         Keys.onReturnPressed: click()
@@ -143,56 +186,58 @@ Item {
         contentItem: RowLayout {
             spacing: 12
 
-            Image {
-                Layout.alignment: Qt.AlignVCenter
-                Layout.preferredWidth: Theme.iconNav
-                Layout.preferredHeight: Theme.iconNav
-                sourceSize: Qt.size(Theme.iconNav, Theme.iconNav)
-                source: item.selected ? "../components/icons/target_chromeIcon.svg"
-                                      : "../components/icons/target_textFaint.svg"
-                Accessible.ignored: true
+            CoachingAvatar {
+                Layout.alignment: Qt.AlignTop
+                visible: page.admin
+                initials: item.initials
             }
 
-            Column {
+            ColumnLayout {
                 Layout.fillWidth: true
-                Layout.alignment: Qt.AlignVCenter
-                spacing: 6
+                Layout.alignment: Qt.AlignTop
+                spacing: page.admin ? 4 : 6
 
-                // 第一行：目標＋（有的話）Staff replied、New；放在這一行，第二行的期限才不會被擠掉
+                // 管理員：員工、期限（過期是紅字）
                 RowLayout {
-                    width: parent.width
+                    Layout.fillWidth: true
+                    visible: page.admin
                     spacing: 8
 
                     Text {
-                        objectName: "actionGoal"
+                        objectName: "actionStaff"
                         Layout.fillWidth: true
-                        text: item.goal
+                        text: item.staffName
                         color: Theme.textTitle
                         font.pixelSize: Theme.fontInput
                         font.weight: Font.DemiBold
                         elide: Text.ElideRight
                         Accessible.ignored: true
                     }
-                    Rectangle {     // Staff replied、New：資訊色的小標籤，旁邊一定有字
-                        objectName: "actionFlag"
-                        visible: item.flagText !== ""
-                        implicitWidth: flag.implicitWidth + 12
-                        implicitHeight: 20
-                        radius: 10
-                        color: Theme.infoTint
-                        Text {
-                            id: flag
-                            anchors.centerIn: parent
-                            text: item.flagText
-                            color: Theme.infoOnDark
-                            font.pixelSize: Theme.fontLabel
-                            font.weight: Font.DemiBold
-                        }
+                    Text {
+                        objectName: "actionDue"
+                        text: item.dueText
+                        color: item.dueAlert ? Theme.errorOnDark : Theme.textFaint
+                        font.pixelSize: Theme.fontLabel
+                        font.features: { "tnum": 1 }
+                        Accessible.ignored: true
                     }
                 }
 
+                Text {
+                    objectName: "actionGoal"
+                    Layout.fillWidth: true
+                    text: item.goal
+                    color: page.admin ? Theme.textSecondary : Theme.textTitle
+                    font.pixelSize: page.admin ? Theme.fontCaption : Theme.fontInput
+                    font.weight: page.admin ? Font.Normal : Font.DemiBold
+                    wrapMode: page.admin ? Text.NoWrap : Text.Wrap
+                    maximumLineCount: page.admin ? 1 : 2
+                    elide: Text.ElideRight
+                    Accessible.ignored: true
+                }
+
                 RowLayout {
-                    width: parent.width
+                    Layout.fillWidth: true
                     spacing: 8
 
                     CoachingChip {
@@ -202,8 +247,9 @@ Item {
                     Text {
                         objectName: "actionMeta"
                         Layout.fillWidth: true
-                        text: item.metaText
-                        color: item.chipState === "overdue" ? Theme.warningOnDark : Theme.textMuted
+                        visible: !page.admin
+                        text: item.dueText
+                        color: item.dueAlert ? Theme.errorOnDark : Theme.textFaint
                         font.pixelSize: Theme.fontSmall
                         font.features: { "tnum": 1 }
                         elide: Text.ElideRight
@@ -240,7 +286,7 @@ Item {
         anchors.horizontalCenter: parent.horizontalCenter
         y: Theme.space4XL
         visible: listWait.elapsed && (page.listState === "loading" || page.listState === "idle")
-        text: qsTr("Loading actions…")
+        text: qsTr("Loading goals…")
         color: Theme.textMuted
         font.pixelSize: Theme.fontCaption
     }
@@ -256,7 +302,7 @@ Item {
         InlineError {
             objectName: "coachingError"
             width: parent.width
-            title: qsTr("Couldn't load actions")
+            title: qsTr("Couldn't load goals")
             detail: page.vm ? page.vm.errorDetail : ""
             technicalDetail: page.vm ? page.vm.errorTechnical : ""
             failureCount: page.vm ? page.vm.failureCount : 0
@@ -268,7 +314,7 @@ Item {
         }
     }
 
-    // ── 還沒有任何行動
+    // ── 還沒有任何目標
     Card {
         objectName: "coachingEmptyCard"
         width: parent.width
@@ -281,9 +327,9 @@ Item {
             width: parent.width
             visible: page.listState === "empty"
             iconSource: Qt.resolvedUrl("../components/icons/target_iconNeutral.svg")
-            title: page.admin ? qsTr("No coaching actions yet") : qsTr("No actions yet")
-            description: page.admin ? qsTr("Open a service from Services, watch it, then use New Goal on its page.")
-                                    : qsTr("When an admin sets an improvement goal for you, it appears here.")
+            title: page.admin ? qsTr("No coaching goals yet") : qsTr("No goals yet")
+            description: page.admin ? qsTr("Open a service from Services, watch it, then set a goal beside the video.")
+                                    : qsTr("When an admin sets a goal for you, it appears here.")
         }
     }
 
@@ -306,39 +352,41 @@ Item {
             width: scroller.width
             spacing: page.gap
 
-            // 管理員：兩個指標（PLAN1 W2 的完成條件）和進行中的數量，跟著員工的篩選
+            // 管理員：一行兩個指標（PLAN1 W2 的完成條件）和進行中、過期的數量
             Card {
-                objectName: "coachingMetrics"
+                objectName: "coachingResults"
                 width: parent.width
                 visible: page.admin
-                topPadding: 18
-                bottomPadding: 18
+                topPadding: 14
+                bottomPadding: 14
+                leftPadding: Theme.spaceXL
+                rightPadding: Theme.spaceXL
                 Accessible.role: Accessible.Grouping
                 Accessible.name: qsTr("Coaching results")
 
-                RowLayout {
+                Flow {
                     width: parent ? parent.width : 0
-                    spacing: Theme.spaceXL
+                    spacing: 36
 
                     Metric {
                         objectName: "completedMetric"
-                        label: qsTr("Completed with follow-up")
                         value: page.vm ? page.vm.completedShare : ""
-                        note: page.vm ? page.vm.completedText : ""
+                        label: qsTr("completed with a follow-up")
+                        note: page.vm && page.vm.completedOf !== "" ? qsTr("· %1").arg(page.vm.completedOf) : ""
                     }
-                    Rectangle { Layout.fillHeight: true; implicitWidth: 1; color: Theme.cardBorder }
                     Metric {
                         objectName: "reviewTimeMetric"
-                        label: qsTr("Review time")
                         value: page.vm ? page.vm.reviewTimeText : ""
-                        note: page.vm ? page.vm.reviewTimeNote : ""
+                        label: qsTr("to complete")
+                        note: page.vm && page.vm.completedCount > 0 ? qsTr("· median") : qsTr("· none completed yet")
                     }
-                    Rectangle { Layout.fillHeight: true; implicitWidth: 1; color: Theme.cardBorder }
                     Metric {
                         objectName: "openMetric"
-                        label: qsTr("Open")
                         value: page.vm ? page.vm.openCountText : ""
-                        note: page.vm ? page.vm.openNote : ""
+                        label: qsTr("open")
+                        note: page.vm && page.vm.overdueCount > 0 ? qsTr("· %1 overdue").arg(page.vm.overdueCount)
+                                                                  : qsTr("· none overdue")
+                        noteColor: page.vm && page.vm.overdueCount > 0 ? Theme.errorOnDark : Theme.textFaint
                     }
                 }
             }
@@ -351,21 +399,67 @@ Item {
                     id: listCard
                     objectName: "actionListCard"
                     width: page.listWidth
-                    topPadding: Theme.spaceL
-                    bottomPadding: Theme.spaceL
-                    leftPadding: Theme.spaceM
-                    rightPadding: Theme.spaceM
+                    topPadding: Theme.spaceM
+                    bottomPadding: Theme.spaceM
+                    leftPadding: 12
+                    rightPadding: 12
 
                     ColumnLayout {
                         width: parent ? parent.width : 0
                         spacing: 8
 
+                        // 管理員：Open · 3、Completed · 2（有撤回的才多 Cancelled · 1）
+                        Rectangle {
+                            id: segments
+                            objectName: "coachingTabs"
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 4
+                            Layout.rightMargin: 4
+                            Layout.bottomMargin: 6
+                            visible: page.admin
+                            implicitHeight: Theme.controlHeight + 2
+                            radius: 13
+                            color: Theme.segmentBg
+                            border.width: 1
+                            border.color: Theme.cardBorder
+                            Accessible.role: Accessible.PageTabList
+                            Accessible.name: qsTr("Goal status")
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.margins: 1
+                                spacing: 0
+
+                                Segment {
+                                    objectName: "openTab"
+                                    value: "open"
+                                    count: page.vm ? page.vm.openCount : 0
+                                    text: qsTr("Open · %1").arg(count)
+                                }
+                                Segment {
+                                    objectName: "completedTab"
+                                    value: "completed"
+                                    count: page.vm ? page.vm.completedCount : 0
+                                    text: qsTr("Completed · %1").arg(count)
+                                }
+                                Segment {
+                                    objectName: "cancelledTab"
+                                    visible: count > 0
+                                    value: "cancelled"
+                                    count: page.vm ? page.vm.cancelledCount : 0
+                                    text: qsTr("Cancelled · %1").arg(count)
+                                }
+                            }
+                        }
+
+                        // 服務人員：「2 goals」
                         Text {
                             id: countHeading
                             objectName: "actionCount"
-                            Layout.leftMargin: 12
+                            Layout.leftMargin: 8
                             Layout.bottomMargin: 4
                             Layout.fillWidth: true
+                            visible: !page.admin
                             text: page.vm ? page.vm.countText : ""
                             color: Theme.textTitle
                             font.pixelSize: Theme.fontBody
@@ -375,56 +469,15 @@ Item {
                             Accessible.name: text
                         }
 
-                        // 管理員的篩選：狀態、期限、員工。清單卡窄（1024 寬的視窗）時一行一個，字才不會被截掉
-                        GridLayout {
-                            id: filterGrid
-                            objectName: "coachingFilters"
-                            Layout.fillWidth: true
-                            Layout.leftMargin: 4
-                            Layout.rightMargin: 4
-                            Layout.bottomMargin: 4
-                            visible: page.admin
-                            columns: listCard.availableWidth >= 340 ? 2 : 1
-                            columnSpacing: 8
-                            rowSpacing: 8
-
-                            HomeSelect {
-                                objectName: "statusFilter"
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                options: page.vm ? page.vm.statusOptions : []
-                                value: page.vm ? page.vm.filters.status : "all"
-                                Accessible.name: qsTr("Status")
-                                onPicked: (value) => page.vm.setFilter("status", value)
-                            }
-                            HomeSelect {
-                                objectName: "dueFilter"
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                options: page.vm ? page.vm.dueOptions : []
-                                value: page.vm ? page.vm.filters.due : "any"
-                                Accessible.name: qsTr("Due date")
-                                onPicked: (value) => page.vm.setFilter("due", value)
-                            }
-                            HomeSelect {
-                                objectName: "staffFilter"
-                                Layout.fillWidth: true
-                                Layout.columnSpan: filterGrid.columns
-                                popupMaxHeight: 320
-                                options: page.vm ? page.vm.staffOptions : []
-                                value: page.vm ? page.vm.filters.staff : ""
-                                Accessible.name: qsTr("Staff")
-                                onPicked: (value) => page.vm.setFilter("staff", value)
-                            }
-                        }
-
-                        // 篩選之後一項都沒有
+                        // 這個分頁一項都沒有
                         Text {
                             objectName: "noMatches"
                             Layout.fillWidth: true
                             Layout.margins: 12
                             visible: page.vm !== null && page.vm.shownCount === 0
-                            text: qsTr("No actions match these filters.")
+                            text: page.vm && page.vm.tab === "completed" ? qsTr("No completed goals yet.")
+                                : page.vm && page.vm.tab === "cancelled" ? qsTr("No cancelled goals.")
+                                : qsTr("No open goals.")
                             color: Theme.textMuted
                             font.pixelSize: Theme.fontCaption
                             wrapMode: Text.Wrap
@@ -435,18 +488,17 @@ Item {
                             id: actionList
                             objectName: "actionList"
                             Layout.fillWidth: true
-                            // 卡片裡清單以外的高度：標題（下面 4＋間距 8）、篩選（同上）
-                            Layout.preferredHeight: Math.min(contentHeight, Math.max(page.itemHeight * 5 + 8 * 4,
+                            Layout.preferredHeight: Math.min(contentHeight, Math.max(480,
                                 detailCard.height - listCard.topPadding - listCard.bottomPadding
-                                - countHeading.height - 12 - (filterGrid.visible ? filterGrid.height + 12 : 0)))
+                                - (segments.visible ? segments.height + 14 : countHeading.height + 12)))
                             clip: true
-                            spacing: 8
+                            spacing: 6
                             interactive: contentHeight > height
                             model: page.vm ? page.vm.listModel : null
                             boundsBehavior: Flickable.StopAtBounds
                             ScrollBar.vertical: ScrollBar { policy: actionList.interactive ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
                             Accessible.role: Accessible.List
-                            Accessible.name: page.admin ? qsTr("Coaching actions") : qsTr("My actions")
+                            Accessible.name: page.admin ? qsTr("Coaching goals") : qsTr("My goals")
                             delegate: ActionItem {}
                         }
                     }
@@ -457,10 +509,10 @@ Item {
                     objectName: "actionDetailCard"
                     x: listCard.width + page.gap
                     width: parent.width - x
-                    topPadding: Theme.spaceL
+                    topPadding: 22
                     bottomPadding: Theme.spaceXL
-                    leftPadding: Theme.spaceXL
-                    rightPadding: Theme.spaceXL
+                    leftPadding: Theme.cardPaddingH
+                    rightPadding: Theme.cardPaddingH
 
                     Item {
                         width: parent ? parent.width : 0
@@ -487,7 +539,7 @@ Item {
                                 objectName: "detailLoading"
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 visible: detailWait.elapsed
-                                text: qsTr("Loading this action…")
+                                text: qsTr("Loading this goal…")
                                 color: Theme.textMuted
                                 font.pixelSize: Theme.fontCaption
                             }
@@ -497,17 +549,19 @@ Item {
                                 visible: page.vm !== null && (page.vm.detailState === "missing"
                                                               || page.vm.detailState === "idle")
                                 iconSource: Qt.resolvedUrl("../components/icons/target_iconNeutral.svg")
-                                title: page.vm && page.vm.detailState === "missing" ? qsTr("This action isn't available")
-                                                                                   : qsTr("Choose an action")
+                                title: page.vm && page.vm.detailState === "missing" ? qsTr("This goal isn't available")
+                                     : page.vm && page.vm.shownCount === 0 ? qsTr("Nothing in this list")
+                                     : qsTr("Choose a goal")
                                 description: page.vm && page.vm.detailState === "missing"
                                              ? qsTr("It may have been removed, or it isn't yours.")
-                                             : qsTr("Its goal, comment, services, and history appear here.")
+                                             : page.vm && page.vm.shownCount === 0 ? qsTr("Goals appear here when they reach this status.")
+                                             : qsTr("Its next step, moments, and conversation appear here.")
                             }
                             InlineError {
                                 objectName: "detailError"
                                 width: parent.width
                                 visible: page.vm !== null && page.vm.detailState === "error"
-                                title: qsTr("Couldn't load this action")
+                                title: qsTr("Couldn't load this goal")
                                 detail: page.vm ? page.vm.detailError : ""
                                 technicalDetail: page.vm ? page.vm.detailTechnical : ""
                                 onRetry: {

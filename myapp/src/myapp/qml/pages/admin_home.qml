@@ -125,7 +125,7 @@ Window {
         case "admin_add_page.qml": return qsTr("Add a staff or admin account.")
         case "admin_service_page.qml": return qsTr("Find any staff member's services and open their videos and charts.")
         case "admin_reports_page.qml": return qsTr("Generate reports, check them, and publish them for staff.")
-        case "admin_coaching_page.qml": return qsTr("Follow up on improvement goals: link a later service, then complete or adjust.")
+        case "admin_coaching_page.qml": return qsTr("Goals you've set for staff.")   // 設計稿：字少（T47）
         case "admin_setting_page.qml": return qsTr("Preferences apply right away. Account changes apply when you save.")
         }
         return ""

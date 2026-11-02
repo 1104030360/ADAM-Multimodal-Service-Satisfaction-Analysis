@@ -1,17 +1,21 @@
-"""員工輔導與後續追蹤（PLAN1 W2，T45）：真的 MySQL（migration 006 的 13 個 sp_coaching_* 程序）＋兩端的畫面。
+"""員工輔導與後續追蹤（PLAN1 W2，T45；畫面依設計稿改版，T47）：真的 MySQL（migration 006 的 13 個 sp_coaching_* 程序）
+＋兩端的畫面。主要的流程用真的滑鼠點（CLAUDE.md：只呼叫 picked()、clicked() 抓不到疊放、停用、看不到的問題）。
 
-- 管理員在明細頁的輔導卡建立目標（評語、時間註記、期限）→ 服務人員在 My Actions 看到、按註記跳到原始服務、
-  回應、確認 → 管理員在 Coaching 頁連結後來的一筆服務、在它的影片上加註記、完成；調整保留歷史。
-- 權限在資料庫：服務人員看不到、寫不了別人的行動，也改不了目標、期限、結論；後續服務要是同一位員工、後來、分析完成的。
+- 管理員在明細頁影片旁邊的輔導面板：Add Moment（播放器上）→ 說明欄 → Save Moment；送出時還開著的說明欄先存成時間註記
+  （舊版會默默丟掉，T47 第 1 節）→ Goal sent to Mia → Open in Coaching。服務人員在 My Actions 看到、Got It、在對話裡回應。
+- Coaching 頁一次一個下一步：還沒有後續服務時等，Check Again、重新打開頁面都會重查（舊版查一次就停在灰的選單，
+  T47 第 2 節）→ Use as Follow-up → Watch（面板對準這一項，時間註記加在後續服務自己的影片上）→ Mark Complete 或 Keep Practicing。
+- 權限在資料庫：服務人員看不到、寫不了別人的目標，也改不了目標、期限、結論；後續服務要是同一位員工、後來、分析完成的。
 - 兩個管理員改同一項：後到的是「changed elsewhere」＋ Reload；重複按只寫一次；連不上、交易中途失敗什麼都不留。
 - 每個測試都要求 QML 零警告，GUI 執行緒碰網路就失敗（no_network_on_gui_thread）。
 """
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 import mysql.connector
 import pytest
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QCoreApplication, QObject, QPointF, Qt
 from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtTest import QTest
 
 from myapp import coaching
 from myapp.init import admin_home_init, server_home_init
@@ -26,6 +30,7 @@ EARLY = "S20261019090000"        # Mia：比原始服務早
 UNANALYZED = "S20261024100000"   # Mia：比較晚，但還在分析
 LATE1 = "S20261026101500"        # Mia：比較晚、分析完成
 LATE2 = "S20261029141000"        # Mia：更晚、分析完成
+LATER = "S20261030120000"        # Mia：之後才分析完成的一筆（測試裡才加）
 LEO = "S20261027110000"          # Leo 的服務
 GOAL = "Explain the next step before the service ends and check the customer understood."
 COMMENT = "The customer asked twice what to bring next time. Close with the next step and ask them to repeat it."
@@ -129,6 +134,13 @@ def show(window, page):
     return qml(window, "mainContentLoader.item")
 
 
+def widen(window, width=1440, height=900):
+    """和截圖一樣的視窗大小（離線的測試視窗是 800×800）。"""
+    window.showNormal()
+    window.setGeometry(0, 0, width, height)
+    wait_until(lambda: window.width() == width)
+
+
 def idle(services):
     """coaching 的背景工作都做完了。"""
     wait_until(lambda: not any(key.startswith("coaching") for key in services.tasks._running))
@@ -157,8 +169,55 @@ def visible(root, name):
     return [item for item in find_all(root, name) if item.isVisible()]
 
 
+def text(root, name):
+    return find(root, name).property("text")
+
+
 def toast_titles(services):
     return [(toast["severity"], toast["title"]) for toast in toasts(services.notifier)]
+
+
+def scroll_into_view(item):
+    """item 在可以捲動的區域裡、沒有整個露出來時，從裡到外把每一層 Flickable 捲到它在中間。"""
+    parent = item.parentItem()
+    while parent is not None:
+        if parent.inherits("QQuickFlickable"):
+            top = item.mapToItem(parent, QPointF(0, 0)).y()
+            if not (0 <= top and top + item.height() <= parent.height()):
+                lowest = parent.property("originY")
+                highest = lowest + max(0.0, parent.property("contentHeight") - parent.height())
+                wanted = parent.property("contentY") + top - (parent.height() - item.height()) / 2
+                parent.setProperty("contentY", min(highest, max(lowest, wanted)))
+        parent = parent.parentItem()
+
+
+def click(window, item):
+    """像使用者一樣用滑鼠按：先捲到看得到，按在中間。按不到（看不到、停用）的不按。
+    剛長出來的內容（例如剛查到的後續服務）要等版面排好，捲動的範圍才對：一直捲到它整個在視窗裡。
+    兩個視窗（兩端）的測試：先讓這個視窗在前面，打字才會進到它的輸入框。"""
+    assert item.isVisible() and item.property("enabled"), item.objectName()
+    if not window.isActive():
+        window.requestActivate()
+        wait_until(window.isActive)
+
+    def in_view():
+        top = item.mapToScene(QPointF(0, 0)).y()
+        return 0 <= top and top + item.height() <= window.height()
+
+    def scrolled():
+        scroll_into_view(item)
+        QCoreApplication.processEvents()  # 排版面：位置可能又變了，再看一次
+        return in_view()
+
+    wait_until(scrolled, describe=lambda: f"{item.objectName()} at {item.mapToScene(QPointF(0, 0)).y()}")
+    center = item.mapToScene(QPointF(item.width() / 2, item.height() / 2)).toPoint()
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, center)
+
+
+def type_text(window, value):
+    """像使用者一樣打字，送到有焦點的輸入框（QTest.keyClicks 只收 QWidget）。"""
+    for char in value:
+        QTest.sendKeyEvent(QTest.KeyAction.Click, window, Qt.Key.Key_unknown, char, Qt.KeyboardModifier.NoModifier)
 
 
 def open_detail(home, window, service_id, start):
@@ -168,125 +227,30 @@ def open_detail(home, window, service_id, start):
     return page
 
 
-def card_of(page):
+def panel_of(page):
     loader = find(page, "coachingCardLoader")
     wait_until(lambda: qml(loader, "status === Loader.Ready"))
-    card = qml(loader, "item")
-    wait_until(lambda: qml(card, "cardState") == "ready")
-    return card
+    panel = qml(loader, "item")
+    wait_until(lambda: qml(panel, "cardState") == "ready")
+    return panel
 
 
-# ── 主要流程：管理員從明細頁訂目標 → 服務人員看到、跳到那一秒、回應、確認 ─────────────────
-
-def test_admin_sets_a_goal_on_the_detail_page_and_staff_see_respond_and_acknowledge(ui, second_engine, services,
-                                                                                   db):
-    seed(db)
-    admin, window = launch(admin_home_init, ui, ADMIN_ID, services)
-    page = open_detail(admin, window, SOURCE, "2026-10-20 09:30:00")
-    card = card_of(page)
-    assert qml(card, "staffName") == "Mia Chen"
-    assert find(card, "cardNote").property("text").startswith("No goals use this service yet.")
-    assert not find(card, "goalComposer").isVisible()
-
-    # New Goal：表單展開。沒有影片可以播：不能在「目前的位置」加註記
-    qml(find(card, "newGoalButton"), "clicked()")
-    assert find(card, "goalComposer").isVisible() and not find(card, "newGoalButton").isVisible()
-    assert qml(card, "dueField.text") == (date.today() + timedelta(days=14)).strftime("%Y-%m-%d")
-    assert not find(card, "addDraftMarkerButton").property("enabled")
-    qml(find(card, "createGoalButton"), "clicked()")  # 空的：欄位錯誤，不送
-    assert admin.coachingModel.createErrors["goal"] == "Enter the goal the staff member should practise."
-    assert admin.coachingModel.createErrors["comment"] == "Explain why you set this goal."
-    assert db.rows("SELECT COUNT(*) FROM tbl_coaching_action") == [(0,)]
-
-    qml(card, f'goalField.text = "{GOAL}"')
-    qml(card, f'commentField.text = "{COMMENT}"')
-    assert admin.coachingModel.createErrors["goal"] == ""  # 改了那一格就拿掉錯誤
-    assert admin.coachingModel.addDraftMarker(135, "Explained the fee, not the next step")
-    assert admin.coachingModel.addDraftMarker(262, "")
-    assert [marker["clock"] for marker in admin.coachingModel.draft["markers"]] == ["02:15", "04:22"]
-
-    # 換頁再回來：草稿還在（存在 coachingModel，每一筆服務一份）
-    show(window, "admin_service_page.qml")
-    page = open_detail(admin, window, SOURCE, "2026-10-20 09:30:00")
-    card = card_of(page)
-    assert qml(card, "goalField.text") == GOAL and qml(card, "composing")
-    assert len(admin.coachingModel.draft["markers"]) == 2
-
-    qml(find(card, "createGoalButton"), "clicked()")
-    wait_until(lambda: len(admin.coachingModel.cardActions) == 1)
-    [created] = db.rows("SELECT action_id, staff_account_id, created_by, goal, manager_comment, action_status, version "
-                        "FROM tbl_coaching_action")
-    action_id = created[0]
-    assert created[1:] == (STAFF_ID, ADMIN_ID, GOAL, COMMENT, "open", 1)
-    assert db.rows("SELECT service_id, offset_seconds, note FROM tbl_coaching_marker ORDER BY offset_seconds") == [
-        (SOURCE, 135, "Explained the fee, not the next step"), (SOURCE, 262, "")]
-    assert events(db, action_id) == ["created", "marker_added", "marker_added"]
-    assert ("success", "Goal created") in toast_titles(services)
-    assert not qml(card, "composing") and qml(card, "goalField.text") == ""  # 表單收起、草稿清掉
-    [row] = admin.coachingModel.cardActions
-    assert (row["relation"], row["chipState"], row["canMark"]) == ("source", "open", True)
-    assert [marker["clock"] for marker in row["markers"]] == ["02:15", "04:22"]
-
-    # 服務人員：My Actions
-    staff, staff_window = launch(server_home_init, second_engine, STAFF_ID, services)
-    staff_page = show(staff_window, "server_actions_page.qml")
-    wait_until(lambda: staff.coachingModel.detailState == "ready")
-    [item] = visible(staff_page, "actionItem")
-    assert find(item, "actionGoal").property("text") == GOAL
-    assert find(item, "actionFlag").property("visible")  # New：還沒確認
-    detail = qml(staff_page, "detail")
-    assert find(detail, "detailGoal").property("text") == GOAL
-    assert find(detail, "detailComment").property("text") == COMMENT
-    assert [qml(chip, "text") for chip in visible(detail, "markerButton")] == [
-        "02:15 · Explained the fee, not the next step", "04:22"]
-    assert not visible(detail, "removeMarkerButton")  # 服務人員不能拿掉
-    assert not visible(detail, "adminActions") and visible(detail, "acknowledgeRow")
-
-    # 按時間註記：換到原始服務的明細，影片載入後跳到 02:15；頁首的「‹」回到 My Actions
-    qml(visible(detail, "markerButton")[0], "clicked()")
-    wait_until(lambda: qml(staff_window, "currentPage") == "server_service_detail_page.qml")
-    detail_page = qml(staff_window, "mainContentLoader.item")
-    assert staff.mediaModel.serviceId == SOURCE
-    assert qml(detail_page, "pendingSeekMs") == 135000  # 沒有影片：一直等著，不會跳到別的地方
-    assert qml(staff_window, "pageValue('headerBackText', '')") == "My Actions"
-    # 側邊欄標的是 My Actions（和「‹」一致），不是 Services
-    assert qml(staff_window, "actionsButton.current") and not qml(staff_window, "servicesButton.current")
-    qml(detail_page, "goBack()")
-    assert qml(staff_window, "currentPage") == "server_actions_page.qml"
-    staff_page = qml(staff_window, "mainContentLoader.item")
-    wait_until(lambda: staff.coachingModel.detailState == "ready" and staff.coachingModel.selectedId == action_id)
-    detail = qml(staff_page, "detail")
-
-    # 回應：保存作者和時間
-    response = "I was rushed because the queue was long. I'll ask them to repeat the next step."
-    qml(detail, f'responseField.text = "{response}"')
-    qml(find(detail, "sendResponseButton"), "clicked()")
-    wait_until(lambda: ("success", "Response sent") in toast_titles(services))
-    assert db.rows("SELECT author_id, author_role, body FROM tbl_coaching_event WHERE event_type = 'response'") == [
-        (STAFF_ID, "staff", response)]
-    assert qml(detail, "responseField.text") == ""
-    history = staff.coachingModel.current["history"]
-    assert [entry["title"] for entry in history][-1] == "Mia Chen responded"
-    assert history[-1]["body"] == response and history[-1]["roleText"] == "Staff"
-
-    # 確認：只代表已回應，狀態仍是進行中
-    qml(find(detail, "acknowledgeButton"), "clicked()")
-    wait_until(lambda: staff.coachingModel.current.get("acknowledged"))
-    assert action_row(db, action_id)[0] == "open" and action_row(db, action_id)[6] == 1
-    assert not find(detail, "acknowledgeButton").isVisible()
-    assert find(detail, "acknowledgeText").property("text").startswith("Acknowledged ")
-    assert not find(item, "actionFlag").property("visible")  # 清單上的 New 也不見了
-    assert events(db, action_id)[-2:] == ["response", "acknowledged"]
-
-    # 管理員：Coaching 頁看到「Staff replied」
-    coaching_page = show(window, "admin_coaching_page.qml")
-    wait_until(lambda: admin.coachingModel.listState == "ready")
-    [admin_item] = visible(coaching_page, "actionItem")
-    assert find(admin_item, "actionFlag").property("visible")
-    assert qml(admin_item, "flagText") == "Staff replied"
+def open_coaching(home, window):
+    """換到 Coaching，等清單、明細和能選的後續服務都讀好（後續服務晚一點才出現，會把下面的內容往下推）。"""
+    page = show(window, "admin_coaching_page.qml")
+    wait_until(lambda: home.coachingModel.detailState == "ready")
+    idle(home.coachingModel.services)
+    return page, qml(page, "detail")
 
 
-# ── 時間註記跳到那一秒：真的（很小的）影片，載入之後播放器停在註記的位置 ─────────────────────
+def open_actions(home, window):
+    page = show(window, "server_actions_page.qml")
+    wait_until(lambda: home.coachingModel.detailState == "ready")
+    idle(home.coachingModel.services)
+    return page, qml(page, "detail")
+
+
+# ── 影片：真的（很小的）影片，才能播、能 seek（Add Moment 要影片能播）─────────────────────────
 
 def small_video(path, seconds=6, fps=10):
     """一段很短的 MJPG AVI（OpenCV 寫；測試換掉的是 VideoCapture，VideoWriter 是真的）。"""
@@ -300,118 +264,392 @@ def small_video(path, seconds=6, fps=10):
     return path.read_bytes()
 
 
-def test_a_marker_opens_the_service_and_seeks_its_video_to_that_second(ui, services, db, s3, tmp_path):
+def add_video(db, s3, tmp_path, service_id):
+    data = small_video(tmp_path / f"{service_id}.avi")
+    for name in (f"{service_id}_cam0.avi", f"{service_id}_cam1.avi"):
+        s3.put_object(Bucket="adam-test", Key=f"video/{name}", Body=data)
+        db.add_media(service_id, "video", f"s3://adam-test/video/{name}")
+
+
+def seek(page, ms):
+    """把影片拉到第 ms 毫秒（和拖進度條一樣，三個檔案一起跳），等播放器真的到了。"""
+    qml(page, f"seekTo({ms})")
+    wait_until(lambda: abs(qml(page, "playbackMs") - ms) <= 150, timeout=10,
+               describe=lambda: f"position {qml(page, 'playbackMs')}")
+
+
+def moment_clocks(root, name="panelMoment"):
+    return [qml(row, "modelData.clock") for row in visible(root, name)]
+
+
+# ── 主要流程：管理員在影片旁邊標時間註記、送出目標 → 服務人員看到 ─────────────────────────────
+
+def test_admin_marks_moments_beside_the_video_and_sends_a_goal(ui, second_engine, services, db, s3, tmp_path):
+    seed(db)
+    add_video(db, s3, tmp_path, SOURCE)
+    admin, window = launch(admin_home_init, ui, ADMIN_ID, services)
+    widen(window)
+    page = open_detail(admin, window, SOURCE, "2026-10-20 09:30:00")
+    wait_until(lambda: admin.mediaModel.canPlay, timeout=10)
+    panel = panel_of(page)
+    model = admin.coachingModel
+
+    # 寬的版面：面板在影片旁邊（同一列、右邊），標時間註記時影片一直看得到
+    media_card = find(page, "mediaCard")
+    wait_until(lambda: qml(page, "panelBeside"))
+    wait_until(lambda: panel.mapToScene(QPointF(0, 0)).x() > media_card.mapToScene(QPointF(0, 0)).x()
+               + media_card.width())
+    assert abs(panel.mapToScene(QPointF(0, 0)).y() - media_card.mapToScene(QPointF(0, 0)).y()) < 1
+    assert 380 <= panel.width() <= 460
+    assert (text(panel, "panelTitle"), text(panel, "panelSubtitle")) == ("Coach Mia", "Mark moments, then set one goal.")
+    assert find(panel, "noPanelMoments").isVisible() and not visible(page, "timelinePin")
+
+    # Add Moment at 00:01：說明欄打開、焦點在裡面；Save Moment 馬上出現在清單，進度條下面多一個點
+    seek(page, 1500)
+    add = find(page, "addMomentButton")
+    assert add.property("text") == "Add Moment at 00:01"
+    click(window, add)
+    wait_until(lambda: find(panel, "momentEditor").isVisible())
+    note = find(panel, "momentNote")
+    wait_until(lambda: note.property("activeFocus"))
+    assert text(panel, "momentEditorLabel") == "Note for 00:01"
+    assert not add.property("enabled")  # 說明欄開著：先存或取消
+    assert len(visible(page, "timelinePin")) == 1
+    type_text(window, "Explained the fee, not the next step")
+    click(window, find(panel, "saveMomentButton"))
+    wait_until(lambda: not find(panel, "momentEditor").isVisible())
+    assert moment_clocks(panel) == ["00:01"]
+    assert text(find(panel, "panelMoment"), "panelMomentNote") == "Explained the fee, not the next step"
+    assert len(visible(page, "timelinePin")) == 1 and add.property("enabled")
+    assert db.rows("SELECT COUNT(*) FROM tbl_coaching_marker") == [(0,)]  # 草稿：送出時才寫
+
+    # 第二個：在 00:03 打開說明欄、打了字，沒按 Save 就把影片拉走。說明欄的時間是按下去的那一秒
+    seek(page, 3500)
+    click(window, add)
+    wait_until(lambda: find(panel, "momentNote").property("activeFocus"))
+    type_text(window, "Customer asks again what to bring")
+    seek(page, 5200)
+    assert add.property("text") == "Add Moment at 00:05"
+    assert text(panel, "momentEditorLabel") == "Note for 00:03"
+    assert text(panel, "attachText") == "2 moments will be attached."
+
+    # 換頁再回來：草稿、打開的說明欄和打的字都還在（存在 coachingModel，每一筆服務一份）
+    show(window, "admin_service_page.qml")
+    page = open_detail(admin, window, SOURCE, "2026-10-20 09:30:00")
+    wait_until(lambda: admin.mediaModel.canPlay, timeout=10)
+    panel = panel_of(page)
+    assert moment_clocks(panel) == ["00:01"] and find(panel, "momentEditor").isVisible()
+    assert qml(panel, "noteField.text") == "Customer asks again what to bring"
+
+    # 欄位空的就按 Send：欄位錯誤，但開著的說明先存成一個時間註記，不會默默丟掉（舊版會，T47 第 1 節）
+    click(window, find(panel, "sendGoalButton"))
+    assert model.createErrors["goal"] == "Enter the goal the staff member should practise."
+    assert model.createErrors["comment"] == "Explain why you set this goal."
+    assert db.rows("SELECT COUNT(*) FROM tbl_coaching_action") == [(0,)]
+    assert not find(panel, "momentEditor").isVisible() and moment_clocks(panel) == ["00:01", "00:03"]
+
+    # 第三個也是開著就送出；這次欄位都填好了
+    qml(panel, f'goalField.text = "{GOAL}"')
+    qml(panel, f'commentField.text = "{COMMENT}"')
+    assert model.createErrors["goal"] == ""  # 改了那一格就拿掉錯誤
+    seek(page, 4500)
+    click(window, find(page, "addMomentButton"))
+    wait_until(lambda: find(panel, "momentNote").property("activeFocus"))
+    type_text(window, "Says thanks and leaves")
+    assert text(panel, "attachText") == "3 moments will be attached."
+    click(window, find(panel, "sendGoalButton"))
+    wait_until(lambda: find(panel, "sentBox").isVisible())
+    [created] = db.rows("SELECT action_id, staff_account_id, created_by, goal, manager_comment, action_status "
+                        "FROM tbl_coaching_action")
+    action_id = created[0]
+    assert created[1:] == (STAFF_ID, ADMIN_ID, GOAL, COMMENT, "open")
+    assert db.rows("SELECT service_id, offset_seconds, note FROM tbl_coaching_marker ORDER BY offset_seconds") == [
+        (SOURCE, 1, "Explained the fee, not the next step"), (SOURCE, 3, "Customer asks again what to bring"),
+        (SOURCE, 4, "Says thanks and leaves")]
+    assert events(db, action_id) == ["created", "marker_added", "marker_added", "marker_added"]
+    assert text(panel, "sentTitle") == "Goal sent to Mia"
+    assert text(panel, "sentText") == "3 moments attached. Mia will see it in My Actions."
+    assert ("success", "Goal sent") not in toast_titles(services)  # 面板上就寫了，不再跳通知
+    assert not find(page, "addMomentButton").property("enabled") and not visible(panel, "panelMoment")
+    [other] = visible(panel, "otherGoal")  # 這筆服務的目標：小方塊
+    assert (text(other, "otherRelation"), text(other, "otherMoments")) == ("Example", "3 moments in this video")
+
+    # Open in Coaching：換到 Coaching、選這一項；時間註記照服務分組，按一下回到那一秒
+    click(window, find(panel, "sentOpenButton"))
+    wait_until(lambda: qml(window, "currentPage") == "admin_coaching_page.qml")
+    coaching_page = qml(window, "mainContentLoader.item")
+    wait_until(lambda: model.detailState == "ready" and model.selectedId == action_id)
+    detail = qml(coaching_page, "detail")
+    assert model.tab == "open"
+    [group] = visible(detail, "momentGroup")
+    assert text(group, "momentGroupLabel") == "Example · Oct 20"
+    assert [qml(chip, "marker.clock") for chip in visible(group, "momentChip")] == ["00:01", "00:03", "00:04"]
+    assert text(detail, "detailGoal") == GOAL and text(detail, "detailComment") == COMMENT
+
+    # 服務人員：My Actions 有新的目標、Watch the example 一個時間註記一列
+    staff, staff_window = launch(server_home_init, second_engine, STAFF_ID, services)
+    staff_page, staff_detail = open_actions(staff, staff_window)
+    assert find(staff_detail, "newGoalBanner").isVisible()
+    assert text(staff_detail, "newGoalTitle") == "New goal from Alex Wang"
+    [card] = visible(staff_detail, "watchCard")
+    assert text(card, "watchKicker") == "Watch the example"
+    assert text(card, "watchService") == f"Oct 20, 09:30 · {SOURCE}"
+    assert moment_clocks(card, "momentRow") == ["00:01", "00:03", "00:04"]
+    [item] = visible(staff_page, "actionItem")
+    assert text(item, "coachingChipLabel") == "New"
+
+
+def test_a_moment_opens_the_service_and_seeks_its_video_to_that_second(ui, services, db, s3, tmp_path):
     seed(db)
     action_id = make_action(db)
     call(db, coaching.ADD_MARKER_SQL, (ADMIN_ID, action_id, SOURCE, 4, "Here"))
-    data = small_video(tmp_path / "clip.avi")
-    for name in (f"{SOURCE}_cam0.avi", f"{SOURCE}_cam1.avi"):
-        s3.put_object(Bucket="adam-test", Key=f"video/{name}", Body=data)
-        db.add_media(SOURCE, "video", f"s3://adam-test/video/{name}")
+    add_video(db, s3, tmp_path, SOURCE)
     staff, window = launch(server_home_init, ui, STAFF_ID, services)
-    page = show(window, "server_actions_page.qml")
-    wait_until(lambda: staff.coachingModel.detailState == "ready")
-    [chip] = visible(qml(page, "detail"), "markerButton")
-    qml(chip, "clicked()")
+    page, detail = open_actions(staff, window)
+    [row] = visible(detail, "momentRow")
+    assert qml(row, "Accessible.name") == "Play from 00:04: Here"
+    click(window, row)
     wait_until(lambda: qml(window, "currentPage") == "server_service_detail_page.qml")
-    detail = qml(window, "mainContentLoader.item")
+    detail_page = qml(window, "mainContentLoader.item")
+    assert qml(window, "pageValue('headerBackText', '')") == "My Actions"
+    # 側邊欄標的是 My Actions（和「‹」一致），不是 Services；服務人員的明細頁沒有輔導面板、播放器照舊一列
+    assert qml(window, "actionsButton.current") and not qml(window, "servicesButton.current")
+    assert not qml(find(detail_page, "coachingCardLoader"), "active") and not find(detail_page, "addMomentButton").isVisible()
     wait_until(lambda: staff.mediaModel.canPlay, timeout=10)
-    wait_until(lambda: qml(detail, "pendingSeekMs") == -1, timeout=10)   # 影片載入了：跳過去
-    wait_until(lambda: 3500 <= qml(detail, "playbackMs") <= 4500, timeout=10,
-               describe=lambda: f"position {qml(detail, 'playbackMs')}")
+    wait_until(lambda: qml(detail_page, "pendingSeekMs") == -1, timeout=10)   # 影片載入了：跳過去
+    wait_until(lambda: 3500 <= qml(detail_page, "playbackMs") <= 4500, timeout=10,
+               describe=lambda: f"position {qml(detail_page, 'playbackMs')}")
+    qml(detail_page, "goBack()")
+    assert qml(window, "currentPage") == "server_actions_page.qml"
 
 
-# ── 管理員：連結後續服務、在它自己的影片上加註記、完成 ───────────────────────────────
+# ── 已經有的目標：從 Coaching 按 Watch，面板對準這一項，時間註記加在後續服務自己的影片上 ─────────────
 
-def open_coaching(home, window):
-    page = show(window, "admin_coaching_page.qml")
-    wait_until(lambda: home.coachingModel.detailState == "ready")
-    return page, qml(page, "detail")
-
-
-def test_admin_links_a_later_follow_up_marks_its_own_video_and_completes(ui, second_engine, services, db):
+def test_a_moment_added_to_an_existing_goal_shows_on_the_panel_in_coaching_and_in_my_actions(
+        ui, second_engine, services, db, s3, tmp_path):
     seed(db)
     action_id = make_action(db)
     call(db, coaching.ADD_MARKER_SQL, (ADMIN_ID, action_id, SOURCE, 135, "Explained the fee"))
+    call(db, coaching.LINK_SQL, (ADMIN_ID, action_id, 1, LATE1))
+    add_video(db, s3, tmp_path, LATE1)
     admin, window = launch(admin_home_init, ui, ADMIN_ID, services)
     model = admin.coachingModel
     page, detail = open_coaching(admin, window)
-    assert model.selectedId == action_id  # 一進來選第一項
-    assert (model.completedShare, model.completedText, model.reviewTimeText, model.openCountText) == (
-        "0%", "0 of 1 action", "—", "1")
-    assert find(page, "completedMetric").isVisible() and find(page, "coachingFilters").isVisible()
-
-    # 完成要先有後續服務
-    assert not find(detail, "completeButton").property("enabled") and find(detail, "completeHint").isVisible()
-    # 後續服務的選單：同一位員工、比原始服務晚、分析完成的，新的在前（早的、分析中的、Leo 的都不在）
-    wait_until(lambda: model.followUpState == "ready")
-    assert [option["value"] for option in model.followUpOptions] == [LATE2, LATE1]
-    select = find(detail, "followUpSelect")
-    assert [option["text"] for option in qml(select, "options").toVariant()] == [
-        "Choose a later service", f"{LATE2} · Oct 29, 14:10", f"{LATE1} · Oct 26, 10:15"]
-    qml(select, f'picked("{LATE1}")')
-    qml(find(detail, "linkFollowUpButton"), "clicked()")
-    wait_until(lambda: model.current.get("followUp", {}).get("serviceId") == LATE1)
-    assert action_row(db, action_id)[3:6] == (LATE1, None, 2)
-    assert ("success", "Follow-up linked") in toast_titles(services)
-    assert find(detail, "completeButton").property("enabled") and not find(detail, "completeHint").isVisible()
-
-    # 看後續服務：Open Service 換到它的明細，「‹」回到 Coaching；註記加在它自己的影片上
-    qml(find(find(detail, "followUpBlock"), "openServiceButton"), "clicked()")
+    next_step = find(detail, "nextStep")
+    assert text(next_step, "nextStepTitle") == "Watch the follow-up, then decide"
+    click(window, find(next_step, "watchFollowUpButton"))
     wait_until(lambda: qml(window, "currentPage") == "admin_service_detail_page.qml")
     assert qml(window, "pageValue('headerBackText', '')") == "Coaching"
     assert qml(window, "coachingButton.current") and not qml(window, "servicesButton.current")
     detail_page = qml(window, "mainContentLoader.item")
-    wait_until(lambda: admin.mediaModel.serviceId == LATE1 and admin.mediaModel.state == "ready")
-    card_of(detail_page)
-    [row] = model.cardActions
-    assert (row["relation"], row["canMark"], row["relationText"]) == ("follow_up", True, "Follow-up for this goal")
-    assert model.addMarker(action_id, LATE1, 48, "Asked the customer to repeat the next step")  # 沒有影片：直接呼叫
-    wait_until(lambda: len(model.cardActions[0]["markers"]) == 1)
-    assert db.rows("SELECT service_id, offset_seconds FROM tbl_coaching_marker WHERE removed_at IS NULL "
-                   "ORDER BY marker_id") == [(SOURCE, 135), (LATE1, 48)]
-    qml(detail_page, "goBack()")
-    page = qml(window, "mainContentLoader.item")
-    wait_until(lambda: model.detailState == "ready")
-    detail = qml(page, "detail")
-    # 兩筆服務各有自己影片上的註記：原始的 02:15、後續的 00:48
-    assert [marker["clock"] for marker in model.current["source"]["markers"]] == ["02:15"]
-    assert [marker["clock"] for marker in model.current["followUp"]["markers"]] == ["00:48"]
+    wait_until(lambda: admin.mediaModel.serviceId == LATE1 and admin.mediaModel.canPlay, timeout=10)
+    panel = panel_of(detail_page)
 
-    # 完成：結論必填
-    qml(find(detail, "completeButton"), "clicked()")
+    # 面板對準這一項：加到哪一項一看就知道，沒有新目標的表單
+    assert model.cardFocusId == action_id
+    assert find(panel, "focusGoal").isVisible() and text(panel, "focusGoalText") == GOAL
+    assert text(panel, "panelSubtitle") == "Mark moments in this follow-up, then review it in Coaching."
+    assert not find(panel, "goalForm").isVisible() and not visible(panel, "panelMoment")
+    seek(detail_page, 2500)
+    click(window, find(detail_page, "addMomentButton"))
+    wait_until(lambda: find(panel, "momentNote").property("activeFocus"))
+    assert text(panel, "momentEditorLabel") == "Note for 00:02 · adds to this goal"
+    type_text(window, "Asked the customer to repeat the next step")
+    click(window, find(panel, "saveMomentButton"))
+    wait_until(lambda: moment_clocks(panel) == ["00:02"])  # 寫好了就在面板上
+    assert not find(panel, "momentEditor").isVisible()
+    assert db.rows("SELECT service_id, offset_seconds, note FROM tbl_coaching_marker WHERE removed_at IS NULL "
+                   "ORDER BY marker_id") == [(SOURCE, 135, "Explained the fee"),
+                                             (LATE1, 2, "Asked the customer to repeat the next step")]
+    assert len(visible(detail_page, "timelinePin")) == 1
+
+    # Coaching：Follow-up 那一組有它；Example 的還在
+    click(window, find(panel, "focusOpenButton"))
+    wait_until(lambda: qml(window, "currentPage") == "admin_coaching_page.qml")
+    page = qml(window, "mainContentLoader.item")
+    wait_until(lambda: model.detailState == "ready" and model.selectedId == action_id)
+    detail = qml(page, "detail")
+    groups = visible(detail, "momentGroup")
+    assert [text(group, "momentGroupLabel") for group in groups] == ["Example · Oct 20", "Follow-up · Oct 26"]
+    assert [qml(chip, "marker.clock") for chip in visible(groups[1], "momentChip")] == ["00:02"]
+
+    # 服務人員：My Actions 的「Later service」那一張有它
+    staff, staff_window = launch(server_home_init, second_engine, STAFF_ID, services)
+    staff_page, staff_detail = open_actions(staff, staff_window)
+    cards = visible(staff_detail, "watchCard")
+    assert [text(card, "watchKicker") for card in cards] == ["Watch the example", "Later service"]
+    assert moment_clocks(cards[1], "momentRow") == ["00:02"]
+
+
+# ── 後續服務：還沒有就等；Check Again、重新打開頁面都會重查 → Use as Follow-up → Mark Complete ─────────
+
+def test_follow_up_waits_then_check_again_finds_a_later_service_and_the_goal_is_completed(
+        ui, second_engine, services, db):
+    seed(db)
+    action_id = make_action(db, source=LATE2)  # 最晚的一筆：還沒有更晚、分析完成的
+    admin, window = launch(admin_home_init, ui, ADMIN_ID, services)
+    model = admin.coachingModel
+    page, detail = open_coaching(admin, window)
+    next_step = find(detail, "nextStep")
+    wait_until(lambda: qml(next_step, "step") == "waiting")
+    assert text(next_step, "nextStepTitle") == "Waiting for a later service"
+    assert text(next_step, "nextStepText") == ("When Mia records a new service and it's analyzed, "
+                                                "you can pick it here.")
+    [item] = visible(page, "actionItem")
+    assert text(item, "coachingChipLabel") == "Waiting for a Later Service"
+
+    # 之後分析完成了一筆：Check Again 找得到（舊版查一次就停在灰的選單，T47 第 2 節）
+    db.add_service(LATER, "2026-10-30 12:00:00", status=3)
+    db.add_scores(LATER, customer=80, server=86.5)
+    click(window, find(next_step, "checkAgainButton"))
+    wait_until(lambda: qml(next_step, "step") == "pick")
+    assert text(next_step, "nextStepTitle") == "Pick a later service to check this goal"
+    [row] = visible(next_step, "candidateRow")
+    assert qml(find(row, "candidateScore"), "Accessible.name") == "Staff 86.5 Good"
+    assert text(item, "coachingChipLabel") == "Pick a Follow-up"  # 清單的標籤跟著最新的結果
+    click(window, find(row, "useFollowUpButton"))
+    wait_until(lambda: qml(next_step, "step") == "review")
+    assert action_row(db, action_id)[3:6] == (LATER, None, 2)
+    assert text(item, "coachingChipLabel") == "Ready to Review"
+    assert [qml(step, "modelData.state") for step in visible(detail, "progressStep")] == [
+        "done", "current", "done", "todo"]  # Mia 還沒回應
+
+    # Mark Complete：結論必填，寫在按鈕上面，對話框不關
+    click(window, find(next_step, "markCompleteButton"))
     dialog = qml(detail, "dialog")
     wait_until(lambda: qml(dialog, "opened"))
-    qml(dialog, "submitButton.clicked()")
+    assert qml(dialog, "title") == "Mark Complete"
+    click(window, qml(dialog, "submitButton"))
     assert model.actionError["text"] == "Write what you saw in the follow-up."
-    assert find(qml(dialog, "contentItem"), "dialogError").isVisible()  # 寫在按鈕上面，對話框不關
-    assert action_row(db, action_id)[0] == "open"
+    assert find(qml(dialog, "contentItem"), "dialogError").isVisible() and action_row(db, action_id)[0] == "open"
     conclusion = "Explained the next step and asked the customer to repeat it."
     qml(dialog, f'reasonField.text = "{conclusion}"')
-    qml(dialog, "submitButton.clicked()")
+    click(window, qml(dialog, "submitButton"))
     wait_until(lambda: not qml(dialog, "visible"))
     assert action_row(db, action_id)[0] == "completed" and action_row(db, action_id)[4] == conclusion
-    assert events(db, action_id)[-1] == "completed"
-    assert model.current["concludedText"].startswith("Completed by Alex Wang · ")
-    assert model.current["concludedText"].endswith("Under 1 day after the goal was set")
-    assert (model.completedShare, model.completedText, model.reviewTimeText, model.openCountText) == (
-        "100%", "1 of 1 action", "Under 1 day", "0")
-    assert not visible(detail, "adminActions") and not visible(detail, "respondSection")
+    assert ("success", "Goal completed") in toast_titles(services)
+    # 選到的那一項換到 Completed；Next step 是結論
+    wait_until(lambda: model.tab == "completed")
+    assert qml(next_step, "step") == "completed" and text(next_step, "nextStepTitle") == conclusion
+    assert text(next_step, "nextStepText").startswith("Follow-up: Oct 30, 12:00\nCompleted by Alex Wang · ")
+    assert (model.completedShare, model.completedOf, model.openCountText) == ("100%", "1 of 1", "0")
+    assert not find(detail, "editGoalButton").isVisible() and not find(detail, "composerRow").isVisible()
 
-    # 服務人員看到結論，不能再回應或確認
+    # 服務人員：完成的方塊，不能再回應
     staff, staff_window = launch(server_home_init, second_engine, STAFF_ID, services)
-    staff_page = show(staff_window, "server_actions_page.qml")
-    wait_until(lambda: staff.coachingModel.detailState == "ready")
-    staff_detail = qml(staff_page, "detail")
-    assert find(staff_detail, "conclusionText").property("text") == conclusion
-    assert find(staff_detail, "detailChip").property("label") == "Completed"
-    assert not visible(staff_detail, "respondSection") and not visible(staff_detail, "acknowledgeRow")
+    staff_page, staff_detail = open_actions(staff, staff_window)
+    assert find(staff_detail, "closedBanner").isVisible()
+    assert text(staff_detail, "closedTitle").startswith("Completed ")
+    assert text(staff_detail, "conclusionText") == conclusion
+    assert not find(staff_detail, "composerRow").isVisible() and not find(staff_detail, "newGoalBanner").isVisible()
     assert refused(db, coaching.RESPOND_SQL, (STAFF_ID, action_id, "Thanks")) == "not_open"
 
 
-# ── 調整：新的目標、期限，舊的值和看過的後續服務留在歷史，下一次要更晚 ─────────────────────
+def test_reopening_coaching_checks_the_follow_up_options_again(ui, services, db):
+    seed(db)
+    make_action(db, source=LATE2)
+    admin, window = launch(admin_home_init, ui, ADMIN_ID, services)
+    model = admin.coachingModel
+    page, detail = open_coaching(admin, window)
+    wait_until(lambda: model.followUpState == "empty")
+    db.add_service(LATER, "2026-10-30 12:00:00", status=3)  # 之後分析完成了一筆（沒有分數）
+    show(window, "admin_service_page.qml")
+    page, detail = open_coaching(admin, window)  # 再打開 Coaching：重查，不必按 Check Again
+    next_step = find(detail, "nextStep")
+    wait_until(lambda: qml(next_step, "step") == "pick")
+    assert [option["value"] for option in model.followUpOptions] == [LATER]
+    [row] = visible(next_step, "candidateRow")
+    assert qml(find(row, "candidateScore"), "Accessible.name") == "No staff score"
 
-def test_adjusting_keeps_the_history_and_the_next_follow_up_must_be_later(ui, second_engine, services, db):
+
+# ── 對話：兩端都能寫；自己的在右邊 ───────────────────────────────────────────────
+
+def test_admin_and_staff_talk_in_the_conversation(ui, second_engine, services, db):
+    seed(db)
+    action_id = make_action(db)
+    staff, staff_window = launch(server_home_init, second_engine, STAFF_ID, services)
+    staff_page, staff_detail = open_actions(staff, staff_window)
+    talk = qml(staff_detail, "conversation")
+    composer = find(talk, "composerField")
+    assert composer.property("placeholderText") == "Reply to Alex…"
+    assert [text(entry, "eventText") for entry in visible(talk, "conversationEvent")][0].startswith(
+        "Alex set the goal · ")
+
+    # 空的不送：欄位下面說明
+    click(staff_window, find(talk, "sendMessageButton"))
+    assert staff.coachingModel.actionError["text"] == "Write a message first."
+    assert find(talk, "conversationError").isVisible()
+    # 打字、Return 送出：出現在右邊（自己的），欄位清空，不跳通知
+    click(staff_window, composer)
+    reply = "I was rushed because the queue was long. I'll ask them to repeat the next step."
+    type_text(staff_window, reply)
+    QTest.keyClick(staff_window, Qt.Key.Key_Return)
+    wait_until(lambda: len(visible(talk, "conversationMessage")) == 1)
+    [mine] = visible(talk, "conversationMessage")
+    assert text(mine, "bubbleText") == reply and text(mine, "bubbleAuthor").startswith("You · ")
+    bubble = find(mine, "bubble")
+    assert bubble.mapToItem(mine, QPointF(0, 0)).x() + bubble.width() == pytest.approx(mine.width(), abs=1)
+    assert composer.property("text") == "" and not find(talk, "conversationError").isVisible()
+    assert not [title for title in toast_titles(services) if title[0] == "success"]
+
+    # 管理員：Mia 的訊息在左邊，寫回去（按 Send）
+    admin, window = launch(admin_home_init, ui, ADMIN_ID, services)
+    page, detail = open_coaching(admin, window)
+    admin_talk = qml(detail, "conversation")
+    [theirs] = visible(admin_talk, "conversationMessage")
+    assert text(theirs, "bubbleAuthor").startswith("Mia Chen · ")
+    assert find(theirs, "bubble").mapToItem(theirs, QPointF(0, 0)).x() == 0
+    assert text(visible(admin_talk, "conversationEvent")[0], "eventText").startswith("You set the goal · ")
+    assert find(admin_talk, "composerField").property("placeholderText") == "Write to Mia…"
+    click(window, find(admin_talk, "composerField"))
+    type_text(window, "Good plan. Ask them to say it back in their own words.")
+    click(window, find(admin_talk, "sendMessageButton"))
+    wait_until(lambda: len(visible(admin_talk, "conversationMessage")) == 2)
+    assert db.rows("SELECT author_id, author_role, body FROM tbl_coaching_event WHERE event_type = 'response' "
+                   "ORDER BY event_id") == [(STAFF_ID, "staff", reply),
+                                            (ADMIN_ID, "admin", "Good plan. Ask them to say it back in their own words.")]
+    # 管理員的步驟：Mia replied 做完了
+    assert [qml(step, "modelData.state") for step in visible(detail, "progressStep")] == [
+        "done", "done", "current", "todo"]
+
+    # 服務人員重讀：管理員的訊息在左邊，寫的是管理員的名字
+    staff.coachingModel.refresh()
+    wait_until(lambda: len(visible(talk, "conversationMessage")) == 2)
+    assert text(visible(talk, "conversationMessage")[1], "bubbleAuthor").startswith("Alex Wang · ")
+    assert action_row(db, action_id)[0] == "open"
+
+
+# ── Got It：只代表看過了，不是完成 ─────────────────────────────────────────────────
+
+def test_staff_presses_got_it_on_the_new_goal_banner(ui, second_engine, services, db):
+    seed(db)
+    action_id = make_action(db)
+    staff, window = launch(server_home_init, ui, STAFF_ID, services)
+    page, detail = open_actions(staff, window)
+    banner = find(detail, "newGoalBanner")
+    assert banner.isVisible() and text(detail, "detailFrom").startswith("From Alex Wang · Due ")
+    [item] = visible(page, "actionItem")
+    assert text(item, "coachingChipLabel") == "New"
+    assert [(qml(step, "modelData.label"), qml(step, "modelData.state")) for step in visible(detail, "progressStep")] == [
+        ("Goal set", "done"), ("You replied", "current"), ("Later service", "todo"), ("Review", "todo")]
+    click(window, find(banner, "gotItButton"))
+    wait_until(lambda: not banner.isVisible())
+    assert action_row(db, action_id)[0] == "open" and action_row(db, action_id)[6] == 1
+    assert events(db, action_id) == ["created", "acknowledged"]
+    assert text(visible(detail, "conversationEvent")[-1], "eventText").startswith("You read the goal · ")
+    assert text(item, "coachingChipLabel") == "In Progress"
+    assert not [title for title in toast_titles(services) if title[0] == "success"]  # 畫面上就看得到
+
+    admin, admin_window = launch(admin_home_init, second_engine, ADMIN_ID, services)
+    admin_page, admin_detail = open_coaching(admin, admin_window)
+    assert [qml(step, "modelData.label") for step in visible(admin_detail, "progressStep")][1] == "Mia replied"
+    assert qml(visible(admin_detail, "progressStep")[1], "modelData.state") == "done"
+    assert text(visible(admin_detail, "conversationEvent")[-1], "eventText").startswith("Mia read the goal · ")
+
+
+# ── Keep Practicing、Edit Goal：舊的值留在歷史，下一次要選更晚的 ──────────────────────────────
+
+def test_keep_practicing_keeps_the_history_and_the_next_follow_up_must_be_later(ui, second_engine, services, db):
     seed(db)
     action_id = make_action(db)
     call(db, coaching.ACKNOWLEDGE_SQL, (STAFF_ID, action_id, 1))
@@ -421,52 +659,68 @@ def test_adjusting_keeps_the_history_and_the_next_follow_up_must_be_later(ui, se
     admin, window = launch(admin_home_init, ui, ADMIN_ID, services)
     model = admin.coachingModel
     page, detail = open_coaching(admin, window)
+    next_step = find(detail, "nextStep")
 
-    qml(find(detail, "adjustButton"), "clicked()")
+    click(window, find(next_step, "keepPracticingButton"))
     dialog = qml(detail, "dialog")
     wait_until(lambda: qml(dialog, "opened"))
-    assert qml(dialog, "goalField.text") == GOAL  # 預先填目前的目標
+    assert qml(dialog, "title") == "Keep Practicing" and qml(dialog, "goalField.text") == GOAL  # 預先填目前的目標
+    click(window, qml(dialog, "submitButton"))
+    assert model.actionError["text"] == "Write what still needs practice."
     new_goal = "Ask the customer to repeat the next step before they leave."
     due = date.today() + timedelta(days=21)
     reason = "Explained the next step but didn't check the customer understood."
     qml(dialog, f'reasonField.text = "{reason}"')
     qml(dialog, f'goalField.text = "{new_goal}"')
     qml(dialog, f'dueField.text = "{due:%Y-%m-%d}"')
-    qml(dialog, "submitButton.clicked()")
+    click(window, qml(dialog, "submitButton"))
     wait_until(lambda: not qml(dialog, "visible"))
     assert action_row(db, action_id) == ("open", new_goal, due, None, None, 3, 0)  # 後續服務拿掉、要再確認
     assert db.rows("SELECT goal_before, goal_after, due_before, due_after, service_id, body FROM tbl_coaching_event "
                    "WHERE event_type = 'adjusted'") == [(GOAL, new_goal, old_due, due, LATE1, reason)]
-    assert ("success", "Goal adjusted") in toast_titles(services)
+    assert ("success", "Goal updated") in toast_titles(services)
 
-    # 看過的後續服務和它的註記留著；下一次只能選更晚的
+    # 看過的後續服務和它的時間註記留著；下一次只能選更晚的；步驟從「Mia replied」重新算
     current = model.current
     assert current["goal"] == new_goal and current["followUp"] == {}
-    assert [block["serviceId"] for block in current["reviewed"]] == [LATE1]
-    assert current["reviewed"][0]["reason"] == reason
-    assert [marker["clock"] for marker in current["reviewed"][0]["markers"]] == ["00:40"]
-    assert visible(detail, "reviewedBlock")
-    wait_until(lambda: model.followUpFor == action_id and model.followUpState == "ready")
+    assert [(block["relation"], block["serviceId"]) for block in current["services"]] == [
+        ("source", SOURCE), ("reviewed", LATE1)]
+    assert [text(group, "momentGroupLabel") for group in visible(detail, "momentGroup")] == ["Reviewed · Oct 26"]
+    wait_until(lambda: qml(next_step, "step") == "pick")
     assert [option["value"] for option in model.followUpOptions] == [LATE2]
     assert refused(db, coaching.LINK_SQL, (ADMIN_ID, action_id, 3, LATE1)) == "follow_up"
-    entry = current["history"][-1]
-    assert entry["title"] == "Alex Wang adjusted the goal" and entry["body"] == reason
-    assert entry["changes"] == [f"Reviewed follow-up: {LATE1} · Oct 26, 10:15", f"Goal: {GOAL} → {new_goal}",
-                                f"Follow up by: {coaching.short_day(old_due, date.today())} → "
-                                f"{coaching.short_day(due, date.today())}"]
+    assert [qml(step, "modelData.state") for step in visible(detail, "progressStep")] == [
+        "done", "current", "todo", "todo"]
+    adjusted = [entry for entry in current["conversation"] if entry["text"].startswith("You asked for more practice")]
+    assert adjusted[0]["text"] == "You asked for more practice after the Oct 26 service"
+    assert adjusted[0]["lines"] == [reason, f"New goal: {new_goal}",
+                                    f"Follow up by {coaching.short_day(due, date.today())}"]
     # 員工之前的確認是對舊的目標：畫面上的版本不對就是 changed
     assert refused(db, coaching.ACKNOWLEDGE_SQL, (STAFF_ID, action_id, 1)) == "changed"
 
-    # 服務人員：新的目標又是「New」，要再確認
+    # Edit Goal（標題旁邊）：改目標、寫原因；沒有後續服務時，說明不提後續服務
+    click(window, find(detail, "editGoalButton"))
+    wait_until(lambda: qml(dialog, "opened") and qml(dialog, "mode") == "edit")
+    assert text(qml(dialog, "contentItem"), "dialogExplanation") == (
+        "Change the goal or the date, and say why. Mia confirms the new goal again.")
+    click(window, qml(dialog, "submitButton"))
+    assert model.actionError["text"] == "Write why you're changing the goal."
+    qml(dialog, 'reasonField.text = "Clearer wording."')
+    qml(dialog, 'goalField.text = "Ask the customer to repeat the next step."')
+    click(window, qml(dialog, "submitButton"))
+    wait_until(lambda: not qml(dialog, "visible"))
+    assert action_row(db, action_id)[1] == "Ask the customer to repeat the next step."
+    assert model.current["conversation"][-1]["text"] == "You edited the goal"
+
+    # 服務人員：新的目標又是「New」，要再按 Got It
     staff, staff_window = launch(server_home_init, second_engine, STAFF_ID, services)
-    staff_page = show(staff_window, "server_actions_page.qml")
-    wait_until(lambda: staff.coachingModel.detailState == "ready")
+    staff_page, staff_detail = open_actions(staff, staff_window)
     [item] = visible(staff_page, "actionItem")
-    assert qml(item, "flagText") == "New"
-    staff_detail = qml(staff_page, "detail")
-    assert find(staff_detail, "detailGoal").property("text") == new_goal
-    assert find(staff_detail, "acknowledgeButton").isVisible()
-    assert [block["serviceId"] for block in staff.coachingModel.current["reviewed"]] == [LATE1]
+    assert text(item, "coachingChipLabel") == "New"
+    assert text(staff_detail, "detailGoal") == "Ask the customer to repeat the next step."
+    assert find(staff_detail, "newGoalBanner").isVisible()
+    cards = visible(staff_detail, "watchCard")
+    assert [text(card, "watchKicker") for card in cards] == ["Watch the example", "Reviewed service"]
 
 
 # ── 權限：資料庫決定（程序帶呼叫者），不靠畫面 ────────────────────────────────────
@@ -479,7 +733,7 @@ def test_staff_can_only_read_and_answer_their_own_actions_and_cannot_change_them
     mine = make_action(db)
     marker = call(db, coaching.ADD_MARKER_SQL, (ADMIN_ID, mine, SOURCE, 30, "Here"))[0][0]["marker_id"]
     leos = make_action(db, LEOS_ACTION, source=LEO, goal="Greet the customer by name.")
-    # 清單、明細、明細頁的卡片：只有自己的
+    # 清單、明細、明細頁的面板：只有自己的
     assert [row["action_id"] for row in call(db, coaching.LIST_SQL, (STAFF_ID,))[0]] == [mine]
     assert [row["action_id"] for row in call(db, coaching.LIST_SQL, (OTHER_ID,))[0]] == [leos]
     assert {row["action_id"] for row in call(db, coaching.LIST_SQL, (ADMIN_ID,))[0]} == {mine, leos}
@@ -488,10 +742,10 @@ def test_staff_can_only_read_and_answer_their_own_actions_and_cannot_change_them
     assert call(db, coaching.DETAIL_SQL, ("no-such-account", mine))[:3] == [[], [], []]
     assert call(db, coaching.FOR_SERVICE_SQL, (OTHER_ID, SOURCE))[:2] == [[], []]
     assert call(db, coaching.OPTIONS_SQL, (STAFF_ID, mine))[0] == []
-    # 別人的行動：當作不存在
+    # 別人的目標：當作不存在
     assert refused(db, coaching.RESPOND_SQL, (OTHER_ID, mine, "Not mine")) == "not_found"
     assert refused(db, coaching.ACKNOWLEDGE_SQL, (OTHER_ID, mine, 1)) == "not_found"
-    # 只有管理員能做的：服務人員（就算是自己的行動）一律 forbidden
+    # 只有管理員能做的：服務人員（就算是自己的目標）一律 forbidden
     today = date.today()
     for sql, params in ((coaching.CREATE_SQL, (STAFF_ID, "a0000000-0000-4000-8000-0000000000ff", SOURCE, "g", "c",
                                                today)),
@@ -504,7 +758,7 @@ def test_staff_can_only_read_and_answer_their_own_actions_and_cannot_change_them
         assert refused(db, sql, params) == "forbidden", sql
     assert refused(db, coaching.ACKNOWLEDGE_SQL, (ADMIN_ID, mine, 1)) == "forbidden"  # 只有當事人能確認
     assert refused(db, coaching.RESPOND_SQL, ("no-such-account", mine, "Hi")) == "forbidden"
-    # 目標、期限、結論、註記都沒變，歷史只有建立和加註記
+    # 目標、期限、結論、時間註記都沒變，歷史只有建立和加時間註記
     assert action_row(db, mine)[:2] == ("open", GOAL) and action_row(db, mine)[3:6] == (None, None, 1)
     assert events(db, mine) == ["created", "marker_added"]
     assert db.rows("SELECT COUNT(*) FROM tbl_coaching_marker WHERE removed_at IS NULL") == [(1,)]
@@ -521,14 +775,13 @@ def test_staff_cannot_open_other_services_through_an_action(ui, services, db):
     mine = make_action(db)
     make_action(db, LEOS_ACTION, source=LEO, goal="Greet the customer by name.")
     staff, window = launch(server_home_init, ui, STAFF_ID, services)
-    show(window, "server_actions_page.qml")
+    open_actions(staff, window)
     model = staff.coachingModel
-    wait_until(lambda: model.detailState == "ready")
     opened = []
     model.openServiceRequested.connect(lambda *args: opened.append(args))
     assert [row["actionId"] for row in model.listModel.rows()] == [mine]
     assert not model.openService(mine, LEO, 5)              # 不是這一項的服務
-    assert not model.openService(LEOS_ACTION, LEO, -1)      # 別人的行動
+    assert not model.openService(LEOS_ACTION, LEO, -1)      # 別人的目標
     model.select(LEOS_ACTION)
     wait_until(lambda: model.detailState == "missing")      # 資料庫不給：當作不存在
     assert model.current == {} and not model.openService(LEOS_ACTION, LEO, -1)
@@ -546,15 +799,38 @@ def test_a_follow_up_must_be_a_later_analyzed_service_by_the_same_staff_member(u
     admin, window = launch(admin_home_init, ui, ADMIN_ID, services)
     model = admin.coachingModel
     page, detail = open_coaching(admin, window)
+    # 能選的：同一位員工、比原始服務晚、分析完成的，新的在前（早的、分析中的、Leo 的都不在）
+    wait_until(lambda: model.followUpState == "ready")
+    assert [option["value"] for option in model.followUpOptions] == [LATE2, LATE1]
+    assert [qml(row, "modelData.whenText") for row in visible(find(detail, "nextStep"), "candidateRow")] == [
+        "Oct 29, 14:10", "Oct 26, 10:15"]
     for bad in (EARLY, UNANALYZED, LEO, SOURCE, "S20991231000000"):  # 早的、還在分析、別人的、原始服務、不存在
         assert model.linkFollowUp(action_id, bad)
         idle(services)
         assert model.actionError == {"actionId": action_id, "op": "link",
                                      "text": coaching.problem_text("follow_up")}, bad
     assert action_row(db, action_id)[3] is None and events(db, action_id) == ["created"]
-    assert visible(detail, "fieldErrorText")
+    assert find(find(detail, "nextStep"), "linkError").isVisible()
     assert not model.linkFollowUp(action_id, "")  # 還沒選：不送
     assert model.actionError["text"] == "Choose a follow-up service."
+
+
+def test_a_long_list_of_later_services_shows_the_newest_five_first(ui, services, db):
+    seed(db)
+    make_action(db)
+    for day in range(1, 6):  # 再多 5 筆比原始服務晚、分析完成的：一共 7 筆
+        db.add_service(f"S202611{day:02d}090000", f"2026-11-{day:02d} 09:00:00", status=3)
+    admin, window = launch(admin_home_init, ui, ADMIN_ID, services)
+    page, detail = open_coaching(admin, window)
+    next_step = find(detail, "nextStep")
+    assert qml(next_step, "step") == "pick" and len(admin.coachingModel.followUpOptions) == 7
+    assert [qml(row, "modelData.value") for row in visible(next_step, "candidateRow")] == [
+        f"S202611{day:02d}090000" for day in range(5, 0, -1)]
+    more = find(next_step, "showAllCandidatesButton")
+    assert more.property("text") == "Show All 7"
+    click(window, more)
+    wait_until(lambda: len(visible(next_step, "candidateRow")) == 7)
+    assert not more.isVisible()
 
 
 def test_completing_needs_a_follow_up_and_a_conclusion_and_nothing_else_completes(ui, services, db):
@@ -576,7 +852,7 @@ def test_completing_needs_a_follow_up_and_a_conclusion_and_nothing_else_complete
     model.refresh()
     idle(services)
     assert action_row(db, action_id)[0] == "open" and model.current["status"] == "open"
-    assert model.completedText == "0 of 1 action"
+    assert (model.completedShare, model.completedOf) == ("0%", "0 of 1")
 
 
 # ── 兩個管理員改同一項、重複按、交易中途失敗、連不上 ─────────────────────────────────
@@ -598,9 +874,9 @@ def test_two_admins_editing_the_same_action_get_changed_elsewhere_and_reload(ui,
     assert second.coachingModel.adjust(action_id, "Needs more practice.", "A new goal", due)
     idle(services)
     assert second.coachingModel.actionError["text"] == coaching.problem_text("changed")
-    assert ("warning", "This action changed elsewhere") in toast_titles(services)
+    assert ("warning", "This goal changed elsewhere") in toast_titles(services)
     assert action_row(db, action_id)[1:2] == (GOAL,) and action_row(db, action_id)[5] == 2
-    [toast] = [toast for toast in toasts(services.notifier) if toast["title"] == "This action changed elsewhere"]
+    [toast] = [toast for toast in toasts(services.notifier) if toast["title"] == "This goal changed elsewhere"]
     assert toast["actionLabel"] == "Reload"
     services.notifier.trigger(toast["toastId"])
     wait_until(lambda: second.coachingModel.current.get("version") == 2)
@@ -619,16 +895,14 @@ def test_pressing_twice_writes_once(ui, second_engine, services, db):
     seed(db)
     action_id = make_action(db)
     staff, window = launch(server_home_init, ui, STAFF_ID, services)
-    page = show(window, "server_actions_page.qml")
+    page, detail = open_actions(staff, window)
     model = staff.coachingModel
-    wait_until(lambda: model.detailState == "ready")
     assert model.respond(action_id, "First press")
     assert not model.respond(action_id, "Second press")  # 同一項還在寫：不送
     assert action_id in model.saving
     idle(services)
     assert db.rows("SELECT body FROM tbl_coaching_event WHERE event_type = 'response'") == [("First press",)]
-    detail = qml(page, "detail")
-    button = find(detail, "acknowledgeButton")
+    button = find(detail, "gotItButton")
     qml(button, "clicked()")
     assert qml(button, "busy")  # 忙碌的按鈕擋住第二次（BusyButton）
     assert not model.acknowledge(action_id)
@@ -636,35 +910,41 @@ def test_pressing_twice_writes_once(ui, second_engine, services, db):
     assert events(db, action_id).count("acknowledged") == 1
 
     admin, admin_window = launch(admin_home_init, second_engine, ADMIN_ID, services)
-    card = card_of(open_detail(admin, admin_window, LATE2, "2026-10-29 14:10:00"))
-    # 從 Services 那條路打開的明細：照舊標 Services
+    panel = panel_of(open_detail(admin, admin_window, LATE2, "2026-10-29 14:10:00"))
+    # 從 Services 那條路打開的明細：照舊標 Services，面板是新目標
     assert qml(admin_window, "servicesButton.current") and not qml(admin_window, "coachingButton.current")
-    admin.coachingModel.setDraftOpen(True)
-    qml(card, f'goalField.text = "{GOAL}"')
-    qml(card, f'commentField.text = "{COMMENT}"')
+    assert admin.coachingModel.cardFocusId == "" and find(panel, "goalForm").isVisible()
+    qml(panel, f'goalField.text = "{GOAL}"')
+    qml(panel, f'commentField.text = "{COMMENT}"')
     assert admin.coachingModel.createGoal()
     assert not admin.coachingModel.createGoal()  # 還在建立：不送第二次
     idle(services)
     assert db.rows("SELECT COUNT(*) FROM tbl_coaching_action WHERE source_service_id = %s", (LATE2,)) == [(1,)]
 
 
+def draft_moment(model, seconds, note):
+    """和按 Add Moment、打字、Save Moment 一樣（沒有影片的測試直接呼叫）。"""
+    assert model.startMoment(seconds)
+    model.updatePending(note)
+    assert model.savePending()
+
+
 def test_a_failure_in_the_middle_of_creating_leaves_nothing(ui, services, db):
     seed(db)
     admin, window = launch(admin_home_init, ui, ADMIN_ID, services)
     model = admin.coachingModel
-    card = card_of(open_detail(admin, window, SOURCE, "2026-10-20 09:30:00"))
-    model.setDraftOpen(True)
-    qml(card, f'goalField.text = "{GOAL}"')
-    qml(card, f'commentField.text = "{COMMENT}"')
-    assert model.addDraftMarker(10, "Fine")
-    assert model.addDraftMarker(90000, "Past the end of any recording")  # 第二個註記會被程序拒絕（超過一天）
+    panel = panel_of(open_detail(admin, window, SOURCE, "2026-10-20 09:30:00"))
+    qml(panel, f'goalField.text = "{GOAL}"')
+    qml(panel, f'commentField.text = "{COMMENT}"')
+    draft_moment(model, 10, "Fine")
+    draft_moment(model, 90000, "Past the end of any recording")  # 第二個時間註記會被程序拒絕（超過一天）
     assert model.createGoal()
     idle(services)
-    # 同一個交易：行動、第一個註記、歷史都沒有留下
+    # 同一個交易：目標、第一個時間註記、歷史都沒有留下
     for table in ("tbl_coaching_action", "tbl_coaching_marker", "tbl_coaching_event"):
         assert db.rows(f"SELECT COUNT(*) FROM {table}") == [(0,)], table
     assert model.createErrors["form"] == coaching.problem_text("invalid")
-    assert find(card, "composerError").isVisible()
+    assert find(panel, "composerError").isVisible()
     assert model.draft["goal"] == GOAL and len(model.draft["markers"]) == 2  # 草稿留著，可以改了再送
     model.removeDraftMarker(1)
     assert model.createGoal()
@@ -679,19 +959,18 @@ def test_offline_create_keeps_the_draft_and_retry_creates_it_once(ui, services, 
     seed(db)
     admin, window = launch(admin_home_init, ui, ADMIN_ID, services)
     model = admin.coachingModel
-    card = card_of(open_detail(admin, window, SOURCE, "2026-10-20 09:30:00"))
-    model.setDraftOpen(True)
-    qml(card, f'goalField.text = "{GOAL}"')
-    qml(card, f'commentField.text = "{COMMENT}"')
-    assert model.addDraftMarker(75, "Here")
+    panel = panel_of(open_detail(admin, window, SOURCE, "2026-10-20 09:30:00"))
+    qml(panel, f'goalField.text = "{GOAL}"')
+    qml(panel, f'commentField.text = "{COMMENT}"')
+    draft_moment(model, 75, "Here")
     monkeypatch.setenv("DB_PORT", str(unused_port()))  # 資料庫斷了：下一次連線連不上
     assert services.close_db()
     wait_until(lambda: not services.tasks.isBusy(CLOSE_DB_KEY))
-    qml(find(card, "createGoalButton"), "clicked()")
+    click(window, find(panel, "sendGoalButton"))
     wait_until(lambda: not model.creating)
     assert model.createErrors["form"] == "Can't reach the database. Check your network and try again."
-    assert find(card, "composerError").isVisible() and qml(card, "goalField.text") == GOAL
-    [toast] = [toast for toast in toasts(services.notifier) if toast["title"] == "Goal wasn't saved"]
+    assert find(panel, "composerError").isVisible() and qml(panel, "goalField.text") == GOAL
+    [toast] = [toast for toast in toasts(services.notifier) if toast["title"] == "Goal wasn't sent"]
     assert toast["actionLabel"] == "Retry"
     assert db.rows("SELECT COUNT(*) FROM tbl_coaching_action") == [(0,)]
 
@@ -700,6 +979,7 @@ def test_offline_create_keeps_the_draft_and_retry_creates_it_once(ui, services, 
     wait_until(lambda: len(model.cardActions) == 1)
     assert db.rows("SELECT COUNT(*) FROM tbl_coaching_action") == [(1,)]
     assert db.rows("SELECT COUNT(*) FROM tbl_coaching_marker") == [(1,)]
+    assert find(panel, "sentBox").isVisible()
 
 
 def test_a_lost_reply_after_commit_is_not_created_twice(ui, services, db, monkeypatch):
@@ -717,50 +997,49 @@ def test_a_lost_reply_after_commit_is_not_created_twice(ui, services, db, monkey
     monkeypatch.setattr(coaching, "write", write_then_drop)
     admin, window = launch(admin_home_init, ui, ADMIN_ID, services)
     model = admin.coachingModel
-    card = card_of(open_detail(admin, window, SOURCE, "2026-10-20 09:30:00"))
-    model.setDraftOpen(True)
-    qml(card, f'goalField.text = "{GOAL}"')
-    qml(card, f'commentField.text = "{COMMENT}"')
-    assert model.addDraftMarker(75, "Here")
+    panel = panel_of(open_detail(admin, window, SOURCE, "2026-10-20 09:30:00"))
+    qml(panel, f'goalField.text = "{GOAL}"')
+    qml(panel, f'commentField.text = "{COMMENT}"')
+    draft_moment(model, 75, "Here")
     assert model.createGoal()
     idle(services)
-    [toast] = [toast for toast in toasts(services.notifier) if toast["title"] == "Goal wasn't saved"]
+    [toast] = [toast for toast in toasts(services.notifier) if toast["title"] == "Goal wasn't sent"]
     services.notifier.trigger(toast["toastId"])  # 同一個 action_id：撞到主鍵就是已經寫好了
     wait_until(lambda: len(model.cardActions) == 1)
     assert db.rows("SELECT COUNT(*) FROM tbl_coaching_action") == [(1,)]
     assert db.rows("SELECT COUNT(*) FROM tbl_coaching_marker") == [(1,)]
-    assert ("success", "Goal created") in toast_titles(services)
+    assert find(panel, "sentBox").isVisible() and model.draft["sent"]["count"] == 1
 
 
-def test_offline_response_can_be_retried_and_is_saved_once(ui, services, db, mysql_server, monkeypatch):
+def test_offline_message_can_be_retried_and_is_saved_once(ui, services, db, mysql_server, monkeypatch):
     from myapp.services import CLOSE_DB_KEY
     from tests.integration.helpers import unused_port
 
     seed(db)
-    action_id = make_action(db)
+    make_action(db)
     staff, window = launch(server_home_init, ui, STAFF_ID, services)
-    page = show(window, "server_actions_page.qml")
+    page, detail = open_actions(staff, window)
     model = staff.coachingModel
-    wait_until(lambda: model.detailState == "ready")
     monkeypatch.setenv("DB_PORT", str(unused_port()))
     assert services.close_db()
     wait_until(lambda: not services.tasks.isBusy(CLOSE_DB_KEY))
-    detail = qml(page, "detail")
-    qml(detail, 'responseField.text = "Context the admin should know."')
-    qml(find(detail, "sendResponseButton"), "clicked()")
+    talk = qml(detail, "conversation")
+    qml(talk, 'field.text = "Context the admin should know."')
+    click(window, find(talk, "sendMessageButton"))
     idle(services)
     assert model.actionError["text"] == "Can't reach the database. Check your network and try again."
-    assert qml(detail, "responseField.text") == "Context the admin should know."  # 打的字留著
+    assert qml(talk, "field.text") == "Context the admin should know."  # 打的字留著
+    assert find(talk, "conversationError").isVisible()
     [toast] = [toast for toast in toasts(services.notifier) if toast["title"] == "Change wasn't saved"]
     monkeypatch.setenv("DB_PORT", str(mysql_server["port"]))
     services.notifier.trigger(toast["toastId"])
-    wait_until(lambda: ("success", "Response sent") in toast_titles(services))
+    wait_until(lambda: qml(talk, "field.text") == "")
     assert db.rows("SELECT body FROM tbl_coaching_event WHERE event_type = 'response'") == [
         ("Context the admin should know.",)]
-    assert qml(detail, "responseField.text") == ""
+    assert len(visible(talk, "conversationMessage")) == 1
 
 
-# ── 時間註記：拿掉留歷史；換掉後續服務時，它上面的註記一起拿掉 ──────────────────────────
+# ── 時間註記：屬於一部影片；拿掉留歷史；換掉後續服務時，它上面的時間註記一起拿掉 ─────────────────
 
 def test_markers_belong_to_one_video_and_removing_them_keeps_history(ui, services, db):
     seed(db)
@@ -772,27 +1051,43 @@ def test_markers_belong_to_one_video_and_removing_them_keeps_history(ui, service
     model = admin.coachingModel
     page, detail = open_coaching(admin, window)
     # 兩部影片的 01:15 是不同的兩秒：各自屬於自己的服務
-    assert [(m["serviceId"], m["clock"]) for m in model.current["source"]["markers"]] == [(SOURCE, "01:15")]
-    assert [(m["serviceId"], m["clock"]) for m in model.current["followUp"]["markers"]] == [(LATE1, "01:15")]
+    blocks = {block["relation"]: block for block in model.current["services"]}
+    assert [(m["serviceId"], m["clock"]) for m in blocks["source"]["markers"]] == [(SOURCE, "01:15")]
+    assert [(m["serviceId"], m["clock"]) for m in blocks["follow_up"]["markers"]] == [(LATE1, "01:15")]
     assert refused(db, coaching.ADD_MARKER_SQL, (ADMIN_ID, action_id, LATE2, 5, "")) == "marker_service"
 
-    remove = visible(find(detail, "sourceBlock"), "removeMarkerButton")[0]
-    qml(remove, "clicked()")
-    wait_until(lambda: model.current["source"]["markers"] == [])
+    # 按 Example 那一組的時間註記：打開原始服務、面板對準這一項，可以在那裡拿掉（✕）
+    [chip] = [chip for chip in visible(detail, "momentChip") if qml(chip, "serviceId") == SOURCE]
+    click(window, chip)
+    wait_until(lambda: qml(window, "currentPage") == "admin_service_detail_page.qml")
+    detail_page = qml(window, "mainContentLoader.item")
+    assert qml(detail_page, "pendingSeekMs") == 75000  # 沒有影片：一直等著，不會跳到別的地方
+    panel = panel_of(detail_page)
+    assert model.cardFocusId == action_id
+    assert text(panel, "panelSubtitle") == "Mark more moments for this goal."
+    [row] = visible(panel, "panelMoment")
+    click(window, find(row, "panelRemoveMoment"))
+    wait_until(lambda: not visible(panel, "panelMoment"))
     assert db.rows("SELECT removed_by FROM tbl_coaching_marker WHERE marker_id = %s", (marker,)) == [(ADMIN_ID,)]
     assert events(db, action_id)[-1] == "marker_removed"
-    assert model.current["history"][-1]["title"] == f"Alex Wang removed the marker at 01:15 on {SOURCE}"
+    # 時間註記的加、拿掉不放進對話（在 Moments 裡看得到）
+    assert not [entry for entry in model.cardActions if entry["markers"]]
 
-    # 換掉後續服務：舊的那部影片上的註記一起拿掉（各留一列歷史）
-    qml(find(detail, "changeFollowUpButton"), "clicked()")
-    wait_until(lambda: model.followUpState == "ready")
-    qml(find(detail, "followUpSelect"), f'picked("{LATE2}")')
-    qml(find(detail, "linkFollowUpButton"), "clicked()")
+    # 換掉後續服務（Change）：舊的那部影片上的時間註記一起拿掉（各留一列歷史）
+    page, detail = open_coaching(admin, window)
+    next_step = find(detail, "nextStep")
+    click(window, find(next_step, "changeFollowUpButton"))
+    wait_until(lambda: qml(next_step, "step") == "pick")
+    assert text(next_step, "nextStepTitle") == "Pick a different follow-up"
+    rows = visible(next_step, "candidateRow")
+    assert [qml(row, "modelData.value") for row in rows] == [LATE2, LATE1]
+    assert not find(rows[1], "useFollowUpButton").isVisible()  # 目前的那一筆：寫「Current follow-up」
+    click(window, find(rows[0], "useFollowUpButton"))
     wait_until(lambda: model.current.get("followUp", {}).get("serviceId") == LATE2)
+    assert qml(next_step, "step") == "review"
     assert db.rows("SELECT COUNT(*) FROM tbl_coaching_marker WHERE removed_at IS NULL") == [(0,)]
     assert events(db, action_id)[-2:] == ["follow_up_linked", "marker_removed"]
-    titles = [entry["title"] for entry in model.current["history"]]
-    assert f"Alex Wang changed the follow-up to {LATE2} · Oct 29, 14:10" in titles
+    assert model.current["conversation"][-1]["text"] == "You changed the follow-up to the Oct 29 service"
 
 
 def test_cancelling_keeps_the_goal_and_its_history(ui, second_engine, services, db):
@@ -801,27 +1096,30 @@ def test_cancelling_keeps_the_goal_and_its_history(ui, second_engine, services, 
     admin, window = launch(admin_home_init, ui, ADMIN_ID, services)
     model = admin.coachingModel
     page, detail = open_coaching(admin, window)
-    qml(find(detail, "cancelGoalButton"), "clicked()")
+    assert find(page, "cancelledTab").isVisible() is False  # 沒有撤回的：沒有這個分頁
+    click(window, find(detail, "cancelGoalButton"))
     dialog = qml(detail, "dialog")
     wait_until(lambda: qml(dialog, "opened"))
     assert qml(dialog, "title") == "Cancel Goal"
     qml(dialog, 'reasonField.text = "Set for the wrong staff member."')
-    qml(dialog, "submitButton.clicked()")
+    click(window, qml(dialog, "submitButton"))
     wait_until(lambda: not qml(dialog, "visible"))
     assert action_row(db, action_id)[0] == "cancelled" and action_row(db, action_id)[4] == "Set for the wrong staff member."
     assert events(db, action_id) == ["created", "cancelled"]
-    assert model.completedText == "No actions yet"  # 撤回的不算在比例裡
+    assert model.completedShare == "—" and model.completedOf == ""  # 撤回的不算在比例裡
+    wait_until(lambda: model.tab == "cancelled")
+    assert find(page, "cancelledTab").isVisible() and qml(find(page, "cancelledTab"), "text") == "Cancelled · 1"
     [item] = visible(page, "actionItem")
     assert qml(item, "chipState") == "cancelled"
+    assert qml(find(detail, "nextStep"), "step") == "cancelled"
+    assert not find(detail, "progressRow").isVisible()
     staff, staff_window = launch(server_home_init, second_engine, STAFF_ID, services)
-    staff_page = show(staff_window, "server_actions_page.qml")
-    wait_until(lambda: staff.coachingModel.detailState == "ready")
-    staff_detail = qml(staff_page, "detail")
-    assert find(staff_detail, "detailChip").property("label") == "Cancelled"
-    assert find(staff_detail, "conclusionText").property("text") == "Set for the wrong staff member."
+    staff_page, staff_detail = open_actions(staff, staff_window)
+    assert text(staff_detail, "closedTitle").startswith("Cancelled ")
+    assert text(staff_detail, "conclusionText") == "Set for the wrong staff member."
 
 
-# ── 兩個指標、篩選 ───────────────────────────────────────────────────────────
+# ── 兩個指標、分頁 ─────────────────────────────────────────────────────────────
 
 def insert_action(db, action_id, staff, source, status, created_days_ago, concluded_days_ago=None, due_days=7,
                   follow_up=None):
@@ -837,7 +1135,7 @@ def insert_action(db, action_id, staff, source, status, created_days_ago, conclu
          created_days_ago))
 
 
-def test_metrics_show_completion_with_follow_up_and_median_review_time_and_filters_work(ui, services, db):
+def test_metrics_show_completion_with_follow_up_and_median_review_time_and_tabs_split_the_list(ui, services, db):
     seed(db)
     base = "a0000000-0000-4000-8000-0000000000"
     db.add_service("S20261031090000", "2026-10-31 09:00:00", account_id=OTHER_ID)  # Leo 後來的一筆
@@ -849,27 +1147,27 @@ def test_metrics_show_completion_with_follow_up_and_median_review_time_and_filte
     admin, window = launch(admin_home_init, ui, ADMIN_ID, services)
     model = admin.coachingModel
     page, detail = open_coaching(admin, window)
-    assert (model.completedShare, model.completedText) == ("75%", "3 of 4 actions")
-    assert (model.reviewTimeText, model.reviewTimeNote) == ("9 days", "Median, goal to completion · 3 completed")
-    assert (model.openCountText, model.openNote) == ("1", "1 overdue")
-    assert find(find(page, "completedMetric"), "metricValue").property("text") == "75%"
-    assert model.countText == "5 actions"
+    assert (model.completedShare, model.completedOf) == ("75%", "3 of 4")
+    assert (model.reviewTimeText, model.openCountText, model.overdueCount) == ("9 days", "1", 1)
+    assert text(find(page, "completedMetric"), "metricValue") == "75%"
+    assert text(find(page, "completedMetric"), "metricNote") == "· 3 of 4"
+    assert text(find(page, "openMetric"), "metricNote") == "· 1 overdue"
 
-    qml(find(page, "statusFilter"), 'picked("completed")')
+    # 分頁：Open（過期的那一項，紅字）、Completed、Cancelled（有撤回的才有）
+    assert [qml(find(page, name), "text") for name in ("openTab", "completedTab", "cancelledTab")] == [
+        "Open · 1", "Completed · 3", "Cancelled · 1"]
+    [item] = visible(page, "actionItem")
+    assert (qml(item, "actionId")[-2:], text(item, "coachingChipLabel"), qml(item, "dueAlert")) == ("04", "Overdue", True)
+    assert text(item, "actionStaff") == "Leo Park" and text(item, "actionDue").startswith("Due ")
+    click(window, find(page, "completedTab"))
+    wait_until(lambda: model.tab == "completed")
     assert sorted(row["actionId"][-2:] for row in model.listModel.rows()) == ["01", "02", "03"]
-    assert model.countText == "3 of 5 actions"
-    qml(find(page, "statusFilter"), 'picked("all")')
-    qml(find(page, "dueFilter"), 'picked("overdue")')
-    assert [row["actionId"][-2:] for row in model.listModel.rows()] == ["04"]
-    assert [row["chipState"] for row in model.listModel.rows()] == ["overdue"]
-    qml(find(page, "dueFilter"), 'picked("any")')
-    qml(find(page, "staffFilter"), f'picked("{OTHER_ID}")')
-    assert sorted(row["actionId"][-2:] for row in model.listModel.rows()) == ["03", "04"]
-    # 指標跟著員工的篩選：Leo 一項完成、一項進行中
-    assert (model.completedShare, model.completedText, model.reviewTimeText) == ("50%", "1 of 2 actions", "12 days")
-    assert [option["text"] for option in model.staffOptions] == ["All staff", "Leo Park", "Mia Chen"]
-    qml(find(page, "statusFilter"), 'picked("cancelled")')
-    assert model.listModel.rows() == [] and find(page, "noMatches").isVisible()
+    wait_until(lambda: model.selectedId[-2:] in ("01", "02", "03") and model.detailState == "ready")  # 換分頁就選它的第一項
+    assert all(row["dueText"].startswith("Done ") for row in model.listModel.rows())
+    click(window, find(page, "cancelledTab"))
+    wait_until(lambda: model.tab == "cancelled" and model.selectedId[-2:] == "05")
+    click(window, find(page, "openTab"))
+    wait_until(lambda: model.tab == "open" and model.selectedId[-2:] == "04")
 
 
 # ── 重新登入、換帳號：資料在資料庫，換人看到的是自己的 ─────────────────────────────────
@@ -877,7 +1175,7 @@ def test_metrics_show_completion_with_follow_up_and_median_review_time_and_filte
 def test_goals_stay_after_log_out_and_each_account_sees_its_own(engine, db, qml_warnings):
     from pathlib import Path
 
-    from PySide6.QtCore import QCoreApplication, QEvent, QUrl
+    from PySide6.QtCore import QEvent, QUrl
 
     from myapp import main
     from myapp.main import MainWindow
@@ -926,7 +1224,7 @@ def test_goals_stay_after_log_out_and_each_account_sees_its_own(engine, db, qml_
         shell = log_in("placeholder_admin", "CHANGE-ME-admin-0000")
         assert listed(shell, "admin_coaching_page.qml") == [GOAL]
         log_out(shell)
-        shell = log_in("placeholder_staff", "CHANGE-ME-staff-0000")  # 再登入：還在，確認過的也還在
+        shell = log_in("placeholder_staff", "CHANGE-ME-staff-0000")  # 再登入：還在
         assert listed(shell, "server_actions_page.qml") == [GOAL]
         assert action_row(db, action_id)[0] == "open"
     finally:
@@ -943,34 +1241,45 @@ def test_coaching_screens_with_data_have_no_qml_warnings(ui, services, db, side)
     first = make_action(db)
     call(db, coaching.ADD_MARKER_SQL, (ADMIN_ID, first, SOURCE, 75, "Here"))
     call(db, coaching.RESPOND_SQL, (STAFF_ID, first, "Context"))
+    call(db, coaching.RESPOND_SQL, (ADMIN_ID, first, "Thanks"))
     call(db, coaching.LINK_SQL, (ADMIN_ID, first, 1, LATE1))
     call(db, coaching.ADJUST_SQL, (ADMIN_ID, first, 2, "More practice", "A clearer goal", date.today()))
     second = make_action(db, "a0000000-0000-4000-8000-000000000002", due=date.today() - timedelta(days=1))
     call(db, coaching.LINK_SQL, (ADMIN_ID, second, 1, LATE2))
     call(db, coaching.COMPLETE_SQL, (ADMIN_ID, second, 2, "Did it."))
+    third = make_action(db, "a0000000-0000-4000-8000-000000000003")
+    call(db, coaching.CANCEL_SQL, (ADMIN_ID, third, 1, "Wrong person"))
     module = admin_home_init if side == "admin" else server_home_init
     home, window = launch(module, ui, ADMIN_ID if side == "admin" else STAFF_ID, services)
+    widen(window, 1024, 768)
     page = show(window, "admin_coaching_page.qml" if side == "admin" else "server_actions_page.qml")
     model = home.coachingModel
     wait_until(lambda: model.detailState == "ready")
-    for action_id in (second, first):
+    for action_id in (second, third, first):
         model.select(action_id)
         wait_until(lambda: model.detailState == "ready" and model.selectedId == action_id)
         idle(services)
     if side == "admin":
         detail = qml(page, "detail")
-        for mode in ("complete", "adjust", "cancel"):
+        for mode in ("complete", "keep", "edit", "cancel"):
             dialog = qml(detail, "dialog")
             qml(dialog, f'ask("{mode}")')
             wait_until(lambda: qml(dialog, "opened"))
             qml(dialog, "close()")
             wait_until(lambda: not qml(dialog, "visible"))
-        qml(find(page, "staffFilter"), "popup.open()")
-        card = card_of(open_detail(home, window, SOURCE, "2026-10-20 09:30:00"))
-        qml(find(card, "newGoalButton"), "clicked()")
-        assert model.addDraftMarker(3, "Draft")
+        panel = panel_of(open_detail(home, window, SOURCE, "2026-10-20 09:30:00"))
+        assert model.startMoment(3)  # 新目標的說明欄開著
+        model.updatePending("Draft")
+        assert len(visible(panel, "otherGoal")) == 3
+        assert model.focusGoal(first) is False  # 說明欄開著：先存或取消
+        model.cancelPending()
+        assert model.focusGoal(first)  # 對準一項
+        wait_until(lambda: find(panel, "focusGoal").isVisible())
+        assert model.startMoment(5)
+        model.cancelPending()
+        assert model.focusGoal("")
     else:
-        # 服務人員的明細頁沒有輔導卡
+        # 服務人員的明細頁沒有輔導面板
         detail_page = open_detail(home, window, SOURCE, "2026-10-20 09:30:00")
         assert not qml(find(detail_page, "coachingCardLoader"), "active")
     wait_until(lambda: not any(key.startswith("coaching") for key in services.tasks._running))

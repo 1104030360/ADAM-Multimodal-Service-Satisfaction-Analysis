@@ -117,7 +117,7 @@ Window {
         case "analysis.qml": return qsTr("Send recorded services for analysis and see the results.")
         case "server_service_page.qml": return qsTr("Find a past service and open its videos and charts.")
         case "server_reports_page.qml": return qsTr("Reports an admin has published for you.")
-        case "server_actions_page.qml": return qsTr("Goals an admin set for you. Check the example, then respond.")
+        case "server_actions_page.qml": return qsTr("Goals from your admin.")   // 設計稿：字少（T47）
         case "server_setting_button.qml": return qsTr("Preferences apply right away. Account and device changes apply when you save.")
         }
         return ""

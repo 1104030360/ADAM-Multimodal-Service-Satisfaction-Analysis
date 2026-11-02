@@ -1,56 +1,68 @@
 import QtQuick
 import "../components"
 
-// 改善行動的狀態標籤（PLAN1 W2，T45）：Open、Overdue（進行中、期限已過）、Completed、Cancelled。
-// 和服務狀態的標籤（StatusChip）同一個外觀：顏色只表示狀態，旁邊一定有圖示和字（顏色不是唯一的線索）。
-// 標籤本身不給螢幕閱讀器（Accessible.ignored）；頁面把 label 寫進那一列的名稱。
+// 輔導的狀態標籤（PLAN1 W2；T47 依設計稿「Coaching, redesigned」改版）：一塊淡底加字，字就是狀態（顏色不是唯一的線索）。
+// - 管理員的清單一次只說下一步（coaching.admin_chip）：Pick a Follow-up（有能選的後續服務）、Waiting for a Later Service
+//   （還沒有）、Ready to Review（有後續服務，等你看）、Overdue、Completed、Cancelled；還不知道的是 Open。
+// - 服務人員（coaching.staff_chip）：New（還沒按 Got It）、In Progress、Completed、Cancelled。
+// 標籤本身不給螢幕閱讀器（Accessible.ignored）；頁面把 label 寫進那一列的說明。
 Rectangle {
     id: root
 
-    property string actionState: "open"      // open、overdue、completed、cancelled（coaching.chip_state）
+    property string actionState: "open"
 
-    readonly property string label: actionState === "overdue" ? qsTr("Overdue")
-                                  : actionState === "completed" ? qsTr("Completed")
-                                  : actionState === "cancelled" ? qsTr("Cancelled")
-                                  : qsTr("Open")
-    readonly property color textColor: actionState === "overdue" ? Theme.warningOnDark
-                                     : actionState === "completed" ? Theme.successOnDark
-                                     : actionState === "cancelled" ? Theme.textMuted
-                                     : Theme.textPrimary
+    readonly property string label: {
+        switch (actionState) {
+        case "pick": return qsTr("Pick a Follow-up")
+        case "waiting": return qsTr("Waiting for a Later Service")
+        case "review": return qsTr("Ready to Review")
+        case "overdue": return qsTr("Overdue")
+        case "completed": return qsTr("Completed")
+        case "cancelled": return qsTr("Cancelled")
+        case "new": return qsTr("New")
+        case "progress": return qsTr("In Progress")
+        }
+        return qsTr("Open")
+    }
+    readonly property color textColor: {
+        switch (actionState) {
+        case "pick": return Theme.warningOnDark
+        case "review":
+        case "new": return Theme.infoOnDark
+        case "overdue": return Theme.errorOnDark
+        case "completed": return Theme.successOnDark
+        case "cancelled": return Theme.textMuted
+        case "waiting":
+        case "progress": return Theme.textSecondary
+        }
+        return Theme.textPrimary
+    }
 
-    implicitWidth: content.implicitWidth + 2 * Theme.spaceS
+    implicitWidth: chipText.implicitWidth + 20
     implicitHeight: Theme.chipHeight
     radius: height / 2
-    color: actionState === "overdue" ? Theme.warningTint
-         : actionState === "completed" ? Theme.successTint
-         : Theme.tile
+    color: {
+        switch (actionState) {
+        case "pick": return Theme.warningTint
+        case "review":
+        case "new": return Theme.infoTint
+        case "overdue": return Theme.errorTint
+        case "completed": return Theme.successTint
+        case "waiting":
+        case "progress": return Theme.tileSelected
+        }
+        return Theme.tile
+    }
 
     Accessible.ignored: true
 
-    Row {
-        id: content
+    Text {
+        id: chipText
+        objectName: "coachingChipLabel"
         anchors.centerIn: parent
-        spacing: Theme.spaceXS
-
-        Image {
-            objectName: "coachingChipIcon"
-            anchors.verticalCenter: parent.verticalCenter
-            width: 14
-            height: 14
-            sourceSize: Qt.size(14, 14)
-            source: root.actionState === "overdue" ? "../components/icons/triangle-alert_warningOnDark.svg"
-                  : root.actionState === "completed" ? "../components/icons/circle-check_successOnDark.svg"
-                  : root.actionState === "cancelled" ? "../components/icons/circle-slash_textMuted.svg"
-                  : "../components/icons/circle-dashed_textPrimary.svg"
-        }
-
-        Text {
-            objectName: "coachingChipLabel"
-            anchors.verticalCenter: parent.verticalCenter
-            text: root.label
-            color: root.textColor
-            font.pixelSize: Theme.fontCaption
-            font.weight: Font.DemiBold
-        }
+        text: root.label
+        color: root.textColor
+        font.pixelSize: Theme.fontLabel
+        font.weight: Font.Bold
     }
 }

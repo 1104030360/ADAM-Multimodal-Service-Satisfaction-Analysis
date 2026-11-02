@@ -22,17 +22,25 @@ import "../components"
 // - 音量和靜音（new-feature PLAN 13.2 S1，T39）：音量是帳號的偏好（uiPrefs.playbackVolume），調了自動記住，
 //   下次打開服務或 app 照它；每次打開一筆服務時照「Start Playback Muted」決定要不要先靜音。
 //   靜音只是播放器的狀態，不改音量（不會存成 0），取消靜音就回到原本的音量；拖音量也會取消靜音。都不會開始播放。
+// - 輔導（管理員端，PLAN1 W2；T47 依設計稿改版）：輔導面板（CoachingCard.qml）在內容區夠寬（1100 以上）時放在影片旁邊，
+//   窄的時候在影片下面，標時間註記時影片一直看得到。播放器變成兩列：上面多一個 Add Moment at 02:41（打開面板的說明欄），
+//   下面是整條的進度，面板列出的時間註記在進度條下面畫成小點。服務人員端照舊（一列、沒有面板）。
 Item {
     id: detail
 
     property string backPage: ""
     property bool showStaffName: false      // 管理員端：頁首的說明前面加上這筆服務的服務人員
     property bool showReport: false         // 管理員端：分析完成的服務多一張報表卡（new-feature N4，ServiceReportCard.qml）
-    property bool showCoaching: false       // 管理員端：影片下面的輔導卡（PLAN1 W2，CoachingCard.qml，T45）
+    property bool showCoaching: false       // 管理員端：影片旁邊的輔導面板（PLAN1 W2，CoachingCard.qml，T45、T47）
     property string backText: qsTr("Services")  // 頁首「‹」的字：從 My Actions、Coaching 打開時換成那一頁（T45）
     // 時間註記（PLAN1 W2，T45）：打開之後要跳到第幾毫秒；影片載入（duration > 0）之後才跳。外殼的 openServiceDetailAt 設
     property real pendingSeekMs: -1
-    readonly property real playbackMs: player.master.position     // 輔導卡在「目前的位置」加時間註記
+    readonly property real playbackMs: player.master.position     // 輔導面板在「目前的位置」加時間註記
+    // 輔導面板（T47）：內容區夠寬就放在影片旁邊（設計稿 380～460 寬），面板列出的時間註記畫在進度條下面
+    readonly property var coachingPanel: coachingCardLoader.item
+    readonly property bool panelBeside: showCoaching && coachingCardLoader.active && content.width >= 1100
+    readonly property int panelWidth: Math.round(Math.max(380, Math.min(460, (content.width - Theme.spaceL) * 0.36)))
+    readonly property var timelinePins: coachingPanel ? coachingPanel.pinSeconds : []
     readonly property var media: typeof mediaModel !== "undefined" ? mediaModel : null
     readonly property var charts: typeof chartsModel !== "undefined" ? chartsModel : null
     readonly property string pageState: media ? media.state : "idle"
@@ -480,15 +488,19 @@ Item {
         boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: ScrollBar {}
 
-        ColumnLayout {
+        // 一欄；管理員端的內容區夠寬時兩欄：影片和輔導面板並排，其他的卡片跨兩欄（T47）
+        GridLayout {
             id: content
             width: scroller.width
-            spacing: Theme.spaceL
+            columns: detail.panelBeside ? 2 : 1
+            rowSpacing: Theme.spaceL
+            columnSpacing: Theme.spaceL
 
             // ── 分數列
             Card {
                 objectName: "scoreStrip"
                 Layout.fillWidth: true
+                Layout.columnSpan: content.columns
                 topPadding: 18
                 bottomPadding: 18
                 Accessible.role: Accessible.Grouping
@@ -533,12 +545,18 @@ Item {
             }
 
             // ── 服務結果與待辦（PLAN1 W1，T44；兩端都有，ServiceOutcomeCard.qml）
-            ServiceOutcomeCard { objectName: "serviceOutcomeCard"; Layout.fillWidth: true; media: detail.media }
+            ServiceOutcomeCard {
+                objectName: "serviceOutcomeCard"
+                Layout.fillWidth: true
+                Layout.columnSpan: content.columns
+                media: detail.media
+            }
 
             // ── 報表（管理員端、分析完成的服務；new-feature N4，T37）
             Loader {
                 objectName: "reportCardLoader"
                 Layout.fillWidth: true
+                Layout.columnSpan: content.columns
                 active: detail.showReport && detail.media !== null && detail.media.analysisStatus === 3
                 visible: active
                 sourceComponent: ServiceReportCard {
@@ -552,6 +570,7 @@ Item {
             Card {
                 objectName: "mediaCard"
                 Layout.fillWidth: true
+                Layout.alignment: Qt.AlignTop
                 topPadding: Theme.spaceL
                 Accessible.role: Accessible.Grouping
                 Accessible.name: qsTr("Videos and charts")
@@ -703,7 +722,8 @@ Item {
                                 }
                             }
 
-                            // 共用的控制：播放、時間、進度、音量。三個檔案都結束才能播（要同步播放）
+                            // 共用的控制：播放、時間、進度、音量。三個檔案都結束才能播（要同步播放）。
+                            // 管理員端（輔導）是兩列：上面多 Add Moment at 02:41，下面是整條的進度和時間註記的點（設計稿，T47）
                             Rectangle {
                                 objectName: "playerBar"
                                 Layout.fillWidth: true
@@ -713,16 +733,22 @@ Item {
                                 border.width: 1
                                 border.color: Theme.tileBorder
 
-                                RowLayout {
+                                GridLayout {
                                     id: controls
-                                    anchors.fill: parent
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
                                     anchors.leftMargin: 14
                                     anchors.rightMargin: 14
-                                    spacing: 18
+                                    columns: 5
+                                    rowSpacing: 4
+                                    columnSpacing: 18
 
                                     Button {
                                         id: playButton
                                         objectName: "playButton"
+                                        Layout.row: 0
+                                        Layout.column: 0
                                         readonly property bool playing: player.master.playbackState === MediaPlayer.PlayingState
                                         implicitWidth: Theme.controlHeight
                                         implicitHeight: Theme.controlHeight
@@ -766,6 +792,8 @@ Item {
 
                                     Text {
                                         objectName: "timeText"
+                                        Layout.row: 0
+                                        Layout.column: 1
                                         text: detail.canPlay ? detail.clock(player.master.position) + " / " + detail.clock(player.master.duration)
                                                              : "--:-- / --:--"
                                         color: detail.canPlay ? Theme.textPrimary : Theme.textMuted
@@ -773,15 +801,68 @@ Item {
                                         font.features: { "tnum": 1 }    // 等寬數字：時間跳動時寬度不變（DS-14）
                                     }
 
+                                    // 輔導（管理員端，T47）：在現在的位置加一個時間註記，打開輔導面板的說明欄（時間是按下去的那一秒）。
+                                    // 影片能播、面板讀好了、說明欄沒開著才能按
+                                    Item {
+                                        Layout.row: 0
+                                        Layout.column: 2
+                                        Layout.fillWidth: true
+                                        visible: detail.showCoaching
+                                        implicitHeight: addMomentButton.implicitHeight
+                                        implicitWidth: addMomentButton.implicitWidth
+
+                                        BusyButton {
+                                            id: addMomentButton
+                                            objectName: "addMomentButton"
+                                            anchors.right: parent.right
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            variant: "primary"
+                                            text: qsTr("Add Moment at %1").arg(detail.clock(player.master.position))
+                                            iconSource: "../components/icons/bookmark-plus_actionPrimaryText.svg"
+                                            font.pixelSize: Theme.fontCaption
+                                            font.features: { "tnum": 1 }    // 播放時字一直變，寬度不跳
+                                            enabled: detail.canPlay && detail.coachingPanel !== null
+                                                     && detail.coachingPanel.addEnabled
+                                            Accessible.description: qsTr("Opens a note for this moment in the coaching panel.")
+                                            onActiveFocusChanged: if (activeFocus) detail.reveal(this)
+                                            onClicked: {
+                                                if (detail.coachingPanel)
+                                                    detail.coachingPanel.startMoment()
+                                            }
+                                        }
+                                    }
+
                                     GraphiteSlider {
                                         id: positionSlider
                                         objectName: "positionSlider"
+                                        Layout.row: detail.showCoaching ? 1 : 0
+                                        Layout.column: detail.showCoaching ? 0 : 2
+                                        Layout.columnSpan: detail.showCoaching ? 5 : 1
                                         Layout.fillWidth: true
                                         enabled: detail.canPlay && player.master.duration > 0
                                         from: 0
                                         to: Math.max(1, player.master.duration)
                                         Accessible.name: qsTr("Playback position")
                                         onMoved: player.seekAll(value)
+
+                                        // 輔導面板列出的時間註記：進度條下面的小點（設計稿）。只是記號，按的是面板上的那一列
+                                        Repeater {
+                                            model: player.master.duration > 0 ? detail.timelinePins : []
+                                            delegate: Rectangle {
+                                                required property var modelData
+                                                objectName: "timelinePin"
+                                                x: positionSlider.leftPadding - width / 2
+                                                   + Math.min(1, modelData * 1000 / player.master.duration) * positionSlider.availableWidth
+                                                y: positionSlider.topPadding + positionSlider.availableHeight / 2 + 7
+                                                width: 10
+                                                height: 10
+                                                radius: 5
+                                                color: Theme.warningOnDark
+                                                border.width: 2
+                                                border.color: Theme.tile
+                                                Accessible.ignored: true
+                                            }
+                                        }
                                     }
                                     // 跟著播放的位置走；拖曳中不跟（直接綁 value 的話，拖過一次就不再跟著動）
                                     Binding {
@@ -795,6 +876,8 @@ Item {
                                     Button {
                                         id: muteButton
                                         objectName: "muteButton"
+                                        Layout.row: 0
+                                        Layout.column: 3
                                         implicitWidth: Theme.controlHeight
                                         implicitHeight: Theme.controlHeight
                                         focusPolicy: Qt.StrongFocus
@@ -834,6 +917,8 @@ Item {
                                     GraphiteSlider {
                                         id: volumeSlider
                                         objectName: "volumeSlider"
+                                        Layout.row: 0
+                                        Layout.column: 4
                                         Layout.preferredWidth: 96
                                         from: 0
                                         to: 1
@@ -1114,10 +1199,14 @@ Item {
                 }
             }
 
-            // ── 輔導（管理員端；PLAN1 W2，T45）：看影片時寫評語、在目前的位置加時間註記、從這筆服務建立改善目標
+            // ── 輔導（管理員端；PLAN1 W2，T45、T47）：寬的時候在影片旁邊（第二欄），窄的時候在影片下面。
+            // 在播放器的位置加時間註記、寫目標、送給這筆服務的員工；從 Coaching 打開的，對準那一項
             Loader {
+                id: coachingCardLoader
                 objectName: "coachingCardLoader"
-                Layout.fillWidth: true
+                Layout.fillWidth: !detail.panelBeside
+                Layout.preferredWidth: detail.panelBeside ? detail.panelWidth : -1
+                Layout.alignment: Qt.AlignTop
                 active: detail.showCoaching && detail.media !== null && detail.pageState === "ready"
                         && detail.media.serviceFound
                 visible: active
@@ -1129,6 +1218,7 @@ Item {
                     positionMs: detail.playbackMs
                     canMark: detail.canPlay
                     onSeekRequested: (ms) => detail.seekTo(ms)
+                    onRevealRequested: (item) => detail.reveal(item)
                 }
             }
         }
