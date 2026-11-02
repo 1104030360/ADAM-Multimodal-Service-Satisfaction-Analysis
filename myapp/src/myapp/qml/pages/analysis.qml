@@ -333,7 +333,7 @@ Item {
         required property var staffScore
         required property var customerScore
         required property bool failed
-        required property bool sending          // 送出分析中（POST 加上改狀態）
+        required property bool sending          // 送出分析中（POST 加上之後的重新整理）
         required property string kind
 
         readonly property var widths: analysisPage.columnWidths(kind, width)

@@ -1,4 +1,5 @@
-"""分析頁的資料（U2，T30）：格式（Recorded、Length、Sent）、預設的分頁、一次 8 筆的分頁、送出的時間記在本機。
+"""分析頁的資料（U2，T30）：格式（Recorded、Length、Sent）、預設的分頁、一次 8 筆的分頁、送出的時間記在本機；
+送出分析收到 200 之後，桌面端只重新整理清單，狀態 2 是分析服務寫的（SQS，T49）。
 
 ServiceModel 用假的 TaskRunner 和假的資料表（照 ANALYSIS_SQL 的規則回傳），不連網路、不等計時器；
 真的 SQL 在整合測試 test_analysis.py 驗證同樣的事。
@@ -7,15 +8,17 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+import mysql.connector
 import pytest
 from PySide6.QtCore import QSettings
 
 from myapp.init import server_home_init
-from myapp.init.server_home_init import (ANALYSIS_KEY, PAGE_SIZE, SENT_GROUP, SERVICE_ROLES, PagedRowModel,
-                                         SentTimes, ServiceModel, default_tab, length_text, recorded_text,
-                                         sent_text, shown_for)
+from myapp.init.server_home_init import (ANALYSIS_KEY, ANALYSIS_SQL, PAGE_SIZE, SENT_GROUP, SERVICE_ROLES,
+                                         PagedRowModel, SentTimes, ServiceModel, default_tab, length_text,
+                                         recorded_text, sent_text, shown_for)
 from myapp.notifications import Notifier
 from myapp.ui_prefs import open_settings
+from tests.integration.helpers import toasts
 
 ACCOUNT = "00000000-0000-0000-0000-000000000002"
 OTHER_ACCOUNT = "00000000-0000-0000-0000-000000000003"
@@ -219,11 +222,13 @@ def test_unreadable_send_times_are_dropped():
 # ── ServiceModel：假的 TaskRunner 和資料表 ─────────────────────────────────────
 
 class FakeTable:
-    """DbLane 的替身：照 ANALYSIS_SQL 的規則回傳（每個狀態取前 limit 筆，pin 那個狀態至少取到它的下一頁）。"""
+    """DbLane 的替身：照 ANALYSIS_SQL 的規則回傳（每個狀態取前 limit 筆，pin 那個狀態至少取到它的下一頁）。
+    只認得 ANALYSIS_SQL：桌面端不寫狀態，狀態 2 是分析服務收下工作時寫的（accept()，T49）。"""
 
     def __init__(self):
         self.services = {}
         self.queries = []
+        self.statements = []  # 執行過的每一句 SQL：table fixture 結束時檢查都是 ANALYSIS_SQL
 
     def add(self, service_id, start, status, end=None, customer=-1, staff=-1):
         self.services[service_id] = {"service_id": service_id, "service_start": start,
@@ -240,16 +245,21 @@ class FakeTable:
             added.append(service_id)
         return added
 
+    def accept(self, service_id):
+        """分析服務收下工作（回 200 之前）：狀態 1 改成 2，和它的 MARK_SENT_SQL 一樣（SQS，T49）。"""
+        service = self.services[service_id]
+        if service["service_status"] == 1:
+            service["service_status"] = 2
+
     @contextmanager
     def cursor(self, dictionary=False):
         assert dictionary
         yield self
 
     def execute(self, sql, params):
-        if isinstance(params, tuple):  # MARK_SENT_SQL
-            service = self.services[params[0]]
-            service["service_status"] = max(service["service_status"], 2)
-            return
+        self.statements.append(sql)
+        if sql != ANALYSIS_SQL:  # 桌面端只讀清單，不寫狀態（T49）
+            raise AssertionError(f"unexpected SQL: {sql}")
         self.queries.append(params)
         page, result = params["page"], []
         for status in (1, 2, 3):
@@ -304,7 +314,10 @@ class Clock:
 
 @pytest.fixture
 def table():
-    return FakeTable()
+    table = FakeTable()
+    yield table
+    # 寫入的 SQL 會在 db lane 的工作裡丟例外、變成 on_err，測試本身不一定看得出來：結束時再檢查一次
+    assert set(table.statements) <= {ANALYSIS_SQL}
 
 
 @pytest.fixture
@@ -456,17 +469,18 @@ def test_rows_carry_recorded_length_and_scores_with_one_decimal(make_model, tabl
     assert row["startTime"] == "2026-11-01 11:45:00"  # View 打開明細時交給 openServiceDetail()
 
 
-def send(model, runner, monkeypatch, service_id):
-    monkeypatch.setattr(server_home_init, "post_analysis", lambda url, sid: None)
+def send(model, runner, monkeypatch, table, service_id):
+    """按 Analyze：分析服務收下工作（狀態 1 → 2 是它寫的，T49）、回 200，之後在 db lane 重新整理清單。"""
+    monkeypatch.setattr(server_home_init, "post_analysis", lambda url, sid: table.accept(sid))
     assert model.analyzeService(service_id)
     runner.finish(f"analyze:{service_id}")
-    runner.finish(f"analysis:mark:{service_id}")
+    runner.finish(f"analysis:sent:{service_id}")
 
 
 def test_send_time_is_remembered_and_counts_up(make_model, table, runner, clock, monkeypatch):
     table.add("S20261101134500", datetime(2026, 11, 1, 13, 45), 1)
     model = loaded(make_model(), runner)
-    send(model, runner, monkeypatch, "S20261101134500")
+    send(model, runner, monkeypatch, table, "S20261101134500")
     [row] = model.analyzingModel.rows()
     assert row["sentText"] == "Sent less than 1 min ago"
     assert SentTimes(ACCOUNT).get("S20261101134500") == clock.now * 1000  # 收到 200 的時間，記在本機
@@ -520,7 +534,7 @@ def test_send_time_is_forgotten_once_the_analysis_is_over(make_model, table, run
         table.add(service_id, datetime.strptime(service_id, "S%Y%m%d%H%M%S"), 1)
     model = loaded(make_model(), runner)
     for service_id in ("S20261101130000", "S20261101131000", "S20261101132000"):
-        send(model, runner, monkeypatch, service_id)
+        send(model, runner, monkeypatch, table, service_id)
     assert SentTimes(ACCOUNT).ids() == {"S20261101130000", "S20261101131000", "S20261101132000"}
 
     table.services["S20261101130000"]["service_status"] = 3  # 完成：清單看到它不在分析中了
@@ -541,15 +555,99 @@ def test_sending_before_the_list_loads_keeps_the_remembered_send_times(make_mode
     table.add("S20261101140500", datetime(2026, 11, 1, 14, 5), 1)
     SentTimes(ACCOUNT).remember("S20261101131000", 1_790_000_000_000)  # 上次開 app 時送出的
     model = make_model()  # 重開 app，還沒打開分析頁：清單是空的
-    monkeypatch.setattr(server_home_init, "post_analysis", lambda url, sid: None)
+    monkeypatch.setattr(server_home_init, "post_analysis", lambda url, sid: table.accept(sid))
     assert model.analyzeService("S20261101140500")  # 從「錄影存好了」的通知按 Analyze
     assert model.status == "loading"
     assert SentTimes(ACCOUNT).ids() == {"S20261101131000"}  # 空的清單不能拿來清掉記錄
     runner.finish("analyze:S20261101140500")
-    runner.finish("analysis:mark:S20261101140500")
+    runner.finish("analysis:sent:S20261101140500")
     times = SentTimes(ACCOUNT)
     assert times.get("S20261101131000") == 1_790_000_000_000 and times.get("S20261101140500") > 0
     assert {row["serviceId"] for row in model.analyzingModel.rows()} == {"S20261101131000", "S20261101140500"}
+
+
+# ── 收到 200 之後：狀態是分析服務寫的，桌面端只重新整理（SQS，T49）──────────────────
+
+def lost_connection(sql, params):
+    """db lane 的查詢：連不到資料庫（errno 2013，Notifier 說「Can't reach the database」）。"""
+    raise mysql.connector.errors.OperationalError(msg="Lost connection to MySQL server during query", errno=2013)
+
+
+def test_the_row_goes_where_the_database_says_after_the_send(make_model, table, runner, monkeypatch):
+    # 分析服務收下了、回 200，可是 worker 很快就失敗、狀態已經改回 1：桌面端不寫 2，那一列照資料庫留在
+    # Not analyzed（以前晚到的 2 會把它蓋成 Analyzing，一直等不到結果，SQS 教學 5-1）；之後由監看說失敗（D4）
+    table.add("S20261101140500", datetime(2026, 11, 1, 14, 5), 1)
+    model = loaded(make_model(), runner)
+    sent = []
+    model.analysisSent.connect(sent.append)
+
+    def accepted_then_failed(url, service_id):
+        table.accept(service_id)
+        table.services[service_id]["service_status"] = 1
+
+    monkeypatch.setattr(server_home_init, "post_analysis", accepted_then_failed)
+    assert model.analyzeService("S20261101140500")
+    runner.finish("analyze:S20261101140500")
+    runner.finish("analysis:sent:S20261101140500")
+    assert table.statements == [ANALYSIS_SQL, ANALYSIS_SQL]  # 打開分析頁、收到 200 之後：都只讀清單
+    assert table.services["S20261101140500"]["service_status"] == 1
+    [row] = model.notAnalyzedModel.rows()
+    assert (row["serviceId"], row["sending"]) == ("S20261101140500", False)
+    assert model.analyzingModel.rows() == []
+    assert sent == ["S20261101140500"]  # 監看照樣看這一筆：看到 1 就跳「Analysis failed」
+    model.analysis_failed("S20261101140500")
+    runner.finish(ANALYSIS_KEY)
+    assert model.notAnalyzedModel.rows()[0]["failed"] is True
+
+
+def test_a_send_that_went_through_still_says_sent_when_the_refresh_fails(make_model, table, runner, clock,
+                                                                         monkeypatch):
+    # 200 就是分析服務已經把工作存好了：之後的重新整理失敗也不能說「Couldn't send for analysis」。送出的時間照記、
+    # 跳「Sent for analysis」、監看開始看；清單和一般的重新整理失敗一樣：留著舊的、跳「更新不到」、15 秒後再試
+    table.add("S20261101140500", datetime(2026, 11, 1, 14, 5), 1)
+    model = loaded(make_model(), runner)
+    notifier = model.services.notifier
+    sent = []
+    model.analysisSent.connect(sent.append)
+    monkeypatch.setattr(server_home_init, "post_analysis", lambda url, sid: table.accept(sid))
+    assert model.analyzeService("S20261101140500")
+    runner.finish("analyze:S20261101140500")
+    table.execute = lost_connection  # 桌面端這時連不到資料庫
+    runner.finish("analysis:sent:S20261101140500")
+
+    assert [(toast["severity"], toast["title"], toast["detail"]) for toast in toasts(notifier)] == [
+        ("info", "Sent for analysis", "S20261101140500 is being analyzed. You'll be notified when it's done."),
+        ("warning", "Can't refresh analysis status", "Can't reach the database. Retrying in 15 seconds.")]
+    assert sent == ["S20261101140500"]
+    assert SentTimes(ACCOUNT).get("S20261101140500") == clock.now * 1000  # 收到 200 的時間
+    [row] = model.notAnalyzedModel.rows()  # 清單是舊的：那一列先留在原處，按鈕不再忙碌
+    assert (row["serviceId"], row["sending"], row["failed"]) == ("S20261101140500", False, False)
+    assert (model.status, model.failureCount, model._retry.isActive()) == ("ready", 0, True)
+
+    del table.execute  # 又連得到了
+    model.refresh()  # 15 秒到了（_retry 接的就是 refresh）
+    runner.finish(ANALYSIS_KEY)
+    [row] = model.analyzingModel.rows()
+    assert (row["serviceId"], row["sentText"]) == ("S20261101140500", "Sent less than 1 min ago")
+    assert [toast["title"] for toast in toasts(notifier)] == ["Sent for analysis"]  # 「更新不到」自己關掉
+    assert not model._retry.isActive()
+
+
+def test_a_send_before_the_page_loads_is_not_a_block_error_when_the_refresh_fails(make_model, table, runner,
+                                                                                  monkeypatch):
+    # 從「錄影存好了」的通知按 Analyze，分析頁還沒打開過：重新整理失敗不變成區塊錯誤、也不自己重試清單
+    # （打開分析頁時才查）；「更新不到」照樣跳，因為監看接著就要等這一筆（T30）
+    table.add("S20261101140500", datetime(2026, 11, 1, 14, 5), 1)
+    model = make_model()
+    monkeypatch.setattr(server_home_init, "post_analysis", lambda url, sid: table.accept(sid))
+    assert model.analyzeService("S20261101140500")
+    runner.finish("analyze:S20261101140500")
+    table.execute = lost_connection
+    runner.finish("analysis:sent:S20261101140500")
+    assert [toast["title"] for toast in toasts(model.services.notifier)] == [
+        "Sent for analysis", "Can't refresh analysis status"]
+    assert (model.status, model.failureCount, model._retry.isActive()) == ("loading", 0, False)
+    assert SentTimes(ACCOUNT).get("S20261101140500") > 0
 
 
 def test_refresh_warning_waits_for_data_or_for_something_in_flight(make_model, runner):

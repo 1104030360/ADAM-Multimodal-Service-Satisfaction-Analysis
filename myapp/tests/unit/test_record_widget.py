@@ -659,7 +659,7 @@ def test_analysis_sent_from_anywhere_turns_off_analyze(widget, saver, saves, ser
     assert [row["serviceId"] for row in rows(saves)] == [second.service_id, first.service_id]  # 新的在上面
     hold = threading.Event()
     try:
-        services.tasks.submit("db", f"analysis:mark:{second.service_id}", lambda token, report: hold.wait(5))
+        services.tasks.submit("db", f"analysis:sent:{second.service_id}", lambda token, report: hold.wait(5))
         assert saves_row(saves, second.service_id)["canAnalyze"] is True  # 別的 key：不算
         services.tasks.submit("io", f"analyze:{second.service_id}", lambda token, report: hold.wait(5))
         row = saves_row(saves, second.service_id)

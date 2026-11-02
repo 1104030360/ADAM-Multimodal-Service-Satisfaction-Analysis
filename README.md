@@ -1,308 +1,199 @@
 # ADAM — Multimodal Service Satisfaction Analysis
 
-A desktop application for recording service interactions and reviewing customer and staff performance through video, audio, and text analysis.
+ADAM records customer–staff interactions and brings video, voice, and text analysis into a desktop workspace for reviewing service quality, publishing reports, and coaching staff.
 
-Built with **Python 3.13, PySide6, and QML**, ADAM provides separate staff and administrator interfaces for recording, analysis, dashboards, and PDF reports. The primary development platform is **macOS**, and the application interface is in English.
+Built with **Python 3.13, PySide6/QML, and Briefcase**. The application interface is in English; development currently targets **macOS**.
 
-> **Repository scope:** The version-controlled application is the desktop client. A complete installation also needs MySQL, S3, and an analysis/report API. This local checkout contains analyzer implementations under ignored directories; those implementations and the production database setup are not included in a fresh Git clone.
+[App tutorial](#app-tutorial) · [Getting started](#getting-started) · [Architecture](#architecture) · [Configuration](#configuration) · [Development and tests](#development-and-tests)
 
-[Features](#features) · [Architecture](#architecture) · [Workflow](#workflow) · [Getting started](#getting-started) · [Configuration](#configuration) · [Tests and CI](#tests-and-ci) · [Project structure](#project-structure) · [Current limitations](#current-limitations)
+## App tutorial
 
-## Features
+The screenshots capture the current application with **sample accounts, scores, reports, and recordings**. They demonstrate the interface, not production analysis results. See the [workflow overview](assets/readme/user-workflow.png) for the complete service lifecycle.
 
-| Feature | Staff | Administrators |
-| --- | --- | --- |
-| Home | Personal scores, service counts, trends, and recent performance | Organization-wide scores, service counts, trends, and staff ranking |
-| Record | Record two cameras and one microphone; upload recordings | — |
-| Analysis | Submit analysis, track progress, retry failures, and receive completion notifications | — |
-| Services | Search personal service records; play media and inspect charts | Search service records across staff; play media and inspect charts |
-| Coaching | Respond to goals and acknowledge them in My Actions | Add time markers and goals; review later services and complete, adjust, or withdraw goals |
-| Reports | Read service and period reports published for the signed-in staff member | Generate service, staff-period, and company-period PDFs; preview and publish eligible reports |
-| Add Account | — | Create and manage accounts within the current permission level |
-| Settings | Profile, photo, password, preferences, notifications, and recording devices | Profile, photo, password, and preferences |
-| Help and storage | Connection checks, diagnostic summaries, local folders, and download-cache cleanup | Same |
+**Sign in.** Use the ADAM username and password supplied by your administrator. Level `1` opens the staff workspace; levels `2–5` open the administrator workspace.
 
-Account level `1` opens the staff interface; levels `2–5` open the administrator interface. Account-management actions cannot exceed the signed-in administrator’s level. Company-period reports remain administrator-only.
+![ADAM sign-in screen](assets/readme/screenshots/login.png)
 
-## Architecture
+### Staff: record and review
 
-![ADAM architecture: desktop client, real analyzer deployed on EC2, S3, RDS, and optional Ollama Cloud](assets/readme/architecture.png)
+**Home.** Compare **Customer** and **Staff** scores, choose a time period, and inspect **Recent Performance** or **Score Trend**. Select a performance bar to open that service, or **New Recording** to begin.
 
-The desktop client accesses MySQL and S3 directly and calls an HTTP API to request analysis and PDF generation. AWS deployments use **Amazon RDS for MySQL 8.4**, **Amazon S3**, and an analysis/report service on **Amazon EC2**. Local development can use MySQL, moto, and a test API.
+![Staff Home with sample scores and recent performance](assets/readme/screenshots/staff-home.png)
 
-| Component | Responsibility |
-| --- | --- |
-| PySide6 / QML | Sign-in, role-specific pages, dashboards, recording controls, media playback, and report previews |
-| OpenCV / PyAudio | Capture customer video, staff video, and microphone audio |
-| TaskRunner / DbLane | Run database, network, and PDF work in the background; return results to the UI thread |
-| MySQL 8.4 | Accounts, service states, scores, file locations, and report publication records |
-| S3 / boto3 | Upload and download recordings, charts, transcripts, report data, PDFs, and profile photos |
-| Analysis/report API | Process recordings, write analysis results, and generate PDFs |
-| Ollama Cloud (optional) | Generate service-report explanations, service outcomes, and to-dos from existing scores and translated transcripts |
+**Record.** Choose distinct **Customer camera** and **Staff camera** devices and a **Microphone**. Use **Confirm Devices** if the saved setup changed. Select **Open Recorder**, then **Start Recording** and **Stop Recording** in the separate window. The **Saving** card tracks uploads; failed saves retain the recordings and offer **Retry**.
 
-### Real analyzer and test service
+![Record page with sample camera and microphone choices](assets/readme/screenshots/record.png)
 
-There are two distinct service implementations in this local checkout:
+![Recorder window with sample camera previews](assets/readme/screenshots/recorder.png)
 
-| Implementation | Local path | Behavior |
-| --- | --- | --- |
-| AWS-adapted real analyzer | `docs/rebuild/analyzer/` | Runs the full video, audio, and text pipeline on the EC2 CPU (Whisper, pyannote, Wav2Vec2, DeepFace); generates scores, charts, transcripts, and report data |
-| Placeholder test service | `docs/rebuild/analysis_service/` | Generates test scores, charts, and transcripts to exercise the application workflow |
+**Analysis.** Select **Analyze** under **Not analyzed**. The service moves through **Analyzing** to **Completed**; waiting for a worker also counts as Analyzing. Use **Retry** after a failure or **View** to open completed results.
 
-The original analysis source is also present in `service_analyzer/`. These directories are excluded from Git. Their absence from a fresh clone does not mean that the real analysis code does not exist or cannot already be deployed.
+![Analysis status tabs and service actions](assets/readme/screenshots/analysis.png)
 
-**EC2 is the host; the deployed code determines which implementation runs.** The EC2 tutorial starts with the test service. Since 2026-11-02 the EC2 instance runs the real analyzer (`adam-analyzer:1`, Whisper `medium`), deployed with `docs/rebuild/real-analyze/DEPLOY.md` after an end-to-end run on that instance. Its `/healthz` reports `"models":"ready"`, which the test service does not; check it before relying on this, because local documentation alone does not establish which image is running.
+**Services.** Filter completed services by **From** / **To** dates, then **Search**; blank dates leave the range open. Select **Details** to compare scores, play synchronized media in **Videos**, and inspect **Charts**. The header search opens a service by ID. Staff can open only their own services.
 
-### Real analysis pipeline
+![Staff service list with date filters](assets/readme/screenshots/staff-services.png)
 
-![ADAM real analysis pipeline: Whisper medium with word-level speaker alignment, CPU emotion models, saved results, and the recorded EC2 benchmark](assets/readme/analysis-pipeline.png)
+![Service Details with sample scores, outcome, and synchronized video players](assets/readme/screenshots/service-detail.png)
 
-The real analyzer runs every model on the EC2 instance's CPU and calls no AWS AI service. Amazon Transcribe and Amazon Translate are listed only under the AWS Paid plan, so speech-to-text and translation also run locally:
+**Reports.** Select a published report to preview its PDF and turn its pages, or choose **Open in Default App**. Only reports an administrator has published for you appear here.
 
-- **Who spoke when:** pyannote 3.1 runs once per service. Its speaker turns feed both the transcript and the voice-emotion step, so both use the same staff/customer mapping (the speaker with more turns is staff).
-- **Text:** faster-whisper (CTranslate2, int8) transcribes the Chinese speech; each word goes to the speaker turn it overlaps most; OpenCC converts the text to Taiwan Traditional Chinese, and opus-mt-zh-en translates each sentence to English for VADER. Sentences that pyannote did not hear (Whisper hallucinations in silence) are dropped.
-- **Voice and face:** Wav2Vec2 scores voice emotion per speaker turn; DeepFace scores the customer (`cam0`) and staff (`cam1`) cameras once per second.
-- **Results:** scores, five charts, the transcript, and report data are saved to RDS and S3. Reports draw the Audio, Text, and Facial charts from the report data; Ollama Cloud optionally adds explanations and the service outcome.
+![Staff Reports with a sample published PDF](assets/readme/screenshots/staff-reports.png)
 
-Models are downloaded once into `/opt/adam/models` (the gated pyannote models need a Hugging Face token for that one download) and loaded offline afterwards. On the EC2 instance (m7i-flex.large: 2 vCPU, 8 GiB), the whole service analyses a 1-minute two-person conversation in about 3 minutes with the default `medium` Whisper model (1.7% character error rate on the test dialogue, every word attributed to the right speaker) and peaks at about 5 GiB of memory. `WHISPER_MODEL` selects `small`, `medium`, or `large-v3-turbo`. A local end-to-end test with real models, the Whisper size comparison, and the EC2 deployment steps are in `docs/rebuild/analyzer/e2e/` and `docs/rebuild/real-analyze/`.
+**My Actions.** Open a goal, watch its example or marked moments, and reply in **Conversation**. **Got It** acknowledges the goal; the administrator completes it after reviewing a later service.
 
-### Report explanations
+![My Actions with a sample goal and marked moments](assets/readme/screenshots/my-actions.png)
 
-Analysis scores and AI-written explanations are separate stages. The current report-service implementation uses **Ollama Cloud** to explain existing analysis results. Amazon Bedrock is not connected to the current runtime. If explanations are disabled or unavailable, PDF generation continues and the affected fields display `Explanation unavailable`.
+### Administrators: review, coach, and publish
 
-### File storage
+**Home.** Review organization scores and trends, then compare employees in **Staff Ranking**. Switch **Customer** / **Staff** to choose which side's scores to compare.
 
-```text
-S3 bucket
-├── video/        Customer and staff videos
-├── audio/        Microphone recordings
-├── charts/       Analysis charts
-├── text/         Transcripts
-├── report-data/  Structured analysis data for reports
-├── reports/      Generated PDF reports
-└── avatars/      Profile photos
-```
+![Administrator Home with sample organization scores and staff ranking](assets/readme/screenshots/admin-home.png)
 
-File locations use `s3://<bucket>/<key>` URLs or the corresponding object keys. The client downloads files into a local cache for playback and preview, so the bucket can remain private.
+**Services and feedback.** Filter by **Staff** and date, then open **Details**. Optionally pause the video, select **Add Moment**, write a note, and **Save Moment**. Set a **Goal**, explain **Why**, choose **Follow up by**, and **Send Goal to …**. The staff member receives it in My Actions.
 
-## Workflow
+![Administrator Services with staff and date filters](assets/readme/screenshots/admin-services.png)
 
-![ADAM workflow: record, upload, analyze, review, publish reports, and follow up through Coaching and My Actions](assets/readme/user-workflow.png)
+![Administrator Service Details with the coaching panel beside the players](assets/readme/screenshots/admin-service-detail.png)
 
-### Staff
+**Coaching.** Follow the selected goal's **Next step**. Choose a later analyzed service from the same employee with **Use as Follow-up**, then **Watch** it. **Mark Complete** requires a conclusion; **Keep Practicing** sets the next goal/date. Use **Check Again** while waiting for a service. **Edit Goal** and **Cancel Goal** retain the history.
 
-1. Sign in and confirm the customer camera, staff camera, and microphone in **Settings → Devices** or the recording page.
-2. Open **Record**, start a session, and stop recording. Each session has one `service_id` shared by two video files and one audio file.
-3. Wait for upload. All three uploads must succeed before the service and file records are saved in one database transaction. Failed uploads retain the local recordings for retry.
-4. Submit the service from **Analysis**. The application tracks its status and can notify you when analysis finishes.
-5. Open the service in **Services** to review scores, charts, and media. Read reports published for you in **Reports**.
+![Coaching with sample follow-up choices and conversation](assets/readme/screenshots/coaching.png)
 
-```text
-Recordings saved       API accepts the job       Results saved
-       |                       |                      |
-       v                       v                      v
-  1 Not analyzed ───────> 2 Analyzing ───────────> 3 Completed
-       ^                       |
-       └──── Failed; retry ─────┘
-```
+**Reports.** Select **New Report**, choose **Service**, **Staff**, or **Company**, select the subject or date range, and **Generate Report**. Preview before **Publish**. Published service/staff reports appear for that employee; company reports stay administrator-only. Period dates include both endpoints and use Pacific Time.
 
-The client uses a conditional status update to avoid overwriting a completed service (`3`) with analyzing (`2`). A failed backend job can return status `2` to `1`, allowing another submission.
+![Administrator Reports with a PDF ready for publication](assets/readme/screenshots/admin-reports.png)
 
-### Administrators
+![New Report dialog with scope and subject choices](assets/readme/screenshots/report-generator.png)
 
-1. Review overall trends and rankings in **Home**, and inspect staff service records in **Services**.
-2. Use **Reports** to request a service, staff-period, or company-period PDF.
-3. Preview the completed report. Service and staff-period reports appear in the relevant staff member’s Reports only after **Publish**. Company-period reports remain administrator-only.
-4. Manage accounts in **Add Account**. Both roles can use **Log Out** to return to sign-in or **Quit** to close the application.
+**Add Account.** Fill in **Username**, **Password**, **Name**, **Level**, and optional **Job Title**, then **Add Account**. Level `1` is staff; levels `2–5` are administrators. You can create accounts up to your own level.
 
-Report generation and publication are separate states. Failed generation can be retried; regeneration creates a new report record and preserves the history.
+![Add Account form and account-level guidance](assets/readme/screenshots/add-account.png)
+
+### Both roles: Settings
+
+Update your photo, name, username, or password in **Account**. Account changes use **Save**; **General** preferences apply immediately. Staff also have **Devices** and analysis-alert preferences. In **Help**, use **Check Connection** or **Clear Download Cache**; cache cleanup preserves original recordings and unfinished uploads.
+
+![Settings with sample account information and preferences](assets/readme/screenshots/settings.png)
+
+Use **Log Out** to return to sign-in or **Quit** to close ADAM. Both ask for confirmation; read the upload warning if a save is still running.
 
 ## Getting started
 
-Run the following commands yourself when setting up the project. Unless stated otherwise, Python and Briefcase commands run inside `myapp/`.
+**This repository contains the desktop client.** A working installation also requires initialized MySQL tables/procedures/grants, S3 storage, and the separately deployed analysis/report API with its SQS worker. Backend implementations, production migrations, and deployment notes exist only in ignored local directories (`docs/rebuild/analyzer/`, `docs/rebuild/analysis_service/`, and `docs/rebuild/`); they are not provided by a fresh clone. The [test schema](myapp/tests/fixtures/schema.sql) supports automated tests and is not a production migration.
 
-### 1. Prepare the environment
+### 1. Install dependencies
 
-| Requirement | Details |
-| --- | --- |
-| Operating system | macOS; the current uv lock targets Darwin |
-| Python | 3.13, managed by uv |
-| Package manager | uv |
-| Native audio dependency | PortAudio; the first PyAudio installation requires local build tools |
-| Recording hardware | Two available cameras and an input microphone, with macOS permissions granted |
-| Supporting services | Initialized MySQL, an accessible S3 bucket, and an analysis/report API |
-
-With Homebrew:
+Install Homebrew, Xcode Command Line Tools, and these native dependencies, then run from the repository root:
 
 ```bash
 brew install uv portaudio
-```
-
-From the repository root:
-
-```bash
 cd myapp
 uv python install 3.13
-uv sync
+uv sync --locked
 ```
 
-Dependencies are declared in [pyproject.toml](myapp/pyproject.toml) and pinned in [uv.lock](myapp/uv.lock).
+Dependencies are declared in [pyproject.toml](myapp/pyproject.toml) and pinned in [uv.lock](myapp/uv.lock). PyAudio compiles locally; if Xcode selects an incompatible beta SDK, set `SDKROOT` to a compatible installed macOS SDK before installing.
 
-If PyAudio compilation or linking fails, check PortAudio and the Command Line Tools installation. If Xcode selects an incompatible beta SDK, point `SDKROOT` to an installed, compatible stable macOS SDK before running `uv sync`.
+### 2. Configure the desktop
 
-### 2. Configure the services
-
-Create `.env` in the repository root or `myapp/`. This AWS example requires replacing every `<...>` placeholder:
+Create `.env` in the repository root or `myapp/`, replacing the placeholders:
 
 ```dotenv
-DB_HOST=<rds-endpoint>
+DB_HOST=<mysql-host>
 DB_PORT=3306
 DB_NAME=adam
 DB_USER=adam_app
 DB_PASSWORD=<database-password>
+# Required for verified TLS when connecting to RDS.
 DB_SSL_CA=/absolute/path/to/global-bundle.pem
 
 AWS_REGION=us-east-1
-AWS_PROFILE=adam-dev
-S3_BUCKET=<your-private-bucket>
-
+AWS_PROFILE=<configured-local-profile>
+S3_BUCKET=<private-media-bucket>
 ANALYZE_API_URL=https://<analysis-host>/analyze
-# Set this only when the report API uses a different location.
-# REPORTS_API_URL=https://<reports-host>/reports
 ```
 
-`AWS_PROFILE` must refer to a configured, valid local AWS profile. boto3 also supports its standard credential sources; EC2 services can use an IAM role. Database users, AWS identities, and ADAM login accounts are separate.
+Use an existing ADAM login account from that database. ADAM accounts, MySQL users, and AWS credentials are separate. boto3 can use its standard credential sources if `AWS_PROFILE` is omitted.
 
-The database must contain the matching tables, stored procedures, and grants. Existing databases also need the updates for profile photos, reports, and self-service account settings. Apply the appropriate migrations rather than rerunning initialization SQL over existing data. Sign in with an ADAM account already created in that database.
+For the SQS backend upgrade, apply **migration 007 → API and worker → desktop** in that order. The new desktop relies on the API to save analysis status `2` before responding; it is incompatible with a backend that still expects the desktop to write that status.
 
-### 3. Launch the desktop application
+### 3. Launch
+
+Run inside `myapp/`:
 
 ```bash
 uv run briefcase dev
 ```
 
-After changing dependencies, refresh the Briefcase environment:
+After changing dependencies, use `uv run briefcase dev -r`. Launch through Briefcase, which supplies the application metadata required by the entry point.
 
-```bash
-uv run briefcase dev -r
-```
+## Architecture
 
-**Launch through Briefcase.** The application relies on metadata provided by Briefcase; `python -m myapp` is not the supported entry point. The sign-in screen can load without AWS credentials, but authentication needs MySQL, and upload and review features need their supporting services.
+![ADAM architecture: desktop client, SQS analysis queue, EC2 API and worker, S3, RDS, and optional Ollama Cloud](assets/readme/architecture.png)
+
+The desktop connects directly to **RDS for MySQL 8.4** and a private **S3** bucket. **TaskRunner/DbLane** keep database, network, and PDF work off the UI thread. The analysis/report backend runs on **EC2**:
+
+1. `POST /analyze` saves the job, outbox entry, and status `2` in one transaction, then returns `200`.
+2. An outbox publisher sends the job to **SQS**. A separate worker claims a lease, processes the recordings, and renews its lease while running.
+3. The worker uploads outputs, commits results and status `3`, then deletes the message. Duplicate deliveries cannot commit a second result; failed jobs are retried and can return to status `1` after exhausting attempts.
+4. The desktop refreshes and watches database status. A successful submission remains accepted even if its immediate list refresh fails.
+
+Service states are **1 · Not analyzed → 2 · Analyzing (queued or running) → 3 · Completed**.
+
+As recorded on **November 2, 2026**, EC2 uses `adam-analyzer:2` in separate API and worker containers; `/healthz` includes `"sqs":"configured"`. The real analyzer passed desktop validation before the queue split; physical desktop validation of the SQS branch is still pending.
+
+### Analysis and reports
+
+![Real analysis pipeline: speaker alignment, speech and emotion models, results, and reports](assets/readme/analysis-pipeline.png)
+
+The real worker runs its models on the EC2 CPU with files loaded offline:
+
+- **Speech:** pyannote speaker turns align faster-whisper `medium`/int8 words to staff and customer. OpenCC converts Chinese to Taiwan Traditional Chinese; opus-mt-zh-en translates it for VADER text sentiment.
+- **Emotion:** Wav2Vec2 scores voice emotion; DeepFace scores each camera once per second.
+- **Outputs:** RDS stores scores, state, and file references. S3 stores recordings, five charts, transcripts, report data, PDFs, and profile photos.
+
+The API generates PDFs through `POST /reports`. Administrators preview before publishing service/staff reports to the relevant staff member. Optional **Ollama Cloud** adds report explanations and transcript-evidenced service outcomes/to-dos; unavailable AI does not block analysis or PDF generation. Report fields fall back to `Explanation unavailable`.
 
 ## Configuration
 
-| Variable | Purpose | Default / notes |
-| --- | --- | --- |
-| `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | MySQL connection | Environment-specific; database-name case must match the server |
-| `DB_PORT` | MySQL port | `3306` |
-| `DB_SSL_CA` | MySQL TLS CA certificate path | Enables certificate and hostname verification; configure for RDS |
-| `AWS_REGION` | AWS Region | This project’s AWS setup uses `us-east-1` |
-| `AWS_PROFILE` | Local AWS profile | Optional; otherwise boto3 uses its standard credential sources |
-| `S3_BUCKET` | Media and report bucket | Required for upload/download features |
-| `AWS_ENDPOINT_URL` | Custom AWS SDK endpoint | Used for local moto; remove when connecting to AWS |
-| `ANALYZE_API_URL` | Full `/analyze` endpoint | Receives `{"service_id": "..."}` |
-| `REPORTS_API_URL` | Full `/reports` endpoint | Optional; otherwise derived from the analysis URL |
-| `LOCAL_MEDIA_DIR`, `LOCAL_CHARTS_DIR` | Download-cache locations | Default to `media/` and `charts/` under `src/myapp/init/` |
+The `.env` example above covers required desktop settings. Additional options:
 
-### Local development and AWS
+| Variable | Purpose |
+| --- | --- |
+| `DB_PORT` | MySQL port; defaults to `3306` |
+| `DB_SSL_CA` | CA certificate path; enables certificate and hostname verification |
+| `REPORTS_API_URL` | Override the report endpoint; otherwise replace the trailing `/analyze` in `ANALYZE_API_URL` with `/reports` |
+| `AWS_ENDPOINT_URL` | Local AWS emulator endpoint, such as moto; remove for real AWS |
+| `LOCAL_MEDIA_DIR`, `LOCAL_CHARTS_DIR` | Override download caches; defaults are under `src/myapp/init/` |
 
-| Service | Local development example | AWS deployment |
-| --- | --- | --- |
-| Database | MySQL 8.4 at `127.0.0.1:3306` | RDS for MySQL 8.4 |
-| Files | moto at `http://127.0.0.1:5055` | S3 bucket |
-| Analysis API | Test service at `http://127.0.0.1:5056/analyze` | Separately deployed API on EC2 |
+**Backend-only settings:** SQS queue/worker settings and `OLLAMA_BASE_URL`, `OLLAMA_API_KEY`, `OLLAMA_MODEL` belong in the backend environment, not the desktop `.env`. When AI is enabled, relevant scores, statistics, and translated transcript text are sent to Ollama Cloud.
 
-When `AWS_ENDPOINT_URL` points to moto, uploads go to the local emulator. Switching to AWS requires the appropriate credentials, bucket, database, and API settings; changing the Region alone is insufficient. Connecting to real S3 and RDS also does not determine whether the API generates real or placeholder analysis.
+Recordings normally remain in `~/video/` and `~/audio/` when launched with Briefcase. Failed uploads preserve them for retry. **Settings → Help → Clear Download Cache** removes downloaded copies while retaining original recordings. Align desktop, database, and backend time settings: service times use desktop local time, while period reports use `America/Los_Angeles`; queue bookkeeping uses UTC.
 
-### Recordings and caches
+## Development and tests
 
-Recordings use relative paths and are normally saved to `~/video/` and `~/audio/` when launched through `briefcase dev`. Downloaded media, charts, PDFs, and photos use separate caches. **Clear Download Cache** in Settings removes files that can be downloaded again and preserves original recordings.
-
-### Backend-only AI configuration
-
-The analysis/report service reads `OLLAMA_BASE_URL`, `OLLAMA_API_KEY`, `OLLAMA_MODEL`, and timeout settings. Keep the API key in backend configuration, outside the desktop client and version control. When enabled, scores, statistics, and translated transcript text are sent to the external model.
-
-## Tests and CI
-
-[myapp/tests](myapp/tests) uses pytest, moto, Qt offscreen, and disposable MySQL 8.4 instances. Tests do not load the normal development `.env`.
+Run inside `myapp/`:
 
 ```bash
-# Unit tests; Docker is not required.
-uv run pytest -m "not integration"
-
-# Unit and integration tests.
-uv run pytest
-
-# Include branch coverage; the configured threshold is 75%.
-uv run pytest --cov
+uv run pytest -m "not integration"  # Unit tests; no Docker needed
+uv run pytest                       # Unit and integration tests
+uv run pytest --cov                 # Branch coverage; 75% minimum
 ```
 
-Local integration tests use Docker and a locally available `mysql:8.4` image by default. The version-controlled [test schema](myapp/tests/fixtures/schema.sql) contains database structure and synthetic accounts; update it when tables or stored procedures change. Missing Docker prerequisites skip integration tests unless `--require-integration` is supplied, which makes them fail instead.
+Integration tests use Qt offscreen, moto, and a disposable MySQL 8.4 container. Install Docker and make `mysql:8.4` available first. Missing integration prerequisites skip those tests; add `--require-integration` to require them. Tests do not load the development `.env`.
 
-See [GitHub Actions CI and deployment planning](.github/CI.md) for the macOS workflow. CI runs the full suite with disposable native MySQL 8.4 (`--mysql-backend=native`) and branch coverage, without AWS credentials. The document also covers future EC2 delivery, database migrations, and desktop releases.
+[GitHub Actions](.github/workflows/ci.yml) runs unit and integration tests on macOS with temporary native MySQL (`--mysql-backend=native`) and branch coverage, without AWS credentials. See [CI notes](.github/CI.md) for details.
 
-## Project structure
+| Path | Contents |
+| --- | --- |
+| `myapp/src/myapp/` | Python controllers, background work, storage, reports, and coaching |
+| `myapp/src/myapp/qml/` | Staff/admin pages, shared components, icons, and theme |
+| `myapp/tests/` | Unit tests, integration tests, and test fixtures |
+| `assets/readme/` | README diagrams, screenshots, and image attribution |
 
-```text
-ADAM/
-├── README.md
-├── .github/                    GitHub Actions CI and deployment notes
-├── assets/readme/              Diagrams: SVG sources and PNG previews
-└── myapp/
-    ├── LICENSE
-    ├── pyproject.toml          Dependencies, Briefcase, and pytest
-    ├── uv.lock
-    ├── src/myapp/
-    │   ├── main.py            Sign-in and QML engine startup
-    │   ├── tasks.py           Background work and UI callbacks
-    │   ├── db_lane.py         Serialized database work
-    │   ├── database.py        MySQL configuration and connections
-    │   ├── storage.py         S3 uploads and downloads
-    │   ├── watcher.py         Analysis-status tracking
-    │   ├── home_dashboard.py  Dashboard queries and statistics
-    │   ├── service_list.py    Service lists
-    │   ├── media.py           Media, charts, and PDF previews
-    │   ├── reports.py         Report requests, lists, and publication
-    │   ├── account.py         Profile settings and photos
-    │   ├── ui_prefs.py        User preferences
-    │   ├── diagnostics.py     Connection checks and diagnostics
-    │   ├── init/              Role controllers, recording, and sessions
-    │   ├── qml/               Pages, shared components, icons, and Theme
-    │   └── images/            Sign-in artwork and attribution
-    └── tests/
-        ├── fixtures/          Test schema and synthetic data
-        ├── unit/
-        └── integration/
-```
+Keep network/database work off the UI thread and statistics free of missing-score values (`-1`). Update `pyproject.toml` and `uv.lock` together when dependencies change; preserve existing CRLF line endings in QML files.
 
-Additional directories available in this local checkout, but excluded from Git:
+**Still to validate:** the SQS desktop flow on physical hardware, Windows/Linux, Briefcase build/package with the current uv setup, and packaged system-notification banners. In-app notifications and Dock reminders are implemented.
 
-```text
-docs/
-├── AWS tutorial/              Service-specific AWS setup guides
-└── rebuild/
-    ├── analyzer/              AWS-adapted real analysis/report service
-    ├── analysis_service/      Placeholder integration-test service
-    ├── steps/                 Implementation and deployment instructions
-    └── ...                    Plans, migrations, and design decisions
-service_analyzer/              Original analysis source; contains legacy credentials
-```
-
-Do not publish embedded credentials from the original analysis source. The schema in `myapp/tests/fixtures/` is a test fixture, not a production migration.
-
-## Current limitations
-
-- **Backend delivery is separate.** Analyzer source exists locally but is not included in a fresh clone. Provision and deploy the chosen service separately. Confirm the active EC2 image when determining which implementation is running; placeholder outputs are test data.
-- **macOS development is the primary target.** Windows, Linux, Briefcase build/package with the current uv setup, physical-device behavior, and packaged system-notification banners still need validation. In-app notifications and Dock reminders are implemented.
-- **A full installation needs supporting services.** The desktop repository alone does not provision production database objects, S3 resources, or the analysis/report API.
-- **Time settings must agree.** Recording timestamps use the desktop’s local time, while current period reports use `America/Los_Angeles`. Align desktop, backend, and database time settings.
-
-## Contributing
-
-Keep network, database, and PDF work off the UI thread, and deliver UI updates through Qt signals. Statistics must exclude `-1`, which represents missing score data.
-
-Update both `pyproject.toml` and `uv.lock` when dependencies change. Preserve existing CRLF line endings in QML files, reuse shared components and Theme tokens, and wrap interface text in `qsTr()`. Run checks appropriate to your change and describe the impact and validation in the change summary.
-
-## License
-
-Application code is licensed under the [BSD 3-Clause License](myapp/LICENSE). See [asset sources and licenses](myapp/src/myapp/images/SOURCES.md) for artwork, font, and icon attribution.
+Licensed under [BSD-3-Clause](myapp/LICENSE). See [README image sources](assets/readme/SOURCES.md) and [application asset licenses](myapp/src/myapp/images/SOURCES.md) for attribution.
