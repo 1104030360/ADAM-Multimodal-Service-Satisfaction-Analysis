@@ -499,6 +499,9 @@ Item {
                 }
             }
 
+            // ── 服務結果與待辦（PLAN1 W1，T44；兩端都有，ServiceOutcomeCard.qml）
+            ServiceOutcomeCard { objectName: "serviceOutcomeCard"; Layout.fillWidth: true; media: detail.media }
+
             // ── 報表（管理員端、分析完成的服務；new-feature N4，T37）
             Loader {
                 objectName: "reportCardLoader"

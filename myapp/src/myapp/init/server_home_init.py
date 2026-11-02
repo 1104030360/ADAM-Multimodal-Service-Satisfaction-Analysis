@@ -1459,7 +1459,7 @@ class ServerHome(QObject):
         self.watcher = None if services is None else self._watch(services)
         self.serviceManager = ServiceManager(services, account_id)
         self.chartsModel = ChartsModel()
-        self.mediaModel = MediaModel()
+        self.mediaModel = MediaModel(owner=account_id)  # 明細頁只查得到自己的服務（PLAN1 W1，T44）
         self.pdfmodel = PDFHandler(services)
         self.serviceSearch = ServiceSearch.for_staff(services, account_id, parent=self)  # 頁首的搜尋（只查自己的）
         # 報表（new-feature N4、N5，T37）：已發佈的清單、分析頁的 Report 欄；打開時交給 pdfmodel

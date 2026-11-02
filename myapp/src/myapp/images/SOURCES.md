@@ -48,7 +48,7 @@
 
 ## 介面的圖示（`qml/components/icons/`）
 
-共用元件、頁面和側邊欄的 67 個 SVG 圖示。它們放在 `myapp/src/myapp/qml/components/icons/`（側邊欄的在 `nav/`），不在這個資料夾，但來源和授權一起記在這裡。
+共用元件、頁面和側邊欄的 68 個 SVG 圖示。它們放在 `myapp/src/myapp/qml/components/icons/`（側邊欄的在 `nav/`），不在這個資料夾，但來源和授權一起記在這裡。
 
 - **來源**：[Lucide](https://lucide.dev)（https://github.com/lucide-icons/lucide）的 npm 套件 `lucide-static` 1.58.0，官方 tarball `lucide-static-1.58.0.tgz`（integrity `sha512-VFE2ZEq3yEwjBH0El9CA9lHgDWKKXPKgKxFzX+/JN1FPa4maQbtl/pT4B62aJkUEpODT5octDsyGy7tPVE2svQ==`，SHA-1 `838a9ef1c25275491cae326439c576ba0b930ef4`，和 npm registry 記錄的相同）。
   - 2026-11-01 新版介面（`docs/rebuild/new-UIUX/`）把 tarball 裡的 2159 個圖示放在本機的 `docs/rebuild/assets/sources/lucide-all/`，用 `docs/rebuild/assets/scripts/make_icon.py` 上色，兩個都被 git 忽略。
@@ -63,7 +63,7 @@
 | 檔案 | 顏色 | 用在 | 衍生自 |
 |---|---|---|---|
 | `arrow-down_errorOnDark.svg` | `errorOnDark` `#FF9A90` | `StatTile.qml` | Feather |
-| `arrow-right_warningOnDark.svg` | `warningOnDark` `#FFB74D` | `OverviewCard.qml` | Feather |
+| `arrow-right_warningOnDark.svg` | `warningOnDark` `#FFB74D` | `OverviewCard.qml`、`ServiceOutcomeCard.qml` | Feather |
 | `arrow-up-from-line_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `record_widget.qml` |  |
 | `arrow-up-right_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `server_home_button.qml` | Feather |
 | `arrow-up_successOnDark.svg` | `successOnDark` `#81C784` | `StatTile.qml` | Feather |
@@ -76,10 +76,11 @@
 | `chevron-right_actionSecondaryText.svg` | `actionSecondaryText` `#ECEEF1` | `ReportsView.qml` | Feather |
 | `chevron-right_textDisabled.svg` | `textDisabled` `#6E747D` | `ReportsView.qml` | Feather |
 | `circle-alert_errorOnDark.svg` | `errorOnDark` `#FF9A90` | `FieldError.qml`、`InlineError.qml`、`ServiceSearchField.qml`、`SettingsDevices.qml`、`Toast.qml`、`login.qml`、`record_widget.qml` | Feather |
-| `circle-check_successOnDark.svg` | `successOnDark` `#81C784` | `SettingsDevices.qml`、`StatusChip.qml`、`Toast.qml`、`OverviewCard.qml`、`record_widget.qml` |  |
-| `circle-dashed_textPrimary.svg` | `textPrimary` `#ECEEF1` | `StatusChip.qml` |  |
+| `circle-check_successOnDark.svg` | `successOnDark` `#81C784` | `SettingsDevices.qml`、`StatusChip.qml`、`Toast.qml`、`OverviewCard.qml`、`ServiceOutcomeCard.qml`、`record_widget.qml` |  |
+| `circle-dashed_textPrimary.svg` | `textPrimary` `#ECEEF1` | `StatusChip.qml`、`ServiceOutcomeCard.qml` |  |
 | `circle-user-round_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `PageHeader.qml` |  |
-| `circle-x_errorOnDark.svg` | `errorOnDark` `#FF9A90` | `StatusChip.qml` | Feather |
+| `circle-x_errorOnDark.svg` | `errorOnDark` `#FF9A90` | `StatusChip.qml`、`ServiceOutcomeCard.qml` | Feather |
+| `clipboard-list_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `ServiceOutcomeCard.qml` |  |
 | `clock_infoOnDark.svg` | `infoOnDark` `#90CAF9` | `StatusChip.qml`、`OverviewCard.qml`、`analysis.qml` | Feather |
 | `clock_textSecondary.svg` | `textSecondary` `#B4BAC2` | `ServiceDetailView.qml` | Feather |
 | `download_textSecondary.svg` | `textSecondary` `#B4BAC2` | `ServiceDetailView.qml` | Feather |
@@ -104,7 +105,7 @@
 | `search_textFaint.svg` | `textFaint` `#8E959F` | `ServiceSearchField.qml` | Feather |
 | `triangle-alert_iconNeutral.svg` | `iconNeutral` `#C3C8CF` | `OverviewCard.qml` | Feather |
 | `triangle-alert_textOnDark.svg` | `textOnDark` `#FFFFFF` | `OverviewCard.qml` | Feather |
-| `triangle-alert_warningOnDark.svg` | `warningOnDark` `#FFB74D` | `SettingsDevices.qml`、`Toast.qml`、`ServiceDetailView.qml`、`record_widget.qml` | Feather |
+| `triangle-alert_warningOnDark.svg` | `warningOnDark` `#FFB74D` | `SettingsDevices.qml`、`Toast.qml`、`ServiceDetailView.qml`、`ServiceOutcomeCard.qml`、`record_widget.qml` | Feather |
 | `upload_chromeIcon.svg` | `chromeIcon` `#E6E8EB` | `Toast.qml` | Feather |
 | `user-round-plus_actionPrimaryText.svg` | `actionPrimaryText` `#0E1013` | `admin_home.qml` |  |
 | `video_actionPrimaryText.svg` | `actionPrimaryText` `#0E1013` | `OverviewCard.qml`、`record_widget.qml`、`server_home.qml` |  |
@@ -149,6 +150,7 @@ e963fb03e3180118ca0b99fba7cc9644769dc61a35280e3da75fc3a65fd450c4  circle-check.s
 2ea5a8a81920485da3eb70bdc8e2c349df0311fd7888ba0e9d85dcac0db3b512  circle-dashed.svg
 c7e6ee719aeb7c0e71d6afefa3f8946fcd7232506e881d9666a86f8904ba23bd  circle-user-round.svg
 2b16f7f66feba8412175c1b3c45f793cb603f803b6c9de6daa16a7a928850cbd  circle-x.svg
+ac4c40e513f4024ba4e96460d59e1693c6f6d6f281773f0d852a004d6be9d618  clipboard-list.svg
 863f184bbb4460fd133fb3da9b84b9158017d6af5b187c9f09b79cae0d1f972d  clock.svg
 195448b5abcebcebbb2931d3b4d3079fbe26590f8b197033158c4cc4c9100a48  download.svg
 602bee368f3255e925846b7d5918f5621f3149a8635264444e87a04a4e77599d  eye.svg

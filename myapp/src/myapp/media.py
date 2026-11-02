@@ -14,6 +14,11 @@
 - 離開明細頁（頁面的 Component.onDestruction 呼叫 close()）：取消還沒下載完的，已經下載好的留在快取（T21）。
 - 一個檔案失敗只影響它自己：那個位置顯示錯誤和 Retry；圖表有幾張沒載入時，圖表區上方有警告列（DS-27、DS-52）。
 
+服務結果與待辦（PLAN1 W1，T44）：分析服務讀逐字稿、用 Ollama Cloud 填進 tbl_service 的三欄，桌面端只讀。
+和頁首、分數同一個查詢（DETAIL_SQL，還是 1 個往返）；MediaModel 的 outcome、outcomeFilled、todos、outcomeModel，
+畫面是 ServiceOutcomeCard.qml。服務人員端的 MediaModel 有 owner（自己的 account_id）：查詢多一個
+AND s.account_id = %s，別人的服務和「沒有這筆服務」一樣（serviceFound 是 false，沒有任何檔案、分數、結果）。
+
 報表（new-feature N4、N5，T37；以前的 UX-26、UX-27、ENG-07）：PDF 由分析服務產生、放在 S3（reports/{report_id}.pdf）。
 清單在 myapp/reports.py（ReportsModel）；這裡的 PDFHandler 只負責檢視一份：io lane 下載到 reports-pdf 快取
 （同一個 report_id 的內容不會變，已經有就直接用），pdf lane 開檔、畫頁面（PyMuPDF 只在一條執行緒用），
@@ -63,10 +68,13 @@ UNION ALL
 (SELECT 4, charts_id, 'chart', charts_url FROM tbl_charts_storage WHERE service_id = %s)
 """
 
-# 明細頁打開時的查詢（新版介面 U2，T31 第 3 節）：服務本身（時間、狀態、服務人員、8 個分數）＋檔案清單，還是 1 個往返。
-# 每個檔案一列，服務的欄位在每一列重複（最多十來列）；沒有檔案時剩一列、kind 是 NULL；沒有這筆服務時 0 列
-DETAIL_SQL = f"""
+# 明細頁打開時的查詢（新版介面 U2，T31 第 3 節）：服務本身（時間、狀態、服務人員、8 個分數、PLAN1 W1 的服務結果與待辦）
+# ＋檔案清單，還是 1 個往返。每個檔案一列，服務的欄位在每一列重複（最多十來列）；沒有檔案時剩一列、kind 是 NULL；
+# 沒有這筆服務時 0 列。owner_filter：服務人員端多一個 AND s.account_id = %s（只看得到自己的服務，PLAN1 共用原則）
+def _detail_sql(owner_filter):
+    return f"""
 SELECT s.service_start, s.service_end, s.service_status, a.account_name,
+       s.service_outcome, s.service_todos, s.service_outcome_model,
        sc.customer_total, sc.customer_text, sc.customer_audio, sc.customer_facial,
        sc.server_total, sc.server_text, sc.server_audio, sc.server_facial,
        f.kind, f.url
@@ -74,11 +82,19 @@ FROM tbl_service AS s
 LEFT JOIN tbl_account AS a ON a.account_id = s.account_id
 LEFT JOIN tbl_service_score AS sc ON sc.service_id = s.service_id
 LEFT JOIN ({FILES_UNION}) AS f ON TRUE
-WHERE s.service_id = %s
+WHERE s.service_id = %s{owner_filter}
 ORDER BY f.part, f.seq
 """
+
+
+DETAIL_SQL = _detail_sql("")                                # 管理員端：權限內的每一筆
+OWN_DETAIL_SQL = _detail_sql(" AND s.account_id = %s")     # 服務人員端：只有自己的
 SCORE_KINDS = ("total", "text", "audio", "facial")
 SCORE_SIDES = (("customer", "customer"), ("staff", "server"))  # （畫面上的名稱, 資料表欄位的前綴）
+# 服務結果（PLAN1 W1，T44）：資料庫的值 → QML 用的鍵（標籤的字在 ServiceOutcomeCard.qml 用 qsTr 換）
+OUTCOME_KEYS = {"Resolved": "resolved", "Documents missing": "documentsMissing", "Handoff needed": "handoffNeeded",
+                "Unresolved": "unresolved", "Unknown": "unknown"}
+MAX_TODOS = 10  # 畫面最多列幾項：分析服務最多寫 5 項，多的是資料被改過，不讓卡片無限長
 
 
 def media_dir():
@@ -190,18 +206,48 @@ class ServiceSummary:
     """明細頁頁首和分數列要的資料庫的值（還沒格式化；文字在 GUI 執行緒由 MediaModel 產生）。
 
     scores：{"customer": {"total", "text", "audio", "facial"}, "staff": {...}}，資料庫的原始值（-1 是沒有資料）。
+    outcome、todos、outcome_model：PLAN1 W1 的三欄，資料庫的原始值（NULL＝還沒填）。
     """
     start: object
     end: object
     status: int
     staff_name: str
     scores: dict
+    outcome: object = None
+    todos: object = None
+    outcome_model: object = None
 
 
-def load_detail(cursor, service_id):
-    """一筆服務的頁首、分數和檔案（1 個往返，DETAIL_SQL）。回傳 (ServiceSummary 或 None, [MediaFile])；
-    None 表示資料庫裡沒有這筆服務。cursor 的列可以是 tuple（用 column_names 對應欄位）或 dict。"""
-    cursor.execute(DETAIL_SQL, (*_files_params(service_id), service_id))
+def _text(value):
+    """資料庫的字串欄位（有的 connector 設定會給 bytes）；不是字串是 None。"""
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", errors="replace")
+    return value if isinstance(value, str) else None
+
+
+def outcome_key(value):
+    """service_outcome → 畫面用的鍵（OUTCOME_KEYS）；NULL 或不是那五個值是空字串（＝還沒填）。"""
+    text = _text(value)
+    return OUTCOME_KEYS.get(text.strip(), "") if text else ""
+
+
+def todo_items(value):
+    """service_todos（一項一行）→ 清單：空白行不算，前後的空白拿掉，最多 MAX_TODOS 項。"""
+    text = _text(value) or ""
+    return [line.strip() for line in text.splitlines() if line.strip()][:MAX_TODOS]
+
+
+def load_detail(cursor, service_id, owner=None):
+    """一筆服務的頁首、分數、服務結果和檔案（1 個往返，DETAIL_SQL）。回傳 (ServiceSummary 或 None, [MediaFile])；
+    None 表示資料庫裡沒有這筆服務。cursor 的列可以是 tuple（用 column_names 對應欄位）或 dict。
+
+    owner（服務人員端）：只查這個 account_id 的服務（OWN_DETAIL_SQL）；別人的服務和沒有這筆一樣是 (None, [])，
+    連檔案的位置都不會離開資料庫。
+    """
+    if owner is None:
+        cursor.execute(DETAIL_SQL, (*_files_params(service_id), service_id))
+    else:
+        cursor.execute(OWN_DETAIL_SQL, (*_files_params(service_id), service_id, owner))
     rows = cursor.fetchall()
     if rows and not isinstance(rows[0], dict):
         rows = [dict(zip(cursor.column_names, row)) for row in rows]
@@ -210,7 +256,8 @@ def load_detail(cursor, service_id):
     first = rows[0]
     summary = ServiceSummary(
         first["service_start"], first["service_end"], int(first["service_status"] or 0), first["account_name"] or "",
-        {side: {kind: first[f"{prefix}_{kind}"] for kind in SCORE_KINDS} for side, prefix in SCORE_SIDES})
+        {side: {kind: first[f"{prefix}_{kind}"] for kind in SCORE_KINDS} for side, prefix in SCORE_SIDES},
+        first.get("service_outcome"), first.get("service_todos"), first.get("service_outcome_model"))
     files = [file for file in (_media_file(row["kind"], row["url"]) for row in rows) if file is not None]
     return summary, files
 
@@ -554,6 +601,10 @@ class MediaModel(QObject):
       scores {"customer": {total, text, audio, facial}, "staff": {…}}（小數 1 位，沒有資料是 null；
       分數帶由 QML 的 Theme.bandName() 判斷）、hasScores（至少有一個分數）、
       serviceFound（查過了、資料庫裡沒有這筆時是 false）。
+    - 服務結果與待辦（PLAN1 W1，T44）：outcome（鍵：resolved、documentsMissing、handoffNeeded、unresolved、unknown；
+      還沒查到是空字串，資料庫是 NULL 時是 unknown）、outcomeFilled（分析服務填過了）、todos（一項一行的清單；
+      還沒填是空的）、outcomeModel（填的模型）。只讀：畫面不能改。
+    - owner：服務人員端是自己的 account_id，只查得到自己的服務（OWN_DETAIL_SQL）；管理員端是 None。
     """
 
     headerChanged = Signal()
@@ -563,10 +614,11 @@ class MediaModel(QObject):
     cam1SourceChanged = Signal()
     audioSourceChanged = Signal()
 
-    def __init__(self, services=None, charts=None, parent=None):
+    def __init__(self, services=None, charts=None, parent=None, *, owner=None):
         super().__init__(parent)
         self._services = None
         self._charts = None
+        self._owner = owner  # 服務人員端：自己的 account_id（只查自己的服務）；管理員端 None
         self._connector = None  # services 是 None 時查清單用的舊連線（DatabaseConnector）
         self._slots = {kind: FileSlot(kind, self) for kind in MEDIA_KINDS}
         for kind, slot in self._slots.items():
@@ -634,6 +686,28 @@ class MediaModel(QObject):
     @Property(bool, notify=headerChanged)
     def hasScores(self):
         return any(value is not None for values in self.scores.values() for value in values.values())
+
+    @Property(str, notify=headerChanged)
+    def outcome(self):
+        """服務結果的鍵（PLAN1 W1）；還沒查到、沒有這筆服務是空字串，還沒填（NULL）是 unknown。"""
+        if self._summary is None:
+            return ""
+        return outcome_key(self._summary.outcome) or "unknown"
+
+    @Property(bool, notify=headerChanged)
+    def outcomeFilled(self):
+        """分析服務填過了（service_outcome 不是 NULL）：畫面標示 AI 產生、列出待辦。"""
+        return self._summary is not None and outcome_key(self._summary.outcome) != ""
+
+    @Property("QVariantList", notify=headerChanged)
+    def todos(self):
+        """待辦，一項一行；還沒填時是空的清單（PLAN1：尚未寫入時不顯示項目）。"""
+        return todo_items(self._summary.todos) if self.outcomeFilled else []
+
+    @Property(str, notify=headerChanged)
+    def outcomeModel(self):
+        """填這個結果的模型（例如 gemma4:31b）；還沒填是空字串。"""
+        return (_text(self._summary.outcome_model) or "").strip() if self.outcomeFilled else ""
 
     def _header_start(self):
         """頁首的開始時間：查到之前用 Details 傳進來的（格式不對就不顯示）。"""
@@ -786,21 +860,21 @@ class MediaModel(QObject):
         return self._services.tasks if self._services is not None else _INLINE
 
     def _list(self):
-        session, service_id = self._session, self._service_id
+        session, service_id, owner = self._session, self._service_id, self._owner
         if self._services is not None:
             db = self._services.db
 
             def work(token, report):
                 # dictionary cursor：其他頁面的查詢都用它，已經建好了（多建一種 cursor 要多 1 個往返，ENG-01）
                 with db.cursor(dictionary=True) as cursor:
-                    return load_detail(cursor, service_id)
+                    return load_detail(cursor, service_id, owner)
         else:
             connector = self._connector or DatabaseConnector()
 
             def work(token, report):
                 cursor = connector.connection.cursor()
                 try:
-                    return load_detail(cursor, service_id)
+                    return load_detail(cursor, service_id, owner)
                 finally:
                     cursor.close()
 
