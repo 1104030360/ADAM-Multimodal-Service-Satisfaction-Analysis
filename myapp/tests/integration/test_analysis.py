@@ -1,7 +1,8 @@
 """送分析與分析頁（步驟 3-6～3-10）：真的 MySQL、本機的假分析服務、真的 analysis.qml。
 
 F2：三個清單在 db lane 一次查完（1 個往返），放在增量模型裡。
-F3／F4：送出分析的 POST 在 io lane，收到 200 之後在 db lane 改狀態；分析頁不再自己每 15 秒重新整理，
+F3／F4：送出分析的 POST 在 io lane，收到 200 之後在 db lane 重新整理清單（SQS，T49：狀態 2 是分析服務收下工作時
+寫的，假的分析服務也照做，桌面端不寫）；分析頁不再自己每 15 秒重新整理，
 改由 app 層的 AnalysisWatcher 發現狀態變了（完整的流程與通知見 test_analysis_flow.py）。
 U2（T30）：每個分頁一次 8 筆、多載入一頁（Show More 馬上出現），總數在每一列上；View Results 要看的那一筆
 不在第一頁時，同一個往返多取到它；送出的時間記在本機。分頁的規則和格式的單元測試在 tests/unit/test_analysis_page.py，
@@ -47,9 +48,9 @@ def refreshed(model):
 
 
 def sent(services, service_id):
-    """等送出分析的兩段工作（POST、改狀態）都結束。"""
+    """等送出分析的兩段工作（POST、之後的重新整理）都結束。"""
     wait_until(lambda: not services.tasks.isBusy(f"analyze:{service_id}")
-               and not services.tasks.isBusy(f"analysis:mark:{service_id}"))
+               and not services.tasks.isBusy(f"analysis:sent:{service_id}"))
 
 
 def server_error(analysis_service, monkeypatch):
@@ -71,9 +72,9 @@ def test_analyze_sends_service_id_and_moves_service_to_analyzing(new_model, serv
     assert services.tasks.isBusy(f"analyze:{SID}")  # POST 在 io lane，GUI 執行緒不等它
     [row] = model.notAnalyzedModel.rows()
     assert row["sending"] is True  # 那一列的按鈕忙碌
-    wait_until(lambda: ids(model.analyzingModel) == [SID])  # 改狀態和重新整理在 db lane
+    wait_until(lambda: ids(model.analyzingModel) == [SID])  # 重新整理在 db lane
     assert analysis_service.requests == [("/analyze", {"service_id": SID})]
-    assert db.status(SID) == 2
+    assert db.status(SID) == 2  # 分析服務收下時寫的
     assert ids(model.notAnalyzedModel) == []
     [row] = model.analyzingModel.rows()
     assert row["sentText"] == "Sent less than 1 min ago" and row["sending"] is False  # 從送出的時候開始等
@@ -91,7 +92,7 @@ def test_failed_request_keeps_service_not_analyzed(new_model, services, db, anal
     [toast] = toasts(services.notifier)
     assert (toast["severity"], toast["title"], toast["actionId"]) == (
         "error", "Couldn't send for analysis", f"retry-analyze:{SID}")
-    assert db.status(SID) == 1  # 沒送到，就不改狀態
+    assert db.status(SID) == 1  # 沒送到：分析服務沒收下，狀態還是 1
     [row] = model.notAnalyzedModel.rows()
     assert (row["serviceId"], row["sending"]) == (SID, False)  # 那一列回到 Analyze
 
@@ -102,6 +103,23 @@ def test_status_never_moves_back(new_model, services, db, analysis_service):
     assert model.analyzeService(SID)
     wait_until(lambda: ids(model.completedModel) == [SID])
     assert db.status(SID) == 3
+
+
+def test_the_desktop_leaves_the_status_to_the_analysis_service(new_model, services, db, db_proxy, analysis_service,
+                                                               no_network_on_gui_thread):
+    """收到 200 之後桌面端不寫狀態（SQS，T49）。分析服務回 200、可是這時狀態是 1（例如收下之後 worker 很快就失敗、
+    又改回 1）：清單照資料庫把它留在 Not analyzed，不會被桌面端晚到的 2 蓋成 Analyzing、一直等不到結果。"""
+    analysis_service.marks_sent = False
+    db.add_service(SID, "2026-10-30 12:00:00", status=1)
+    model = refreshed(new_model())  # 第一次：連線、建 cursor（不算在預算裡）
+    db_proxy.reset()
+    assert model.analyzeService(SID)
+    sent(services, SID)
+    assert db_proxy.snapshot()["rt"] == 1  # 只有重新整理那 1 個往返（以前先多 1 個 UPDATE）
+    assert db.status(SID) == 1
+    assert (ids(model.notAnalyzedModel), ids(model.analyzingModel)) == ([SID], [])
+    [toast] = toasts(services.notifier)
+    assert toast["title"] == "Sent for analysis"  # 分析服務收下了；失敗由監看看到 1 時說（test_analysis_flow.py）
 
 
 def test_refresh_is_one_round_trip(new_model, services, db, db_proxy, no_network_on_gui_thread):

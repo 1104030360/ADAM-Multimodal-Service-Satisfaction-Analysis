@@ -103,17 +103,37 @@ def db(mysql_server, seed_accounts, monkeypatch):
     connection.close()
 
 
+# 分析服務收下工作時，在同一個交易裡把狀態 1 改成 2（SQS，T49；和 analysis_queue.py 的 MARK_SENT_SQL 一樣）
+MARK_SENT_SQL = "UPDATE tbl_service SET service_status = 2 WHERE service_id = %s AND service_status = 1"
+
+
 @pytest.fixture
-def analysis_service(monkeypatch):
+def analysis_service(monkeypatch, mysql_server, db):
     """假的分析服務：記下收到的 JSON（路徑, 內容），回傳 status（預設 200）。ANALYZE_API_URL 會指到它。
+
+    和真的一樣，/analyze 要回 200 時先在測試資料庫把那一筆的狀態 1 改成 2，寫好才回應（SQS，T49：桌面端不再自己寫）；
+    marks_sent=False 時只回 200、不改狀態。每個請求自己開一條連線（在伺服器的執行緒上，不碰測試的 db 那一條）。
     /reports（報表，new-feature N4）回傳 report_status（預設 202，和真的一樣），桌面端由 ANALYZE_API_URL 推出這個位址。"""
-    service = SimpleNamespace(status=200, report_status=202, requests=[])
+    service = SimpleNamespace(status=200, report_status=202, marks_sent=True, requests=[])
+
+    def mark_sent(service_id):
+        connection = mysql.connector.connect(**mysql_server, database="adam", autocommit=True)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(MARK_SENT_SQL, (service_id,))
+        finally:
+            connection.close()
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
-            body = self.rfile.read(int(self.headers["Content-Length"]))
-            service.requests.append((self.path, json.loads(body)))
-            self.send_response(service.report_status if self.path == "/reports" else service.status)
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            service.requests.append((self.path, body))
+            if self.path == "/reports":
+                self.send_response(service.report_status)
+            else:
+                if service.status == 200 and service.marks_sent:
+                    mark_sent(body["service_id"])
+                self.send_response(service.status)
             self.end_headers()
 
         def log_message(self, *args):  # 不要把每個請求印到終端機

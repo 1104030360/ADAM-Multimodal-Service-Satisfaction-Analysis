@@ -339,7 +339,7 @@ def test_saving_card_keeps_a_save_after_its_toast_is_closed_then_retries_and_ana
     assert db.rows("SELECT service_status FROM tbl_service WHERE service_id = %s", (sid,)) == [(1,)]
     assert sorted(obj["Key"] for obj in s3.list_objects_v2(Bucket="adam-test")["Contents"]) == sorted(recording.keys)
 
-    # Saving 卡片的 Analyze：和通知上的一樣交給送出分析的流程（ServerHome → ServiceModel → 分析服務、狀態改成 2）
+    # Saving 卡片的 Analyze：和通知上的一樣交給送出分析的流程（ServerHome → ServiceModel → 分析服務，狀態 2 是它寫的）
     close_toasts(window, services)  # 「Saved」那則疊在右下角（測試的視窗很小）
     click(window, page_item(window, "saveAnalyze"))
     wait_until(lambda: [row["serviceId"] for row in home.serviceModel.analyzingModel.rows()] == [sid])

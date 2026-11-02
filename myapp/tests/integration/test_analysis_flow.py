@@ -1,8 +1,10 @@
 """送出分析與分析完成的通知（前端重建 F3 的送出、F4，CONTRACTS §4 的 C3）：真的外殼和頁面、真的 MySQL、
 本機的假分析服務。
 
-- 送出：按鈕忙碌（Sending…）→ POST 在 io lane → 狀態在 db lane 改成 2 → toast「Sent for analysis」→ 那一列移到 Analyzing
-- 送不出去：那一列回到 Analyze，常駐的錯誤 toast＋Retry；按 Retry 再送（UX-18、DS-20）
+- 送出：按鈕忙碌（Sending…）→ POST 在 io lane（分析服務收下工作、把狀態改成 2 才回 200，SQS，T49）→ 清單在 db lane
+  重新整理 → toast「Sent for analysis」→ 那一列移到 Analyzing。桌面端不寫狀態：收下之後很快就失敗的，監看照樣說失敗
+- 送不出去：那一列回到 Analyze，常駐的錯誤 toast＋Retry；按 Retry 再送（UX-18、DS-20）。收到 200 之後清單重新整理不到
+  不算送不出去：照樣是「Sent for analysis」，清單交給「更新不到」的警告
 - 監看（ENG-16）：在別頁也收得到「Analysis complete」（View Results 會換到分析頁並標出那一列）、
   「Analysis failed」（Retry）；清單和首頁的三張卡片在背景重新整理
 - app 不在前景：Dock 圖示跳動、加上徽章，切回來清掉（ENG-17、D6）
@@ -173,7 +175,7 @@ def test_send_failure_offers_retry_and_the_retry_goes_through(engine, services, 
     assert (toast["actionLabel"], toast["actionId"]) == ("Retry", f"retry-analyze:{SID}")
     wait_until(lambda: not button.property("busy"))
     assert button.property("text") == "Analyze"  # 那一列回到 Analyze，在頁面上也能重送（DS-20）
-    assert not services.tasks.isBusy(f"analysis:mark:{SID}") and db.status(SID) == 1
+    assert not services.tasks.isBusy(f"analysis:sent:{SID}") and db.status(SID) == 1
 
     analysis_service.status = 200
     monkeypatch.setenv("ANALYZE_API_URL", url)
@@ -275,6 +277,31 @@ def test_retry_from_the_row_closes_the_stale_failure_toast(engine, services, db,
     the_toast(services.notifier, "Sent for analysis")
 
 
+def test_a_failure_right_after_the_send_is_not_hidden_by_the_desktop(engine, services, db, analysis_service,
+                                                                     no_network_on_gui_thread):
+    """分析服務收下了、回 200，可是 worker 很快就失敗、把狀態改回 1（SQS，T49）。桌面端不再自己寫 2，所以這一筆
+    不會卡在 Analyzing：監看看到 1 就跳「Analysis failed」＋Retry（以前桌面端晚到的 2 會把失敗蓋掉，SQS 教學 5-1）。"""
+    analysis_service.marks_sent = False  # 從桌面端看：收下時寫的 2 已經被失敗改回 1
+    db.add_service(SID, "2026-10-31 09:30:00", status=1)
+    home = launch_staff(engine, services)
+    open_analysis(home)
+    assert home.serviceModel.analyzeService(SID)
+    the_toast(services.notifier, "Sent for analysis")
+    assert db.status(SID) == 1 and ids(home.serviceModel.notAnalyzedModel) == [SID]  # 照資料庫，不是 Analyzing
+    assert home.watcher.watched == [SID]
+
+    poll(home)
+    toast = the_toast(services.notifier, "Analysis failed")
+    assert (toast["actionLabel"], toast["actionId"]) == ("Retry", f"retry-analyze:{SID}")
+    [row] = home.serviceModel.notAnalyzedModel.rows()
+    assert row["failed"] is True and home.watcher.watched == []
+
+    analysis_service.marks_sent = True  # 這次順利收下
+    services.notifier.trigger(toast["toastId"])  # toast 上的 Retry
+    wait_until(lambda: ids(home.serviceModel.analyzingModel) == [SID])
+    assert db.status(SID) == 2 and home.watcher.watched == [SID]
+
+
 # ── app 不在前景 ─────────────────────────────────────────────────────────────
 
 def test_dock_bounces_and_counts_while_the_app_is_in_the_background(engine, services, db, monkeypatch,
@@ -343,3 +370,29 @@ def test_watcher_and_list_share_one_refresh_warning(engine, services, db, monkey
     poll(home)
     assert toasts(services.notifier) == []  # 又查得到了：警告自己關掉
     assert home.watcher.watched == [SID]
+
+
+def test_a_send_that_went_through_is_not_called_unsent_when_the_list_cannot_refresh(
+        engine, services, db, analysis_service, monkeypatch, no_network_on_gui_thread):
+    """200 就是分析服務已經把工作和狀態 2 存好了（SQS，T49）：這台電腦之後連不到資料庫、清單重新整理不到，
+    也不能說「Couldn't send for analysis」。照樣是「Sent for analysis」、監看開始看這一筆；清單和一般的重新整理
+    失敗一樣，留著舊的、跳「更新不到」，連得到之後那一列才移到 Analyzing，送出的時間是收到 200 的時候。"""
+    db.add_service(SID, "2026-10-31 09:30:00", status=1)
+    home = launch_staff(engine, services)
+    open_analysis(home)
+    restore = cut_database(services, db, monkeypatch)  # 分析服務（另一台機器）連得到資料庫，這台電腦連不到
+    assert home.serviceModel.analyzeService(SID)
+    the_toast(services.notifier, "Sent for analysis")
+    assert [(toast["severity"], toast["title"], toast["detail"]) for toast in toasts(services.notifier)] == [
+        ("info", "Sent for analysis", f"{SID} is being analyzed. You'll be notified when it's done."),
+        ("warning", "Can't refresh analysis status", "Can't reach the database. Retrying in 15 seconds.")]
+    assert db.status(SID) == 2 and home.watcher.watched == [SID]
+    [row] = home.serviceModel.notAnalyzedModel.rows()  # 清單是舊的：那一列先留在原處，按鈕不再忙碌
+    assert (row["serviceId"], row["sending"], row["failed"]) == (SID, False, False)
+
+    restore()
+    home.serviceModel.refresh()  # 15 秒後的重試
+    wait_until(lambda: ids(home.serviceModel.analyzingModel) == [SID])
+    [row] = home.serviceModel.analyzingModel.rows()
+    assert row["sentText"] == "Sent less than 1 min ago"
+    assert [toast["title"] for toast in toasts(services.notifier)] == ["Sent for analysis"]  # 警告自己關掉

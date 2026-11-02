@@ -1,5 +1,5 @@
 """送分析的 HTTP 請求（步驟 3-6、F3）：在 io lane 執行的 post_analysis()，以及 toast 的內文。
-送出的整個流程（按鈕忙碌、改狀態、通知）見整合測試 test_analysis.py、test_analysis_flow.py。"""
+送出的整個流程（按鈕忙碌、重新整理清單、通知）見整合測試 test_analysis.py、test_analysis_flow.py。"""
 from types import SimpleNamespace
 
 import pytest

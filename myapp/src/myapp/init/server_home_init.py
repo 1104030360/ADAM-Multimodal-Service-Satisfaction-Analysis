@@ -768,8 +768,6 @@ WHERE p.position <= GREATEST(
         COALESCE(((p.pin_position - 1) DIV %(page)s + 2) * %(page)s, 0))
 ORDER BY p.service_start DESC, p.service_id DESC
 """
-# 狀態只會往前走（1 → 2 → 3）：分析服務可能已經寫好 3，不能被這裡蓋回 2
-MARK_SENT_SQL = "UPDATE tbl_service SET service_status = 2 WHERE service_id = %s AND service_status < 2"
 # 分析頁每一列的角色。startTime 是資料庫的格式（「2026-10-30 12:00:00」），View 打開明細時交給 openServiceDetail()
 SERVICE_ROLES = ("serviceId", "startTime", "recorded", "length", "sentText", "customerScore", "staffScore",
                  "failed", "sending")
@@ -783,9 +781,9 @@ def analyze_key(service_id):
     return f"analyze:{service_id}"
 
 
-def mark_key(service_id):
-    """收到 200 之後：db lane 把狀態改成 2、重新整理清單。"""
-    return f"analysis:mark:{service_id}"
+def sent_key(service_id):
+    """收到 200 之後：db lane 重新整理清單，那一列移到 Analyzing（狀態 2 是分析服務寫的，T49）。"""
+    return f"analysis:sent:{service_id}"
 
 
 def outcome_key(service_id):
@@ -794,7 +792,8 @@ def outcome_key(service_id):
 
 
 def post_analysis(url, service_id):
-    """在 io lane 執行：請分析服務分析這一筆（ENG-05）。分析服務收到就回 200，不等分析做完。
+    """在 io lane 執行：請分析服務分析這一筆（ENG-05）。分析服務收到就回 200，不等分析做完：
+    200 表示工作已經存進資料庫，狀態 1 → 2 也在同一個交易裡寫好了（SQS，T49）。
 
     連不到、逾時丟 requests 的例外；200 以外的狀態碼丟 requests.HTTPError（ENG-12：分析服務回應錯誤）。
     """
@@ -884,27 +883,25 @@ def _score(value):
     return None if value is None else round(value, 1)
 
 
-def list_services(db, account_id, limits=(2 * PAGE_SIZE,) * 3, pin=None, mark_sent=None):
+def list_services(db, account_id, limits=(2 * PAGE_SIZE,) * 3, pin=None):
     """在 db lane 執行：自己的服務，每個分頁（狀態 1、2、3）取前 limits[i] 筆，新的在前；每一列有
     position（在分頁裡第幾筆）和 total（分頁的總數）。pin 見 ANALYSIS_SQL。1 個往返。
-
-    mark_sent 是剛送出分析的服務，先把它改成 2（多 1 個往返）。
     """
     params = {"account_id": account_id, "pin": pin, "page": PAGE_SIZE,
               **{f"limit_{status}": int(limit) for status, limit in zip((1, 2, 3), limits)}}
     with db.cursor(dictionary=True) as cursor:
-        if mark_sent:
-            cursor.execute(MARK_SENT_SQL, (mark_sent,))
         cursor.execute(ANALYSIS_SQL, params)
         return cursor.fetchall()
 
 
 class SentTimes:
     """送出分析的時間（epoch ms），記在這台電腦（QSettings，和 T26 的 pendingSaves 同一個地方）：
-    重開 app 之後「Sent 21 min ago」還是對的。資料庫沒有送出的時間（UX-19），這一版也不改 schema（PLAN 第 1 節）。
+    重開 app 之後「Sent 21 min ago」還是對的。資料庫沒有桌面端讀得到的送出時間（UX-19；SQS 的工作表只給分析服務用，
+    T49），這一版也不為它改 schema（PLAN 第 1 節）。
 
     - key：analysisSent/<帳號>/<service_id>。同一台電腦換人登入，各看各的。
-    - 收到 200、狀態改成 2 時記下；看到它不是分析中了（完成、失敗、Analyzing 全部載入了卻沒有它）就刪掉。
+    - 收到 200 時記下（之後的重新整理失敗也記，T49）；看到它不是分析中了（完成、失敗、Analyzing 全部載入了
+      卻沒有它）就刪掉。
     - 只在 GUI 執行緒讀寫：本機的小檔案，不是網路；寫完馬上 sync()。
     """
 
@@ -1072,19 +1069,20 @@ class ServiceModel(QObject):
     - 「更新不到」（重新整理或監看的查詢失敗）：清單留著，只跳一則警告（DS-52），恢復後自己關掉；重新整理失敗時
       15 秒後自己再試。清單已經有資料，或監看正在等分析結果時才跳（分析頁沒打開過也一樣，T30）；
       分析頁第一次載入就失敗是區塊錯誤（DS-27），不跳通知。
-    - sentText：什麼時候送出分析的。資料庫沒有送出的時間（UX-19），所以是這台電腦收到 200 的時間，
+    - sentText：什麼時候送出分析的。資料庫沒有桌面端讀得到的送出時間（UX-19），所以是這台電腦收到 200 的時間，
       記在 QSettings（SentTimes），重開 app 也還在；不知道（別台電腦送的）就是「Sent earlier」（T30）。
       每 30 秒更新一次（只有分析中的列會變）。
     - failed：這次執行看過它是 2、後來又變回 1，或監看看到 2 → 1（分析服務失敗時會這樣做，D4、DS-22）。
-    - sending：送出中（POST 加上改狀態），那一列的按鈕忙碌（DS-24）。
-    - analyzeService()：POST 在 io lane；收到 200 之後在 db lane 改狀態、重新整理清單。結果用 toast 告訴使用者。
+    - sending：送出中（POST 加上之後的重新整理），那一列的按鈕忙碌（DS-24）。
+    - analyzeService()：POST 在 io lane；收到 200（分析服務已經把工作存好、狀態改成 2，T49）之後在 db lane
+      重新整理清單。桌面端不寫狀態。結果用 toast 告訴使用者。
     """
 
     statusChanged = Signal()
     busyChanged = Signal()
     errorChanged = Signal()
     defaultTabChanged = Signal()
-    analysisSent = Signal(str)  # 送出成功（分析服務收到了、狀態也改成 2）：監看從這裡開始看這一筆
+    analysisSent = Signal(str)  # 送出成功（分析服務收下了，狀態 2 是它寫的）：監看從這裡開始看這一筆
 
     def __init__(self, services, account_id, *, clock=time.time, sent_times=None):
         """clock：現在幾秒（epoch），算「Sent 21 min ago」用，測試可以換掉。sent_times：SentTimes，測試可以換掉。"""
@@ -1171,7 +1169,7 @@ class ServiceModel(QObject):
     @Slot()
     def refresh(self):
         """在 db lane 重新整理三個分頁（1 個往返）。上一次還沒回來就不再送，而且不會漏掉更新：
-        db lane 只有一條執行緒、依序執行，所以呼叫者剛做完的資料庫工作（監看的查詢、錄影寫入、改狀態）
+        db lane 只有一條執行緒、依序執行，所以呼叫者剛做完的資料庫工作（監看的查詢、錄影寫入）
         如果排在還沒回來的那一次後面，結果不會先回來；還沒回來的那一次一定查得到它。
         要的筆數或要露出來的服務在這段期間變了（Show More、View Results），回來時會再查一次（_took）。"""
         request = self._request()
@@ -1326,7 +1324,7 @@ class ServiceModel(QObject):
 
     @Slot(str, result=bool)
     def analyzeService(self, service_id):
-        """送出分析：POST 在 io lane，收到 200 之後在 db lane 把狀態改成 2、重新整理清單。
+        """送出分析：POST 在 io lane，收到 200 之後在 db lane 重新整理清單（狀態 2 是分析服務寫的，T49）。
         整段期間那一列的按鈕忙碌；結果用 toast 告訴使用者。回傳 False 表示這一筆已經在送了（防重複送出）。"""
         if service_id in self._sending:
             return False
@@ -1343,30 +1341,47 @@ class ServiceModel(QObject):
         return True
 
     def _posted(self, service_id):
-        """分析服務收到了：在 db lane 把狀態改成 2，順便重新整理清單（2 個往返）。"""
+        """分析服務收下了：工作和狀態 2 已經在它的同一個交易裡存好（SQS，T49）。這裡只在 db lane 重新整理清單
+        （1 個往返），那一列移到 Analyzing。用自己的 key，不和還沒回來的重新整理擠在一起：db lane 依序執行，
+        排在後面的這一次一定查得到分析服務寫好的 2。
+
+        桌面端不再自己寫狀態 2：分析很快就失敗、分析服務把狀態改回 1 時，晚到的 2 會把它蓋掉，
+        那一筆就一直停在 Analyzing，看不到失敗、也不能 Retry（SQS 教學 5-1）。"""
         posted_at = self._clock() * 1000  # 從分析服務收到的時候開始等
         request = self._request()
         db, account_id = self.services.db, self.account_id
         if not self.services.tasks.submit(
-                "db", mark_key(service_id),
-                lambda token, report: list_services(db, account_id, *request, mark_sent=service_id),
-                on_ok=lambda rows: self._marked(service_id, posted_at, request, rows),
-                on_err=lambda error: self._not_sent(service_id, error)):
+                "db", sent_key(service_id), lambda token, report: list_services(db, account_id, *request),
+                on_ok=lambda rows: self._accepted(service_id, posted_at, request, rows),
+                on_err=lambda error: self._accepted(service_id, posted_at, request, error=error)):
             self._set_sending(service_id, False)  # TaskRunner 已經關了（程式正在結束）
 
-    def _marked(self, service_id, posted_at, request, rows):
+    def _accepted(self, service_id, posted_at, request, rows=None, error=None):
+        """收到 200 之後的重新整理回來了：rows 是新的清單；error 是重新整理失敗的原因。
+
+        200 就表示送出了，重新整理失敗也不能說「Couldn't send」：送出的時間照記、照樣跳「Sent for analysis」、
+        監看照樣開始看這一筆。清單和一般的重新整理失敗一樣：留著舊的、跳「更新不到」的警告，有資料的話 15 秒後
+        自己再試；那一列等查得到時才移到 Analyzing。
+        """
         self._sent.remember(service_id, posted_at)  # 先記下：_took 套用時這一列就有送出的時間
         self._failed.discard(service_id)
         self._sending.discard(service_id)
-        self._took(rows, request)  # 那一列移到 Analyzing（DS-24：按鈕跟著那一列換掉）
+        if error is None:
+            self._took(rows, request)  # 那一列移到 Analyzing（DS-24：按鈕跟著那一列換掉）
+        else:
+            logger.warning("refreshing the analysis lists after sending %s failed: %r", service_id, error)
+            self._apply(self._rows)  # 清單是舊的：那一列先留在原處，按鈕不再忙碌
+            self.refresh_failed(error, REFRESH_RETRY_S, watching=True)  # 監看接著就要等這一筆（T30）
+            if self._status == "ready" and not self._stopped:
+                self._retry.start()
         self._show_toast("info", _tr("Sent for analysis"),
                          _tr("%1 is being analyzed. You'll be notified when it's done.", service_id),
                          analyze_key(service_id))
         self.analysisSent.emit(service_id)
 
     def _not_sent(self, service_id, error):
-        """POST 失敗，或分析服務收到了、但狀態沒改成 2：那一列回到 Analyze（或 Retry），跳常駐的錯誤（DS-20）。
-        重送沒關係：狀態只會往前走，分析服務也不會把同一筆排兩次（ENG-14）。"""
+        """POST 失敗（連不到、逾時、200 以外）：那一列回到 Analyze（或 Retry），跳常駐的錯誤（DS-20）。
+        重送沒關係：同一筆還在排隊或分析中時，分析服務只回 200，不會排兩次（ENG-14、T49）。"""
         logger.warning("sending %s for analysis failed: %r", service_id, error)
         self._set_sending(service_id, False)
         retryable = user_message(error)[3]

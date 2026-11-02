@@ -1,5 +1,5 @@
 -- Test-only MySQL 8.4 schema: no production credentials or user grants.
--- Snapshot of the rebuild schema including migrations 001-006 (2026-11-01).
+-- Snapshot of the rebuild schema including migrations 001-007 (2026-11-02).
 -- Synthetic placeholder accounts are required by tests/integration/.
 -- Update this fixture when changing tables or stored procedures.
 
@@ -1341,6 +1341,76 @@ END $$
 
 DELIMITER ;
 -- [END PLAN1 W2]
+
+-- [BEGIN SQS] 分析工作佇列（2026-11-02，T49）：3 張表，和 new-feature/migrations/007_analysis_queue.sql 相同（拿掉註解）。
+--   只有分析服務讀寫，桌面端不讀；狀態 2 由分析服務在接受工作的交易裡寫。
+CREATE TABLE IF NOT EXISTS tbl_analysis_job (
+  service_id      VARCHAR(32)      NOT NULL,
+  job_state       VARCHAR(16)      CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'queued',
+  attempts        TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  max_attempts    TINYINT UNSIGNED NOT NULL DEFAULT 3,
+  lease_token     CHAR(32)         CHARACTER SET ascii COLLATE ascii_bin NULL,
+  lease_until     DATETIME(3)      NULL,
+  last_error      VARCHAR(1000)    NULL,
+  result_token    CHAR(32)         CHARACTER SET ascii COLLATE ascii_bin NULL,
+  report_data_key VARCHAR(255)     NULL,
+  accepted_at     DATETIME(3)      NOT NULL,
+  started_at      DATETIME(3)      NULL,
+  finished_at     DATETIME(3)      NULL,
+  updated_at      DATETIME(3)      NOT NULL,
+
+  PRIMARY KEY (service_id),
+  KEY idx_analysis_job_state_updated (job_state, updated_at),
+  CONSTRAINT fk_analysis_job_service FOREIGN KEY (service_id)
+    REFERENCES tbl_service (service_id) ON DELETE CASCADE ON UPDATE RESTRICT,
+  CONSTRAINT chk_analysis_job_state CHECK (job_state IN ('queued', 'running', 'done', 'failed')),
+  CONSTRAINT chk_analysis_job_lease CHECK ((lease_token IS NULL) = (lease_until IS NULL)
+                                           AND (job_state = 'running' OR lease_token IS NULL)),
+  CONSTRAINT chk_analysis_job_attempts CHECK (attempts <= max_attempts)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_0900_ai_ci
+  COMMENT = '分析工作（SQS）：認領、續期、嘗試次數；時間都是 UTC';
+
+CREATE TABLE IF NOT EXISTS tbl_analysis_outbox (
+  event_id        CHAR(32)         CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  service_id      VARCHAR(32)      NOT NULL,
+  outbox_state    VARCHAR(8)       CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'pending',
+  send_attempts   INT UNSIGNED     NOT NULL DEFAULT 0,
+  next_attempt_at DATETIME(3)      NOT NULL,
+  last_error      VARCHAR(1000)    NULL,
+  sqs_message_id  VARCHAR(128)     NULL,
+  created_at      DATETIME(3)      NOT NULL,
+  sent_at         DATETIME(3)      NULL,
+
+  PRIMARY KEY (event_id),
+  KEY idx_analysis_outbox_due (outbox_state, next_attempt_at),
+  KEY idx_analysis_outbox_service (service_id),
+  CONSTRAINT fk_analysis_outbox_service FOREIGN KEY (service_id)
+    REFERENCES tbl_service (service_id) ON DELETE CASCADE ON UPDATE RESTRICT,
+  CONSTRAINT chk_analysis_outbox_state CHECK (outbox_state IN ('pending', 'sent')),
+  CONSTRAINT chk_analysis_outbox_sent CHECK ((outbox_state = 'sent') = (sent_at IS NOT NULL))
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_0900_ai_ci
+  COMMENT = '還要送到 SQS 的分析工作（transactional outbox）；時間都是 UTC';
+
+CREATE TABLE IF NOT EXISTS tbl_analysis_worker (
+  worker_id       VARCHAR(64)      CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  worker_state    VARCHAR(16)      CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  service_id      VARCHAR(32)      NULL,
+  detail          VARCHAR(255)     NULL,
+  started_at      DATETIME(3)      NOT NULL,
+  seen_at         DATETIME(3)      NOT NULL,
+
+  PRIMARY KEY (worker_id),
+  KEY idx_analysis_worker_seen (seen_at),
+  CONSTRAINT chk_analysis_worker_state CHECK (worker_state IN ('loading', 'ready', 'busy', 'failed', 'stopped'))
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_0900_ai_ci
+  COMMENT = '分析 worker 的心跳；時間都是 UTC';
+-- [END SQS]
 
 INSERT INTO tbl_account
   (account_id, account_username, account_password, account_name, account_level, account_occupation_name)
