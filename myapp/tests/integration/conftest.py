@@ -1,10 +1,9 @@
-"""整合測試的 fixture：拋棄式 MySQL 8.4 容器、每個測試前清空資料、假的分析服務、QML engine。"""
+"""整合測試的 fixture：拋棄式 MySQL 8.4、每個測試前清空資料、假的分析服務、QML engine。"""
 import json
 import secrets
 import shutil
 import subprocess
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,8 +20,9 @@ from myapp.tasks import TaskRunner
 from myapp.ui_prefs import UiPrefs
 from tests.integration.helpers import Database, wait_until
 from tests.integration.latency_proxy import db_proxy  # noqa: F401  fixture：app 的 DB_* 改走計算往返次數的 proxy
+from tests.integration.mysql_server import native_mysql, wait_for_mysql
 
-SCHEMA = Path(__file__).resolve().parents[3] / "docs" / "rebuild" / "db_schema.sql"
+SCHEMA = Path(__file__).resolve().parents[1] / "fixtures" / "schema.sql"
 MYSQL_IMAGE = "mysql:8.4"
 TABLES = ["tbl_report", "tbl_text_storage", "tbl_charts_storage", "tbl_audio_storage", "tbl_video_storage",
           "tbl_service_score", "tbl_service", "tbl_account",
@@ -33,27 +33,24 @@ def docker(*args, **kwargs):
     return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=120, **kwargs)
 
 
-def wait_for_mysql(server, timeout=120):
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            mysql.connector.connect(**server, connection_timeout=2).close()
-            return
-        except mysql.connector.Error:
-            if time.monotonic() > deadline:
-                raise
-            time.sleep(0.5)
-
-
 @pytest.fixture(scope="session")
-def mysql_server():
-    """整個測試期間共用一個 MySQL 8.4 容器：資料放在記憶體（tmpfs），port 由 Docker 隨機挑，結束就刪除。"""
-    if shutil.which("docker") is None or docker("info").returncode != 0:
-        pytest.skip("Docker 無法使用，略過整合測試")
+def mysql_server(pytestconfig):
+    """整個測試期間共用一個拋棄式 MySQL 8.4；CI 缺少前置條件時必須失敗。"""
+    def unavailable(reason):
+        if pytestconfig.getoption("--require-integration"):
+            pytest.fail(reason, pytrace=False)
+        pytest.skip(reason)
+
     if not SCHEMA.exists():
-        pytest.skip(f"找不到 {SCHEMA}")
+        unavailable(f"找不到 {SCHEMA}")
+    if pytestconfig.getoption("--mysql-backend") == "native":
+        with native_mysql(SCHEMA) as server:
+            yield server
+        return
+    if shutil.which("docker") is None or docker("info").returncode != 0:
+        unavailable("Docker 無法使用，略過整合測試")
     if docker("image", "inspect", MYSQL_IMAGE).returncode != 0:
-        pytest.skip(f"本機沒有 {MYSQL_IMAGE}，先執行 docker pull {MYSQL_IMAGE}")
+        unavailable(f"本機沒有 {MYSQL_IMAGE}，先執行 docker pull {MYSQL_IMAGE}")
 
     name = f"adam-pytest-mysql-{secrets.token_hex(4)}"  # 名稱固定開頭，萬一留下來，用 docker ps -a 找得到
     password = secrets.token_urlsafe(16)
@@ -75,7 +72,7 @@ def mysql_server():
 
 @pytest.fixture(scope="session")
 def seed_accounts(mysql_server):
-    """db_schema.sql 放進去的佔位帳號；每個測試開始時放回去。"""
+    """測試 schema 放進去的佔位帳號；每個測試開始時放回去。"""
     connection = mysql.connector.connect(**mysql_server, database="adam")
     with connection.cursor() as cursor:
         cursor.execute("SELECT * FROM tbl_account")

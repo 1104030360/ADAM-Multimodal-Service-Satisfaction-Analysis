@@ -36,6 +36,14 @@ APP_ENV_VARS = [
 ]
 
 
+def pytest_addoption(parser):
+    group = parser.getgroup("adam")
+    group.addoption("--mysql-backend", choices=("docker", "native"), default="docker",
+                    help="Start a disposable MySQL 8.4 server with Docker or local MySQL binaries.")
+    group.addoption("--require-integration", action="store_true",
+                    help="Fail if integration-test prerequisites are unavailable instead of skipping.")
+
+
 @pytest.fixture(scope="session", autouse=True)
 def qapp():
     """整個測試期間共用一個 QApplication（一個程式只能有一個）。"""

@@ -1,158 +1,294 @@
-# Multimodal AI System for Service Satisfaction Analysis
+# ADAM — Multimodal Service Satisfaction Analysis
 
-# 專案總覽
+A desktop application for recording service interactions and reviewing customer and staff performance through video, audio, and text analysis.
 
-這是一個採用 PySide6 (Qt for Python) 和 Briefcase 打造的 AI 服務監控與分析應用程式，可用於跨平台打包。此應用程式提供即時服務錄製功能，包含影音擷取、人臉/聲音/文字分析，並設有管理儀表板以監控效能。
+Built with **Python 3.13, PySide6, and QML**, ADAM provides separate staff and administrator interfaces for recording, analysis, dashboards, and PDF reports. The primary development platform is **macOS**, and the application interface is in English.
 
-## 主要功能
+> **Repository scope:** The version-controlled application is the desktop client. A complete installation also needs MySQL, S3, and an analysis/report API. This local checkout contains analyzer implementations under ignored directories; those implementations and the production database setup are not included in a fresh Git clone.
 
-*   即時影音錄製
-*   人臉、聲音、文字分析
-*   管理員儀表板
-*   使用者權限管理
-*   雲端儲存整合
+[Features](#features) · [Architecture](#architecture) · [Workflow](#workflow) · [Getting started](#getting-started) · [Configuration](#configuration) · [Tests and CI](#tests-and-ci) · [Project structure](#project-structure) · [Current limitations](#current-limitations)
 
-## 架構
+## Features
 
-### 應用程式結構
+| Feature | Staff | Administrators |
+| --- | --- | --- |
+| Home | Personal scores, service counts, trends, and recent performance | Organization-wide scores, service counts, trends, and staff ranking |
+| Record | Record two cameras and one microphone; upload recordings | — |
+| Analysis | Submit analysis, track progress, retry failures, and receive completion notifications | — |
+| Services | Search personal service records; play media and inspect charts | Search service records across staff; play media and inspect charts |
+| Reports | Read service and period reports published for the signed-in staff member | Generate service, staff-period, and company-period PDFs; preview and publish eligible reports |
+| Add Account | — | Create and manage accounts within the current permission level |
+| Settings | Profile, photo, password, preferences, notifications, and recording devices | Profile, photo, password, and preferences |
+| Help and storage | Connection checks, diagnostic summaries, local folders, and download-cache cleanup | Same |
 
-本專案採用多層式架構，明確區分以下幾個部分：
+Account level `1` opens the staff interface; levels `2–5` open the administrator interface. Account-management actions cannot exceed the signed-in administrator’s level. Company-period reports remain administrator-only.
 
-1.  **前端 (QML)**：位於 `myapp/src/myapp/qml/pages/`，包含登入、服務人員主頁和管理員主頁的 UI 定義。
-2.  **後端 (Python)**：位於 `myapp/src/myapp/`，包含業務邏輯、資料庫存取和媒體處理。
-3.  **資料庫層**：透過 `database.py` 使用預存程序存取 MySQL 資料庫。
-4.  **雲端儲存**：整合 Google Cloud Storage 以儲存媒體檔案（影片/音訊/圖表）。
+## Architecture
 
-### 關鍵元件
+![ADAM architecture: desktop client, AWS services, and optional external AI](assets/readme/architecture.svg)
 
-*   **主要進入點**：`myapp/src/myapp/main.py` - 應用程式初始化和 QML 引擎設定。
-*   **資料庫連接器**：`myapp/src/myapp/database.py` - 用於 MySQL 連線管理的單例模式。
-*   **初始化模組**：`myapp/src/myapp/init/` - 包含不同使用者類型的初始化邏輯：
-    *   `server_home_init.py` - 服務人員/員工視圖，具備錄製和分析功能。
-    *   `admin_home_init.py` - 管理員視圖，具備報告、排名和帳號管理功能。
-    *   `record_widget.py` - 用於服務擷取的影音錄製小工具。
+The desktop client accesses MySQL and S3 directly and calls an HTTP API to request analysis and PDF generation. AWS deployments use **Amazon RDS for MySQL 8.4**, **Amazon S3**, and an analysis/report service on **Amazon EC2**. Local development can use MySQL, moto, and a test API.
 
-### 資料流程
+| Component | Responsibility |
+| --- | --- |
+| PySide6 / QML | Sign-in, role-specific pages, dashboards, recording controls, media playback, and report previews |
+| OpenCV / PyAudio | Capture customer video, staff video, and microphone audio |
+| TaskRunner / DbLane | Run database, network, and PDF work in the background; return results to the UI thread |
+| MySQL 8.4 | Accounts, service states, scores, file locations, and report publication records |
+| S3 / boto3 | Upload and download recordings, charts, transcripts, report data, PDFs, and profile photos |
+| Analysis/report API | Process recordings, write analysis results, and generate PDFs |
+| Ollama Cloud (optional) | Generate service-report explanations from existing scores, statistics, and translated transcripts |
 
-1.  使用者透過 `main.py` → `DatabaseConnector.check_login()` 進行驗證。
-2.  根據帳號等級，啟動對應的主頁（`server_home_init.launch()` 或 `admin_home_init.launch()`）。
-3.  設定 QML 上下文屬性，將 Python 物件公開給 QML。
-4.  QML UI 透過 Qt Slots/Signals 與 Python 後端互動。
-5.  媒體檔案上傳至 S3，並將 URL 儲存於 MySQL。
-6.  分析 API 端點非同步處理服務資料。
+### Real analyzer and test service
 
-# 如何使用
+There are two distinct service implementations in this local checkout:
 
-### 環境設定
+| Implementation | Local path | Behavior |
+| --- | --- | --- |
+| AWS-adapted real analyzer | `docs/rebuild/analyzer/` | Runs the video, audio, and text-analysis pipeline; generates scores, charts, and transcripts |
+| Placeholder test service | `docs/rebuild/analysis_service/` | Generates test scores, charts, and transcripts to exercise the application workflow |
+
+The original analysis source is also present in `service_analyzer/`. These directories are excluded from Git. Their absence from a fresh clone does not mean that the real analysis code does not exist or cannot already be deployed.
+
+**EC2 is the host; the deployed code determines which implementation runs.** The EC2 tutorial starts with the test service, while rebuild step 6 describes deploying the real analyzer. Local documentation alone does not establish which image is currently running on an EC2 instance.
+
+### Report explanations
+
+Analysis scores and AI-written explanations are separate stages. The current report-service implementation uses **Ollama Cloud** to explain existing analysis results. Amazon Bedrock is not connected to the current runtime. If explanations are disabled or unavailable, PDF generation continues and the affected fields display `Explanation unavailable`.
+
+### File storage
+
+```text
+S3 bucket
+├── video/        Customer and staff videos
+├── audio/        Microphone recordings
+├── charts/       Analysis charts
+├── text/         Transcripts
+├── report-data/  Structured analysis data for reports
+├── reports/      Generated PDF reports
+└── avatars/      Profile photos
+```
+
+File locations use `s3://<bucket>/<key>` URLs or the corresponding object keys. The client downloads files into a local cache for playback and preview, so the bucket can remain private.
+
+## Workflow
+
+![ADAM workflow: record, upload, analyze, review, and publish reports](assets/readme/user-workflow.svg)
+
+### Staff
+
+1. Sign in and confirm the customer camera, staff camera, and microphone in **Settings → Devices** or the recording page.
+2. Open **Record**, start a session, and stop recording. Each session has one `service_id` shared by two video files and one audio file.
+3. Wait for upload. All three uploads must succeed before the service and file records are saved in one database transaction. Failed uploads retain the local recordings for retry.
+4. Submit the service from **Analysis**. The application tracks its status and can notify you when analysis finishes.
+5. Open the service in **Services** to review scores, charts, and media. Read reports published for you in **Reports**.
+
+```text
+Recordings saved       API accepts the job       Results saved
+       |                       |                      |
+       v                       v                      v
+  1 Not analyzed ───────> 2 Analyzing ───────────> 3 Completed
+       ^                       |
+       └──── Failed; retry ─────┘
+```
+
+The client uses a conditional status update to avoid overwriting a completed service (`3`) with analyzing (`2`). A failed backend job can return status `2` to `1`, allowing another submission.
+
+### Administrators
+
+1. Review overall trends and rankings in **Home**, and inspect staff service records in **Services**.
+2. Use **Reports** to request a service, staff-period, or company-period PDF.
+3. Preview the completed report. Service and staff-period reports appear in the relevant staff member’s Reports only after **Publish**. Company-period reports remain administrator-only.
+4. Manage accounts in **Add Account**. Both roles can use **Log Out** to return to sign-in or **Quit** to close the application.
+
+Report generation and publication are separate states. Failed generation can be retried; regeneration creates a new report record and preserves the history.
+
+## Getting started
+
+Run the following commands yourself when setting up the project. Unless stated otherwise, Python and Briefcase commands run inside `myapp/`.
+
+### 1. Prepare the environment
+
+| Requirement | Details |
+| --- | --- |
+| Operating system | macOS; the current uv lock targets Darwin |
+| Python | 3.13, managed by uv |
+| Package manager | uv |
+| Native audio dependency | PortAudio; the first PyAudio installation requires local build tools |
+| Recording hardware | Two available cameras and an input microphone, with macOS permissions granted |
+| Supporting services | Initialized MySQL, an accessible S3 bucket, and an analysis/report API |
+
+With Homebrew:
 
 ```bash
-brew install portaudio uv     # PyAudio 編譯時需要 PortAudio
+brew install uv portaudio
+```
+
+From the repository root:
+
+```bash
+cd myapp
 uv python install 3.13
-cd myapp
-uv sync                       # 照 uv.lock 建立 myapp/.venv 並安裝套件
+uv sync
 ```
 
-### 執行應用程式
+Dependencies are declared in [pyproject.toml](myapp/pyproject.toml) and pinned in [uv.lock](myapp/uv.lock).
+
+If PyAudio compilation or linking fails, check PortAudio and the Command Line Tools installation. If Xcode selects an incompatible beta SDK, point `SDKROOT` to an installed, compatible stable macOS SDK before running `uv sync`.
+
+### 2. Configure the services
+
+Create `.env` in the repository root or `myapp/`. This AWS example requires replacing every `<...>` placeholder:
+
+```dotenv
+DB_HOST=<rds-endpoint>
+DB_PORT=3306
+DB_NAME=adam
+DB_USER=adam_app
+DB_PASSWORD=<database-password>
+DB_SSL_CA=/absolute/path/to/global-bundle.pem
+
+AWS_REGION=us-east-1
+AWS_PROFILE=adam-dev
+S3_BUCKET=<your-private-bucket>
+
+ANALYZE_API_URL=https://<analysis-host>/analyze
+# Set this only when the report API uses a different location.
+# REPORTS_API_URL=https://<reports-host>/reports
+```
+
+`AWS_PROFILE` must refer to a configured, valid local AWS profile. boto3 also supports its standard credential sources; EC2 services can use an IAM role. Database users, AWS identities, and ADAM login accounts are separate.
+
+The database must contain the matching tables, stored procedures, and grants. Existing databases also need the updates for profile photos, reports, and self-service account settings. Apply the appropriate migrations rather than rerunning initialization SQL over existing data. Sign in with an ADAM account already created in that database.
+
+### 3. Launch the desktop application
 
 ```bash
-cd myapp
-uv run briefcase dev   # 開發模式
-uv run briefcase run   # 執行已打包的應用程式
+uv run briefcase dev
 ```
 
-### 建置應用程式
+After changing dependencies, refresh the Briefcase environment:
 
 ```bash
-cd myapp
-uv run briefcase build     # 建立可發布的套件
-uv run briefcase package   # 建立安裝程式
+uv run briefcase dev -r
 ```
 
-### 測試
+**Launch through Briefcase.** The application relies on metadata provided by Briefcase; `python -m myapp` is not the supported entry point. The sign-in screen can load without AWS credentials, but authentication needs MySQL, and upload and review features need their supporting services.
+
+## Configuration
+
+| Variable | Purpose | Default / notes |
+| --- | --- | --- |
+| `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | MySQL connection | Environment-specific; database-name case must match the server |
+| `DB_PORT` | MySQL port | `3306` |
+| `DB_SSL_CA` | MySQL TLS CA certificate path | Enables certificate and hostname verification; configure for RDS |
+| `AWS_REGION` | AWS Region | This project’s AWS setup uses `us-east-1` |
+| `AWS_PROFILE` | Local AWS profile | Optional; otherwise boto3 uses its standard credential sources |
+| `S3_BUCKET` | Media and report bucket | Required for upload/download features |
+| `AWS_ENDPOINT_URL` | Custom AWS SDK endpoint | Used for local moto; remove when connecting to AWS |
+| `ANALYZE_API_URL` | Full `/analyze` endpoint | Receives `{"service_id": "..."}` |
+| `REPORTS_API_URL` | Full `/reports` endpoint | Optional; otherwise derived from the analysis URL |
+| `LOCAL_MEDIA_DIR`, `LOCAL_CHARTS_DIR` | Download-cache locations | Default to `media/` and `charts/` under `src/myapp/init/` |
+
+### Local development and AWS
+
+| Service | Local development example | AWS deployment |
+| --- | --- | --- |
+| Database | MySQL 8.4 at `127.0.0.1:3306` | RDS for MySQL 8.4 |
+| Files | moto at `http://127.0.0.1:5055` | S3 bucket |
+| Analysis API | Test service at `http://127.0.0.1:5056/analyze` | Separately deployed API on EC2 |
+
+When `AWS_ENDPOINT_URL` points to moto, uploads go to the local emulator. Switching to AWS requires the appropriate credentials, bucket, database, and API settings; changing the Region alone is insufficient. Connecting to real S3 and RDS also does not determine whether the API generates real or placeholder analysis.
+
+### Recordings and caches
+
+Recordings use relative paths and are normally saved to `~/video/` and `~/audio/` when launched through `briefcase dev`. Downloaded media, charts, PDFs, and photos use separate caches. **Clear Download Cache** in Settings removes files that can be downloaded again and preserves original recordings.
+
+### Backend-only AI configuration
+
+The analysis/report service reads `OLLAMA_BASE_URL`, `OLLAMA_API_KEY`, `OLLAMA_MODEL`, and timeout settings. Keep the API key in backend configuration, outside the desktop client and version control. When enabled, scores, statistics, and translated transcript text are sent to the external model.
+
+## Tests and CI
+
+[myapp/tests](myapp/tests) uses pytest, moto, Qt offscreen, and disposable MySQL 8.4 instances. Tests do not load the normal development `.env`.
 
 ```bash
-cd myapp
-uv run pytest              # 執行測試
-uv run pytest -k storage   # 只跑名稱含 storage 的測試
+# Unit tests; Docker is not required.
+uv run pytest -m "not integration"
+
+# Unit and integration tests.
+uv run pytest
+
+# Include branch coverage; the configured threshold is 75%.
+uv run pytest --cov
 ```
 
-# 設定
+Local integration tests use Docker and a locally available `mysql:8.4` image by default. The version-controlled [test schema](myapp/tests/fixtures/schema.sql) contains database structure and synthetic accounts; update it when tables or stored procedures change. Missing Docker prerequisites skip integration tests unless `--require-integration` is supplied, which makes them fail instead.
 
-### 環境變數
+See [GitHub Actions CI and deployment planning](.github/CI.md) for the macOS workflow. CI runs the full suite with disposable native MySQL 8.4 (`--mysql-backend=native`) and branch coverage, without AWS credentials. The document also covers future EC2 delivery, database migrations, and desktop releases.
 
-應用程式需要在根目錄下建立一個 `.env` 檔案，並包含以下內容：
+## Project structure
 
-*   `DB_HOST` - MySQL 資料庫主機
-*   `DB_NAME` - 資料庫名稱
-*   `DB_USER` - 資料庫使用者名稱
-*   `DB_PASSWORD` - 資料庫密碼
-*   `S3_BUCKET` - S3 bucket 名稱
-*   `AWS_REGION` - bucket 所在的 region，例如 `us-east-1`
-*   `AWS_PROFILE` - `~/.aws/credentials` 裡的 profile 名稱（可選；本機用 moto 測試時不要設）
-*   `LOCAL_MEDIA_DIR` - 本地媒體檔案目錄（可選）
-*   `LOCAL_CHARTS_DIR` - 本地圖表圖片目錄（可選）
-*   `ANALYZE_API_URL` - 服務分析 API 端點 URL
+```text
+ADAM/
+├── README.md
+├── .github/                    GitHub Actions CI and deployment notes
+├── assets/readme/              Architecture and workflow SVGs
+└── myapp/
+    ├── LICENSE
+    ├── pyproject.toml          Dependencies, Briefcase, and pytest
+    ├── uv.lock
+    ├── src/myapp/
+    │   ├── main.py            Sign-in and QML engine startup
+    │   ├── tasks.py           Background work and UI callbacks
+    │   ├── db_lane.py         Serialized database work
+    │   ├── database.py        MySQL configuration and connections
+    │   ├── storage.py         S3 uploads and downloads
+    │   ├── watcher.py         Analysis-status tracking
+    │   ├── home_dashboard.py  Dashboard queries and statistics
+    │   ├── service_list.py    Service lists
+    │   ├── media.py           Media, charts, and PDF previews
+    │   ├── reports.py         Report requests, lists, and publication
+    │   ├── account.py         Profile settings and photos
+    │   ├── ui_prefs.py        User preferences
+    │   ├── diagnostics.py     Connection checks and diagnostics
+    │   ├── init/              Role controllers, recording, and sessions
+    │   ├── qml/               Pages, shared components, icons, and Theme
+    │   └── images/            Sign-in artwork and attribution
+    └── tests/
+        ├── fixtures/          Test schema and synthetic data
+        ├── unit/
+        └── integration/
+```
 
-**重要**：切勿將 `.env` 檔案或任何憑證提交至版本庫。
+Additional directories available in this local checkout, but excluded from Git:
 
-### Briefcase 設定
+```text
+docs/
+├── AWS tutorial/              Service-specific AWS setup guides
+└── rebuild/
+    ├── analyzer/              AWS-adapted real analysis/report service
+    ├── analysis_service/      Placeholder integration-test service
+    ├── steps/                 Implementation and deployment instructions
+    └── ...                    Plans, migrations, and design decisions
+service_analyzer/              Original analysis source; contains legacy credentials
+```
 
-`pyproject.toml` 檔案包含所有打包設定，包括：
+Do not publish embedded credentials from the original analysis source. The schema in `myapp/tests/fixtures/` is a test fixture, not a production migration.
 
-*   相依套件列表
-*   平台特定需求
-*   資源檔案（QML、圖片、初始化檔案）
+## Current limitations
 
-# 資料庫結構
+- **Backend delivery is separate.** Analyzer source exists locally but is not included in a fresh clone. Provision and deploy the chosen service separately. Confirm the active EC2 image when determining which implementation is running; placeholder outputs are test data.
+- **macOS development is the primary target.** Windows, Linux, Briefcase build/package with the current uv setup, physical-device behavior, and packaged system-notification banners still need validation. In-app notifications and Dock reminders are implemented.
+- **A full installation needs supporting services.** The desktop repository alone does not provision production database objects, S3 resources, or the analysis/report API.
+- **Time settings must agree.** Recording timestamps use the desktop’s local time, while current period reports use `America/Los_Angeles`. Align desktop, backend, and database time settings.
 
-應用程式使用以下幾個主要資料表：
+## Contributing
 
-*   `tbl_account` - 使用者帳號，包含等級（1=服務人員, 2+=管理員等級）
-*   `tbl_service` - 服務紀錄，包含狀態（1=未完成, 2=進行中, 3=已完成）
-*   `tbl_service_score` - 分析分數（客戶/服務人員、文字/聲音/人臉）
-*   `tbl_video_storage`, `tbl_audio_storage`, `tbl_charts_storage` - 媒體檔案 URL 儲存
+Keep network, database, and PDF work off the UI thread, and deliver UI updates through Qt signals. Statistics must exclude `-1`, which represents missing score data.
 
-# 開發注意事項
+Update both `pyproject.toml` and `uv.lock` when dependencies change. Preserve existing CRLF line endings in QML files, reuse shared components and Theme tokens, and wrap interface text in `qsTr()`. Run checks appropriate to your change and describe the impact and validation in the change summary.
 
-### QML-Python 整合
+## License
 
-*   透過 `engine.rootContext().setContextProperty()` 將 Python 物件公開給 QML。
-*   使用 `@Slot()` 裝飾器讓方法可以從 QML 呼叫。
-*   使用 `Signal()` 進行 Python → QML 通訊。
-*   使用 `Property()` 搭配 `notify` 信號實現響應式屬性。
-
-### 資料庫存取
-
-*   一律使用單例的 `DatabaseConnector` 實例。
-*   建議使用預存程序進行資料庫操作。
-*   使用字典游標以名稱存取欄位：`cursor(dictionary=True)`。
-*   務必在 `finally` 區塊中關閉游標。
-
-### 媒體處理
-
-*   影片/音訊上傳至 S3，並將 URL 儲存於 MySQL。
-*   本地下載會快取於 `init/media/` 和 `init/charts/`。
-*   使用 `MediaService` 類別從 S3 下載。
-*   在載入新服務資料前，呼叫 `clearDir()` 清理本地媒體檔案。
-
-### 服務錄製
-
-*   攝影機和麥克風枚舉由 `DeviceFinder` 處理。
-*   錄製由 `RecordWidget`（獨立視窗）管理。
-*   需要 `account_id` 將錄製與使用者關聯。
-*   使用 OpenCV 進行影像擷取，PyAudio 進行聲音擷取。
-
-# 程式碼組織備註
-
-*   以 `Manager` 結尾的模型處理業務邏輯和 API 呼叫。
-*   以 `Model` 結尾的模型處理 QML 的資料表示。
-*   所有需要與 QML 互動的 QObject 子類別都必須呼叫 `super().__init__()`。
-*   PDF 處理使用 PyMuPDF (fitz) 將頁面渲染為圖片以供顯示。
-
-# 開發提示
-
-*   修改 QML 時，使用 `uv run briefcase dev` 可立即反映變更。
-*   新增 Python 相依套件時，在 `myapp/` 執行 `uv add 套件==版本`（會同時更新 `pyproject.toml` 和 `uv.lock`）。
-*   資料庫連線為單例，修改會影響整個應用程式。
-*   QML 除錯輸出會顯示在主控台，請尋找以 `qml:` 為前綴的訊息。
-*   S3 需要 AWS 憑證：`AWS_PROFILE` 或環境變數；本機用 moto 測試時不需要真的憑證。
+Application code is licensed under the [BSD 3-Clause License](myapp/LICENSE). See [asset sources and licenses](myapp/src/myapp/images/SOURCES.md) for artwork, font, and icon attribution.

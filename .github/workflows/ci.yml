@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-tests:
+    name: macOS tests
+    # The app and uv.lock target macOS. Hosted Apple Silicon runners cannot run Docker.
+    runs-on: macos-26
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+        working-directory: myapp
+    env:
+      PYTHON_DOTENV_DISABLED: "1"
+      QT_QPA_PLATFORM: offscreen
+      ADAM_ANIMATION_SCALE: "0"
+      AWS_EC2_METADATA_DISABLED: "true"
+      TZ: America/Los_Angeles
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install native dependencies
+        run: |
+          brew install portaudio mysql@8.4
+          echo "$(brew --prefix mysql@8.4)/bin" >> "$GITHUB_PATH"
+          echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+          python-version: "3.13"
+          working-directory: myapp
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --locked --all-extras --dev
+
+      - name: Run unit and integration tests with branch coverage
+        run: |
+          uv run --locked pytest --mysql-backend=native --require-integration \
+            --cov --cov-report=term-missing --cov-report=xml:ci-results/coverage.xml \
+            --junitxml=ci-results/pytest.xml
+
+      - name: Upload test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-test-results
+          path: myapp/ci-results/
+          if-no-files-found: ignore
+          retention-days: 14

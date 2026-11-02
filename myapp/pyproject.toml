@@ -18,7 +18,7 @@ dependencies = [
     "python-dotenv==1.2.4",
     "PyMuPDF==1.25.5",
     "requests==2.34.2",
-    "boto3==1.43.122",
+    "boto3[crt]==1.43.122",
 ]
 
 # 測試用的套件。briefcase dev --test 會把它們當成 test_requires 安裝；

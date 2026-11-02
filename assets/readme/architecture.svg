@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1140" viewBox="0 0 1600 1140" role="img" aria-labelledby="title desc">
+<title id="title">ADAM architecture</title>
+<desc id="desc">The PySide6 and QML desktop records services, reviews media and displays reports. It connects directly to S3 and RDS and calls an analysis/report API on EC2. The deployed service may be the real analyzer or a placeholder test implementation. Optional Ollama Cloud calls generate report explanations.</desc>
+<!-- Colors and typography follow myapp/src/myapp/qml/components/Theme.qml. -->
+<defs>
+<marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#E6E8EB"/></marker>
+<marker id="arrow-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#C3C8CF"/></marker>
+<marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#9AA1AB"/></marker>
+<marker id="arrow-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#8E959F"/></marker>
+<style>
+text{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;fill:#ECEEF1}.title{font-size:30px;font-weight:500;fill:#F3F4F6}.subtitle{font-size:21px;fill:#9AA1AB}.section{font-size:28px;font-weight:700}.heading{font-size:26px;font-weight:700}.body{font-size:21px}.small{font-size:19px;fill:#B4BAC2}.label{font-size:19px;font-weight:600}.kicker{font-size:16px;font-weight:600;letter-spacing:1px;fill:#9AA1AB}.white{fill:#15171B}.step{font-size:16px;font-weight:600;letter-spacing:1px;fill:#9AA1AB}.teal{fill:#C3C8CF}.purple{fill:#9AA1AB}
+.wordmark{font-size:48px;font-weight:300;letter-spacing:12px;fill:#F3F4F6}.badge{font-size:17px;font-weight:600;fill:#0E1013}.white{fill:#ECEEF1}.status-warning{font-size:18px;font-weight:600;fill:#FFB74D}.status-info{font-size:18px;font-weight:600;fill:#90CAF9}.status-success{font-size:18px;font-weight:600;fill:#81C784}
+</style>
+</defs>
+<rect width="1600" height="1140" fill="#0B0C0E"/>
+<text x="48" y="84" class="wordmark">ADAM</text><text x="330" y="80" class="title">System architecture</text>
+<text x="48" y="126" class="subtitle" >The desktop accesses data and files directly; a separate service runs analysis and generates reports.</text>
+<rect x="1260" y="40" width="292" height="44" rx="22" fill="#E6E8EB" stroke="#E6E8EB" stroke-width="1.5"/>
+<text x="1406" y="69" class="badge" text-anchor="middle">macOS · Python 3.13</text>
+<rect x="48" y="160" width="450" height="630" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<rect x="760" y="160" width="792" height="630" rx="20" fill="#111316" stroke="#24272C" stroke-width="1.5"/>
+<text x="80" y="204" class="kicker" >DESKTOP CLIENT</text>
+<text x="80" y="249" class="section" >PySide6 / QML</text>
+<text x="792" y="204" class="section" >AWS deployment</text>
+<rect x="80" y="280" width="386" height="112" rx="14" fill="#1A1D21" stroke="#2C3036" stroke-width="1.5"/>
+<text x="104" y="317" class="heading" >Record &amp; review</text>
+<text x="104" y="350" class="body" >2 cameras + microphone</text>
+<text x="104" y="378" class="small" >Sign-in · Home · Services · Reports</text>
+<rect x="80" y="410" width="386" height="112" rx="14" fill="#1A1D21" stroke="#2C3036" stroke-width="1.5"/>
+<text x="104" y="447" class="heading" >Background tasks</text>
+<text x="104" y="481" class="body" >TaskRunner / DbLane</text>
+<text x="104" y="508" class="small" >Database · Network · PDF</text>
+<rect x="80" y="540" width="386" height="122" rx="14" fill="#1A1D21" stroke="#2C3036" stroke-width="1.5"/>
+<text x="104" y="578" class="heading" >Recordings &amp; cache</text>
+<text x="104" y="612" class="body" >Recordings retained for retry</text>
+<text x="104" y="644" class="small" >Download media and preview PDFs</text>
+<text x="80" y="704" class="body" >Staff / admin sessions</text>
+<text x="80" y="741" class="small" >AWS profile + MySQL account</text>
+<rect x="792" y="240" width="728" height="166" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="824" y="280" class="heading" >EC2 · Analysis &amp; reports API</text>
+<text x="824" y="318" class="body" >POST /analyze   ·   POST /reports</text>
+<text x="824" y="352" class="body" >Run analysis, store results and generate PDFs</text>
+<text x="824" y="383" class="small" >Real analyzer or test service, selected by deployed image</text>
+<rect x="792" y="490" width="332" height="244" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="824" y="535" class="heading" >Amazon S3</text>
+<text x="824" y="577" class="body" >Media · Charts · Text</text>
+<text x="824" y="614" class="body" >PDF reports · Avatars</text>
+<text x="824" y="657" class="small" >Private bucket</text>
+<text x="824" y="692" class="small" >boto3 upload / download</text>
+<rect x="1160" y="490" width="360" height="244" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="1192" y="535" class="heading" >RDS for MySQL 8.4</text>
+<text x="1192" y="577" class="body" >Accounts · Services · Scores</text>
+<text x="1192" y="614" class="body" >File keys · Report status</text>
+<text x="1192" y="657" class="small" >SQL / Stored procedures</text>
+<text x="1192" y="692" class="small" >Verified TLS connection</text>
+<path d="M 498 305 H 792" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-blue)"/>
+<rect x="529" y="259" width="232" height="34" rx="9" fill="#0B0C0E"/><text x="645" y="282" class="label" text-anchor="middle" fill="#ECEEF1">Submit API requests</text>
+<path d="M 498 590 H 792" marker-start="url(#arrow-teal)" fill="none" stroke="#C3C8CF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-teal)"/>
+<rect x="529" y="543" width="232" height="34" rx="9" fill="#0B0C0E"/><text x="645" y="566" class="label" text-anchor="middle" fill="#C3C8CF">Upload / download</text>
+<path d="M 958 406 V 490" marker-start="url(#arrow-teal)" fill="none" stroke="#C3C8CF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-teal)"/>
+<rect x="897" y="430" width="122" height="34" rx="9" fill="#0B0C0E"/><text x="958" y="453" class="label" text-anchor="middle" fill="#C3C8CF">Read / write</text>
+<path d="M 1340 406 V 490" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-blue)"/>
+<rect x="1260" y="430" width="160" height="34" rx="9" fill="#0B0C0E"/><text x="1340" y="453" class="label" text-anchor="middle" fill="#ECEEF1">Save results</text>
+<path d="M 498 741 H 590 V 843 H 1340 V 734" marker-start="url(#arrow-blue)" fill="none" stroke="#E6E8EB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow-blue)"/>
+<rect x="804" y="823" width="322" height="34" rx="9" fill="#0B0C0E"/><text x="965" y="846" class="label" text-anchor="middle" fill="#ECEEF1">Query / update database (TLS)</text>
+<rect x="48" y="900" width="660" height="170" rx="16" fill="#1A1D21" stroke="#2C3036" stroke-width="1.5"/>
+<text x="80" y="938" class="heading" >Analyzer implementations</text>
+<text x="80" y="975" class="small" >Real analyzer: docs/rebuild/analyzer/</text>
+<text x="80" y="1008" class="small" >Test service: docs/rebuild/analysis_service/</text>
+<text x="80" y="1041" class="small" >Both can run on EC2; verify the deployed image.</text>
+<text x="792" y="895" class="label" >OPTIONAL EXTERNAL AI · OUTSIDE AWS</text>
+<rect x="792" y="920" width="728" height="150" rx="16" fill="#15171B" stroke="#24272C" stroke-width="1.5"/>
+<text x="824" y="961" class="heading" >Ollama Cloud</text>
+<text x="824" y="999" class="body" >Scores + statistics + translated transcript → report explanations</text>
+<text x="824" y="1035" class="small" >Disabled or unavailable → Explanation unavailable</text>
+<path d="M 1520 340 H 1574 V 990 H 1520" fill="none" stroke="#9AA1AB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="10 9" marker-end="url(#arrow-purple)"/>
+<path d="M 48 1100 H 100" stroke="#E6E8EB" stroke-width="4"/>
+<text x="112" y="1107" class="small" >API / database</text>
+<path d="M 350 1100 H 402" stroke="#C3C8CF" stroke-width="4"/>
+<text x="414" y="1107" class="small" >Files</text>
+<path d="M 560 1100 H 612" stroke="#9AA1AB" stroke-width="4" stroke-dasharray="9 7"/>
+<text x="624" y="1107" class="small" >Optional AI (HTTPS)</text>
+</svg>
