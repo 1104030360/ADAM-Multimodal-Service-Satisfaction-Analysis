@@ -451,7 +451,7 @@ s3 = [
 
 [[package]]
 name = "myapp"
-version = "0.0.1"
+version = "1.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "boto3", extra = ["crt"] },
