@@ -10,7 +10,7 @@ from itertools import count
 
 import pytest
 
-from myapp import home_dashboard
+from myapp import home_dashboard, reports
 from myapp.home_dashboard import HomeDashboard
 from myapp.init import server_home_init
 from myapp.init.server_home_init import ANALYSIS_KEY, HOME_KEYS, LAUNCH_KEYS, SEARCH_KEY, ServiceManager
@@ -245,7 +245,10 @@ def test_dashboard_is_three_round_trips_all_on_the_db_lane(services, db, db_prox
 
 def test_launch_is_five_round_trips_and_leaves_the_analysis_list_to_the_analysis_page(engine, services, db, db_proxy,
                                                                                        no_network_on_gui_thread):
-    """launch() 的往返（ENG-21 的預算 5，T28）：名字 1＋首頁的三張卡片 3＋監看 1。分析清單等打開分析頁才查。"""
+    """launch() 的往返（ENG-21 的預算 5，T28）：名字 1＋首頁的三張卡片 3＋監看 1。分析清單等打開分析頁才查。
+
+    打開分析頁是 2 個：清單 1（按下就送）＋Report 欄的狀態 1（頁面在背景載入完成時才送，T37）。
+    """
     add(db, "S20261031090000", "2026-10-31 09:00:00", status=1)
     on_db_lane(services, warm_up)
     db_proxy.reset()
@@ -261,8 +264,11 @@ def test_launch_is_five_round_trips_and_leaves_the_analysis_list_to_the_analysis
     db_proxy.reset()
     qml(home.shell_window, "analysisButton.click()")  # 側邊欄的 Analysis：換頁，清單在背景查
     assert services.tasks.isBusy(ANALYSIS_KEY)
-    wait_until(lambda: not services.tasks.isBusy(ANALYSIS_KEY))
-    assert db_proxy.snapshot()["rt"] == 1
+    # 頁面載入完成、兩個查詢都回來才數。只等清單的話，數的時候 Report 欄的狀態可能查完了、也可能還沒送
+    # （main 的 macOS tests 偶爾 2 == 1）
+    wait_until(lambda: qml(home.shell_window, "mainContentLoader.status === Loader.Ready"))
+    wait_until(lambda: not any(services.tasks.isBusy(key) for key in (ANALYSIS_KEY, reports.STATES_KEY)))
+    assert db_proxy.snapshot()["rt"] == 2
     assert [row["serviceId"] for row in home.serviceModel.notAnalyzedModel.rows()] == ["S20261031090000"]
 
     db_proxy.reset()
