@@ -1,0 +1,20 @@
+# adam-deploy.service — 開機時把分析服務換成 Parameter Store 記的版本（補上停機期間合併的版本；deploy/README.md）。
+# deploy/install.sh 裝在 /etc/systemd/system/；改了這個檔案要在 EC2 上重跑 install.sh。
+# 失敗只會讓這個 unit 變成 failed：舊的容器照樣由 docker 的 --restart unless-stopped 跑起來，SSH、SSM agent 也不等它。
+# Type=oneshot：multi-user.target 會等它跑完（沒有要做的時候幾秒；要部署時幾分鐘），這台機器上沒有東西排在 multi-user.target 後面。
+[Unit]
+Description=ADAM analysis service: deploy the version recorded in Parameter Store
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+ConditionFileIsExecutable=/opt/adam/deploy.sh
+
+[Service]
+Type=oneshot
+# 不帶 --retry-failed：之前失敗、換回過上一版的版本，開機時不再試（不要每次開機都換過去再換回來）
+ExecStart=/opt/adam/deploy.sh
+# 等另一個部署的鎖最多 15 分鐘（deploy.sh 的 LOCK_WAIT）＋第一次拉約 6 GB 的映像檔、migration、等 ready、換回上一版
+TimeoutStartSec=45min
+SyslogIdentifier=adam-deploy
+
+[Install]
+WantedBy=multi-user.target
