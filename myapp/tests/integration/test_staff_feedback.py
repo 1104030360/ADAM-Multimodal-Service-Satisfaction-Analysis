@@ -26,7 +26,7 @@ import sounddevice
 from PySide6.QtCore import QObject, QPointF, Qt, QUrl, qInstallMessageHandler
 from PySide6.QtTest import QAbstractItemModelTester, QTest
 
-from myapp import home_dashboard, main
+from myapp import devices, home_dashboard, main
 from myapp.database import verify_login
 from myapp.init import server_home_init
 from myapp.init.server_home_init import (ACCOUNT_NAME_KEY, ANALYSIS_KEY, HOME_KEYS, LAUNCH_KEYS, SEARCH_KEY,
@@ -598,14 +598,23 @@ def open_record_page(window):
     return page
 
 
-def test_devices_are_probed_only_when_the_record_page_opens(engine, services, db, camera_opens,
+def test_devices_are_probed_only_when_the_record_page_opens(engine, services, db, camera_opens, monkeypatch,
                                                           no_network_on_gui_thread):
     home, window = launch_staff(engine, services)
     wait_for_launch(services)
     assert camera_opens == []  # 登入時不開鏡頭（UX-02、UX-13）
-    page = show_page(window, "recordButton")
-    assert find(page, "scanningState").isVisible()  # 先畫出「Looking for cameras and microphones…」
-    wait_until(lambda: qml(window, "deviceFinder.status") == "ready")
+    probe, shown = devices.probe_cameras, []
+
+    def probe_cameras():
+        # 在探測開始的那一刻看：show_page() 等頁面載入時，慢的電腦可能已經過了 SCAN_DELAY_MS、探測完了
+        page = qml(window, "mainContentLoader.item")
+        shown.append(find(page, "scanningState").isVisible())
+        return probe()
+
+    monkeypatch.setattr(devices, "probe_cameras", probe_cameras)
+    page = open_record_page(window)
+    assert shown == [True]  # 探測（會卡住畫面）之前，先畫出「Looking for cameras and microphones…」
+    assert qml(window, "deviceFinder.status") == "ready"
     assert find(page, "deviceForm").isVisible() and not find(page, "scanningState").isVisible()
     assert (qml(page, "cam0ComboBox.currentIndex"), qml(page, "cam1ComboBox.currentIndex")) == (0, 1)  # 預設就合法
     assert find(page, "sameCameraError").property("text") == ""
