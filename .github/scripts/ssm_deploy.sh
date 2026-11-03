@@ -13,7 +13,9 @@
 set -euo pipefail
 
 PARAMETER=/adam/analyzer/desired-commit
-EXECUTION_TIMEOUT_SEC=1800 # Run Command stops deploy.sh after this long
+# Run Command stops deploy.sh after this long: deploy.sh may wait up to 15 minutes for another deploy.sh
+# (the boot unit), then pull, migrate, and wait up to 5 minutes for the new version and 5 more to roll back.
+EXECUTION_TIMEOUT_SEC=3600
 DELIVERY_TIMEOUT_SEC=600   # how long Systems Manager keeps trying to reach the SSM agent
 OUTPUT_LIMIT=24000         # Run Command returns only this many characters of stdout
 POLL_INTERVAL_SEC=${POLL_INTERVAL_SEC:-10}
@@ -221,7 +223,8 @@ explain() {
   esac
 }
 
-line_pattern='^deploy: result=[^ ]+ code=([0-9]+) commit=[0-9a-f]*$'
+# commit=none: deploy.sh stopped before it knew the commit (locked, no parameter, unreadable parameter).
+line_pattern='^deploy: result=[^ ]+ code=([0-9]+) commit=([0-9a-f]{40}|none)$'
 last=$(grep -E '^deploy: result=' "$work/stdout" | tail -n 1 || true)
 if [[ -n $last ]]; then
   row deploy.sh "\`$(markdown "$last")\`"

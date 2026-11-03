@@ -96,7 +96,7 @@ assert_contains "$dir/summary" "deploy: result=x code=0 commit=$COMMIT"
 assert_contains "$dir/summary" "cmd-1"
 assert_contains "$dir/calls" "--document-name AWS-RunShellScript"
 assert_contains "$dir/calls" "--timeout-seconds 600"
-assert_eq "$(jq -r '.executionTimeout[0]' "$dir/parameters.json")" 1800 "executionTimeout"
+assert_eq "$(jq -r '.executionTimeout[0]' "$dir/parameters.json")" 3600 "executionTimeout"
 assert_eq "$(jq -r '.commands | join("\n")' "$dir/parameters.json")" "set -eu
 install -d -m 755 /opt/adam
 curl -fsSL --retry 3 -o /opt/adam/.deploy.sh.new \"https://raw.githubusercontent.com/Owner/Repo.Name/$COMMIT/deploy/deploy.sh\"
@@ -126,6 +126,14 @@ running_with Failed Failed 13 "$(deploy_line 13)"
 deploy
 assert_contains "$dir/out" "有破壞性的 migration 待套用"
 assert_contains "$dir/out" "allow_destructive_migrations"
+
+new_case "exit code 10 before deploy.sh knew the commit (commit=none)"
+running_with Failed Failed 10 "waiting for the lock
+deploy: result=locked code=10 commit=none"
+deploy
+assert_eq "$code" 1 "exit code"
+assert_contains "$dir/out" "另一個 deploy.sh 正在跑"
+assert_contains "$dir/summary" "deploy: result=locked code=10 commit=none"
 
 new_case "exit code 16 says the previous version runs"
 running_with Failed Failed 16 "$(deploy_line 16)"

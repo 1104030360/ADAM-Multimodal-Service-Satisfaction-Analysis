@@ -143,6 +143,8 @@ jobs:
           provenance: false
           sbom: false
           tags: ${{ env.MIGRATIONS_IMAGE }}
+          # Recorded as source_commit in tbl_schema_migration (services/db/README.md).
+          build-args: SOURCE_COMMIT=${{ env.COMMIT }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ env.COMMIT }}
@@ -207,7 +209,8 @@ jobs:
       ${{ !cancelled() && needs.resolve.result == 'success' && needs.resolve.outputs.deploy == 'true' &&
       (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # ssm_deploy.sh waits up to 72 minutes: deploy.sh's 60-minute limit plus 10 minutes to reach the instance.
+    timeout-minutes: 90
     # No `environment:` on this job: it would change the OIDC subject to repo:<repo>:environment:<name>,
     # and the deployment role trusts only repo:<repo>:ref:refs/heads/main.
     permissions:
