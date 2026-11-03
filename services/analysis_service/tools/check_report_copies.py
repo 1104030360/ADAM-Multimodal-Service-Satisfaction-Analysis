@@ -25,6 +25,8 @@ SHARED = [
     # SQS（T49）：分析工作佇列（API 的接受交易、outbox 送出器、worker、管理指令）
     "analysis_queue.py", "tests/unit/test_analysis_queue.py", "tests/queue/conftest.py",
     "tests/queue/test_queue_flow.py",
+    # CD：部署前的資料庫檢查（python -m analysis_queue check-db）
+    "tests/queue/test_check_db.py",
 ]
 THEME = REPO / "myapp" / "src" / "myapp" / "qml" / "components" / "Theme.qml"
 

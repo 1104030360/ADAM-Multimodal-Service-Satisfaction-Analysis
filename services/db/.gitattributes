@@ -1,0 +1,5 @@
+# migration 的 SHA-256 記在正式資料庫裡：任何平台 checkout 都要是一樣的位元組（不轉 CRLF）
+*.sql text eol=lf
+*.sh  text eol=lf
+*.awk text eol=lf
+*.pem text eol=lf

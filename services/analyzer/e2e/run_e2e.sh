@@ -65,13 +65,14 @@ fi
 mkdir -p "$OUT" && OUT=$(cd "$OUT" && pwd) || exit 2
 
 # moto 同時是 S3 和 SQS（AWS_ENDPOINT_URL 兩個都用）；它的帳號固定是 123456789012，佇列由 e2e_steps.py prepare 建立
-AWS_ENV=(-e S3_BUCKET=$BUCKET -e AWS_REGION=us-east-1 -e AWS_ENDPOINT_URL=http://adam-e2e-s3:5000
+AWS_ENV=(-e "S3_BUCKET=$BUCKET" -e AWS_REGION=us-east-1 -e AWS_ENDPOINT_URL=http://adam-e2e-s3:5000
          -e AWS_ACCESS_KEY_ID=testing -e AWS_SECRET_ACCESS_KEY=testing -e AWS_EC2_METADATA_DISABLED=true
          -e SQS_ANALYSIS_QUEUE_URL=http://adam-e2e-s3:5000/123456789012/adam-analysis)
 DB_ENV=(-e DB_HOST=adam-e2e-mysql -e DB_NAME=adam -e DB_USER=adam_analysis -e DB_PASSWORD="$APP_PW")
 
 cleanup() {
   [ -n "${SAMPLER:-}" ] && kill "$SAMPLER" 2>/dev/null
+  # shellcheck disable=SC2046  # docker ps 的結果本來就要拆成一個一個的容器 ID
   docker rm -fv adam-e2e-api adam-e2e-worker adam-e2e-s3 adam-e2e-mysql $(docker ps -aq --filter label=adam-e2e-step) \
     >/dev/null 2>&1
   docker network rm "$NET" >/dev/null 2>&1
@@ -215,7 +216,7 @@ lines=$([ $FAILED -eq 0 ] && echo 15 || echo 40)
 echo
 echo "== worker 的 log（最後 $lines 行，全部在 analyzer.log；API 的在 api.log；worker 容器：$(docker inspect -f \
   '{{.State.Status}}，OOMKilled={{.State.OOMKilled}}，重新啟動 {{.RestartCount}} 次' adam-e2e-worker)）"
-tail -n $lines "$OUT/analyzer.log"
+tail -n "$lines" "$OUT/analyzer.log"
 echo
 echo "輸出在 $OUT"
 exit $FAILED
