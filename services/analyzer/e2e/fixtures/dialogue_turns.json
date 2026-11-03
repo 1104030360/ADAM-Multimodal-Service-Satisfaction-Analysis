@@ -1,0 +1,77 @@
+{
+  "audio": "dialogue.wav",
+  "sample_rate": 16000,
+  "duration": 58.927,
+  "voices": {
+    "Staff": "Eddy (Chinese (Taiwan))",
+    "Customer": "Meijia"
+  },
+  "turns": [
+    {
+      "speaker": "Staff",
+      "start": 0.5,
+      "end": 4.201,
+      "text": "您好，歡迎光臨，請問需要什麼幫忙嗎？"
+    },
+    {
+      "speaker": "Customer",
+      "start": 4.801,
+      "end": 10.347,
+      "text": "你好，我上禮拜在這裡買的藍牙耳機，右耳突然沒有聲音了。"
+    },
+    {
+      "speaker": "Staff",
+      "start": 10.947,
+      "end": 15.632,
+      "text": "不好意思造成您的不便，可以先讓我看一下耳機跟發票嗎？"
+    },
+    {
+      "speaker": "Customer",
+      "start": 16.232,
+      "end": 21.469,
+      "text": "好，發票在這裡。我重新配對了好幾次，還是一樣。"
+    },
+    {
+      "speaker": "Staff",
+      "start": 22.069,
+      "end": 29.226,
+      "text": "我幫您測試一下。確實是右耳故障，還在七天鑑賞期內，我直接幫您換一副新的。"
+    },
+    {
+      "speaker": "Customer",
+      "start": 29.826,
+      "end": 34.751,
+      "text": "太好了。那我加購的延長保固，也可以轉到新的耳機嗎？"
+    },
+    {
+      "speaker": "Staff",
+      "start": 35.351,
+      "end": 39.8,
+      "text": "可以，我已經幫您把延長保固轉到新耳機的序號上了。"
+    },
+    {
+      "speaker": "Customer",
+      "start": 40.4,
+      "end": 42.405,
+      "text": "那我會收到什麼證明嗎？"
+    },
+    {
+      "speaker": "Staff",
+      "start": 43.005,
+      "end": 48.729,
+      "text": "我會在明天下午三點以前，把延長保固的確認信寄到您的電子信箱。"
+    },
+    {
+      "speaker": "Customer",
+      "start": 49.329,
+      "end": 54.113,
+      "text": "好，麻煩你了。新的耳機兩邊都有聲音，謝謝。"
+    },
+    {
+      "speaker": "Staff",
+      "start": 54.713,
+      "end": 58.427,
+      "text": "不客氣，之後有任何問題，歡迎再來找我們。"
+    }
+  ]
+}

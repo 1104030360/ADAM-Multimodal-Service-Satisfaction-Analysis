@@ -1,0 +1,5 @@
+# 不送進 docker build：本機的虛擬環境、快取，以及含密碼的設定檔
+.venv/
+__pycache__/
+.pytest_cache/
+analysis.env

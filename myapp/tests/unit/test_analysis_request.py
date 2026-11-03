@@ -34,7 +34,7 @@ def test_request_sends_the_service_id_and_gives_up_instead_of_waiting_forever(po
 
 @pytest.mark.parametrize("status", [202, 404, 409, 500, 503])
 def test_anything_but_200_is_an_http_error(posts, status):
-    posts.status = status  # 分析服務只有收下工作時才回 200（docs/rebuild/analyzer/app.py）
+    posts.status = status  # 分析服務只有收下工作時才回 200（services/analyzer/app.py）
     with pytest.raises(requests.HTTPError) as raised:
         post_analysis(URL, "S20261030120000")
     assert raised.value.response.status_code == status

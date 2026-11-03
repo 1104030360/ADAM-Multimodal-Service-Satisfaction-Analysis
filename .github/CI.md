@@ -32,9 +32,10 @@ loading and isolate the AWS credential files. `--require-integration` makes
 missing test prerequisites fail CI instead of silently skipping the DB tests.
 
 The schema is now committed at `myapp/tests/fixtures/schema.sql`, containing the
-eight tables, stored procedures, and two synthetic placeholder accounts required
+14 tables, stored procedures, and two synthetic placeholder accounts required
 by the tests. It was extracted from the local rebuild schema through migrations
-001–004, without the optional production-user grants. Update this test schema
+001–007, without the optional production-user grants. The analysis services'
+integration and end-to-end tests load the same file. Update this test schema
 alongside future schema changes. It is a test fixture, not a production migration.
 
 To reproduce CI on a Mac:
@@ -68,8 +69,9 @@ they came from real model results.
 
 ## Should this project have CD?
 
-Use CI now. Introduce continuous delivery for the EC2 analysis service after
-its deployable source and runtime definition are checked into a repository.
+Use CI now. The EC2 analysis service's source and Dockerfile are now in this
+repository (`services/analyzer/`), so continuous delivery can build it from a
+reviewed commit.
 Start with an explicit production release action. Automatic production
 deployment on every push is premature while the real models and packaging
 are still being validated.
@@ -81,12 +83,13 @@ are still being validated.
 | RDS | Version migrations separately, test them against disposable MySQL, and apply reviewed forward migrations as a release step. Preserve stored-procedure grants after DROP/CREATE. |
 | S3 | Deliver bucket configuration through infrastructure code. Runtime recordings, charts, transcripts, and reports are application data, not deployment artifacts. |
 
-The analysis service is currently outside Git (`service_analyzer/` and the
-reference services under `docs/` are ignored). The original source contains
-embedded credentials. Prepare a reviewed service directory or a separate
-service repository with those values removed and configuration supplied at
-runtime before adding a deploy workflow. This desktop CI cannot validate
-untracked server code or make its EC2 deployment reproducible.
+The reviewed analysis services are in Git: `services/analyzer/` (the real
+models, deployed to EC2) and `services/analysis_service/` (the fake used by
+local end-to-end tests). Their database, Hugging Face, and Ollama credentials
+are supplied at runtime. The original `service_analyzer/` source contains
+embedded credentials and stays ignored. This desktop CI does not run the
+service tests yet; they need Linux images with the model dependencies. Add a
+Linux job for them before adding a deploy workflow.
 
 Recommended future GitHub Actions delivery flow:
 

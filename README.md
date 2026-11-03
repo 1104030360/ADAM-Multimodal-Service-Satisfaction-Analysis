@@ -80,7 +80,7 @@ Use **Log Out** to return to sign-in or **Quit** to close ADAM. Both ask for con
 
 ## Getting started
 
-**This repository contains the desktop client.** A working installation also requires initialized MySQL tables/procedures/grants, S3 storage, and the separately deployed analysis/report API with its SQS worker. Backend implementations, production migrations, and deployment notes exist only in ignored local directories (`docs/rebuild/analyzer/`, `docs/rebuild/analysis_service/`, and `docs/rebuild/`); they are not provided by a fresh clone. The [test schema](myapp/tests/fixtures/schema.sql) supports automated tests and is not a production migration.
+**This repository contains the desktop client and the analysis/report service.** A working installation also requires initialized MySQL tables/procedures/grants, S3 storage, and the analysis/report API with its SQS worker deployed separately (on EC2). The service is in [services/analyzer/](services/analyzer/) (real models); [services/analysis_service/](services/analysis_service/) is a lightweight fake with the same API and queue for local end-to-end tests. Production migrations and deployment notes exist only in an ignored local directory (`docs/rebuild/`); they are not provided by a fresh clone. The [test schema](myapp/tests/fixtures/schema.sql) supports automated tests and is not a production migration.
 
 ### 1. Install dependencies
 
@@ -185,11 +185,22 @@ Integration tests use Qt offscreen, moto, and a disposable MySQL 8.4 container. 
 
 [GitHub Actions](.github/workflows/ci.yml) runs unit and integration tests on macOS with temporary native MySQL (`--mysql-backend=native`) and branch coverage, without AWS credentials. See [CI notes](.github/CI.md) for details.
 
+The analysis services in `services/` have their own tests, which run inside Linux Docker images (their `uv.lock` files resolve for Linux, and the images include pytest). From `services/analyzer/` or `services/analysis_service/`:
+
+```bash
+docker build -t adam-service-test .
+docker run --rm --network none -v "$PWD:/src:ro" -w /src adam-service-test python -m pytest -q -m "not integration"
+```
+
+Integration tests add a disposable MySQL 8.4 container loaded with the test schema and the service's `tests/integration/grants.sql`; see the [service test notes](services/analysis_service/README.md#測試). The two services share report, AI-explanation, outcome, and queue code byte for byte: after changing a shared file, copy it to the other service and run `python3 -I services/analysis_service/tools/check_report_copies.py` from the repository root. GitHub Actions does not run the service tests yet.
+
 | Path | Contents |
 | --- | --- |
 | `myapp/src/myapp/` | Python controllers, background work, storage, reports, and coaching |
 | `myapp/src/myapp/qml/` | Staff/admin pages, shared components, icons, and theme |
 | `myapp/tests/` | Unit tests, integration tests, and test fixtures |
+| `services/analyzer/` | Analysis/report service: API, SQS worker, speech and emotion models, tests |
+| `services/analysis_service/` | Fake analysis service with the same API and queue, for local end-to-end tests |
 | `assets/readme/` | README diagrams, screenshots, and image attribution |
 
 Keep network/database work off the UI thread and statistics free of missing-score values (`-1`). Update `pyproject.toml` and `uv.lock` together when dependencies change; preserve existing CRLF line endings in QML files.

@@ -1,0 +1,103 @@
+# 移植版分析服務（步驟 6）的依賴。只在 Docker（Linux、Python 3.11）裡安裝：
+#   uv lock   產生／更新 uv.lock（在 Mac 上也可以執行，只解析、不安裝）
+#   docker build ...   Dockerfile 用 uv sync --locked 照 uv.lock 安裝
+# 版本大多沿用原本的 service_analyzer/requirements.txt；拿掉 Google STT／GCS／googletrans 與 Windows 專用的套件；
+# boto3、mysql-connector-python 用和桌面端、假服務相同的版本。
+[project]
+name = "adam-analyzer"
+version = "0.1.0"
+requires-python = "==3.11.*"
+dependencies = [
+    "torch==2.4.0",
+    "torchaudio==2.4.0",
+    "pyannote.audio==3.3.1",
+    "transformers==4.44.0",
+    "huggingface-hub==0.24.5",
+    "librosa==0.10.2.post1",
+    "numpy==1.26.4",
+    "tensorflow==2.17.0",
+    "tf_keras==2.17.0",
+    "deepface==0.0.92",
+    # deepface 會帶進這兩個套件；不釘版本的話，新版 retina-face 會再裝一個 OpenCV（蓋掉 cv2）和 onnxruntime
+    "retina-face==0.0.17",
+    "mtcnn==0.1.1",
+    "opencv-python==4.10.0.84",
+    # 原本是 3.9.2。報表 PDF（report_pdf.py，和假服務共用）在 3.9.2 嵌入 Noto CJK 字型時，PDF 裡的字讀不出來
+    # （不能搜尋、複製，測試也讀不到）；改成和假服務相同的 3.11.2，兩個服務畫出來的報表一樣（new-feature N4）
+    "matplotlib==3.11.2",
+    "vaderSentiment==3.3.2",
+    "pandas==2.2.2",
+    "scikit-learn==1.5.1",
+    "joblib==1.4.2",
+    "boto3==1.43.122",
+    "mysql-connector-python==26.10.0",
+    "Flask==3.0.3",
+    "gunicorn==23.0.0",
+    # mtcnn 0.1.1 會 import pkg_resources，它屬於 setuptools，而 setuptools 82 起已經拿掉它。
+    # python:3.11-slim 內建 setuptools 79.0.1，但 uv 建立的 .venv 看不到內建的套件，所以要自己寫
+    "setuptools==79.0.1",
+    # 語音轉文字與翻譯在這台機器上跑（docs/rebuild/real-analyze/PLAN.md，取代 Amazon Transcribe 與 Translate）：
+    # faster-whisper 在 CPU 上跑 Whisper；OpenCC 轉成台灣繁體；sentencepiece 是 opus-mt 翻譯模型的分詞器要的
+    "faster-whisper==1.2.1",
+    "opencc-python-reimplemented==0.1.7",
+    "sentencepiece==0.2.2",
+]
+
+[dependency-groups]
+# 測試用（單元測試＋整合測試；moto 在測試的行程裡模擬 S3）。Dockerfile 會一起裝進映像檔，才能在容器裡跑 pytest
+dev = [
+    "pytest==9.2.0",
+    "pytest-cov==7.1.0",
+    "coverage==7.16.2",
+    "moto[s3]==5.2.5",
+    # 報表的測試讀 PDF 裡的文字（new-feature N4）
+    "pypdf==6.21.4",
+]
+
+[tool.uv]
+# 只為 Linux 解析：x86_64 是 EC2，aarch64 是在 Mac 的 Docker 裡測試
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
+# uv add 新增套件時寫成 ==（和上面一樣釘死版本）。在 Mac 上要加 --no-sync：uv add --no-sync 套件
+add-bounds = "exact"
+
+# torch、torchaudio 只從 PyTorch 的 CPU 來源安裝，避免多帶約 3 GB 的 CUDA 套件。
+# explicit = true：其他套件不會去這個來源找
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# -ra：最後列出 skip、xfail、失敗的原因；no:cacheprovider：容器裡的 /app 不能寫入
+addopts = "-ra --strict-markers -p no:cacheprovider"
+markers = [
+    "integration: 需要 MySQL（docker 網路上的拋棄式容器）與 moto 的整合測試",
+]
+filterwarnings = [
+    # 第三方套件匯入時的棄用警告，不是這個服務的程式造成的；其他警告照常顯示
+    "ignore::DeprecationWarning:pkg_resources|mtcnn|pyannote|matplotlib|librosa|audioread",
+]
+
+[tool.coverage.run]
+branch = true
+# 用模組名稱列出要量的檔案：OpenCV 匯入時會執行相對路徑的 config.py，用 "." 的話會被誤算進來
+source = ["app", "worker", "analysis_queue", "analyzer", "speech", "predict_0", "download_models", "reports",
+          "report_model", "report_pdf", "ollama_explain", "service_outcome"]
+data_file = "/tmp/.coverage"  # 容器裡的使用者不能寫 /app
+
+[tool.coverage.report]
+fail_under = 75
+show_missing = true
