@@ -28,7 +28,7 @@ import tempfile
 import threading
 import time
 import uuid
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass, fields
 from typing import Callable, Optional
 
@@ -925,13 +925,309 @@ def check_sqs(sqs, settings):
     return lines, ok
 
 
+def connection_settings(environ=None):
+    """DB_* 環境變數 → mysql.connector 的連線參數，和 app.py、worker.py 的 pool 相同。少了必要的變數丟 KeyError。"""
+    environ = os.environ if environ is None else environ
+    try:
+        port = int(environ.get("DB_PORT", "3306"))
+    except ValueError:
+        raise ValueError(f"DB_PORT must be a number, got {environ['DB_PORT']!r}") from None
+    return {"host": environ["DB_HOST"], "port": port, "user": environ["DB_USER"], "password": environ["DB_PASSWORD"],
+            "database": environ["DB_NAME"], "time_zone": environ.get("DB_TIME_ZONE", "America/Los_Angeles")}
+
+
 def make_pool(size=2):
     """管理指令自己的連線（和 app.py 相同的環境變數）。"""
     from mysql.connector import pooling
-    return pooling.MySQLConnectionPool(
-        pool_name="adam-admin", pool_size=size, host=os.environ["DB_HOST"], port=int(os.getenv("DB_PORT", "3306")),
-        user=os.environ["DB_USER"], password=os.environ["DB_PASSWORD"], database=os.environ["DB_NAME"],
-        time_zone=os.getenv("DB_TIME_ZONE", "America/Los_Angeles"))
+    return pooling.MySQLConnectionPool(pool_name="adam-admin", pool_size=size, **connection_settings())
+
+
+# ---------- check-db（cd/PLAN.md 第 3 節、第 4 節第 3 點）：換版本之前，用新的映像檔和正式的 analysis.env 檢查資料庫 ----------
+# 「這一版需要什麼」以這個服務自己的 tests/integration/grants.sql 為準：整合測試就是用這個最小權限的帳號跑的，
+# 所以它是這一版需要的最小集合，測試也證明它夠用；正式的映像檔裡也有它（Dockerfile 的 COPY tests）。
+# 只讀，不寫入也不建立任何東西：每一項用 MySQL 不會執行的語句試（EXPLAIN 要有執行那個語句的權限）：
+#   SELECT   EXPLAIN SELECT 欄位 FROM 表 WHERE FALSE；整張表用 *
+#   INSERT   EXPLAIN INSERT INTO 表 (欄位) VALUES (DEFAULT)；整張表用 () VALUES ()（只有幾欄的權限過不了）
+#   UPDATE   EXPLAIN UPDATE 表 SET 欄位 = DEFAULT WHERE FALSE（DEFAULT 不讀欄位，不需要 SELECT）；整張表是看得到的每一欄
+#   DELETE   EXPLAIN DELETE FROM 表 WHERE FALSE
+#   EXECUTE  CALL 程序(比參數多一個 NULL)：個數不對，MySQL 在執行之前就回 1318，代表程序在、也有 EXECUTE。
+#            而且在唯讀的 session（transaction_read_only）裡試，萬一真的執行了也寫不進去（1792）。
+#            EXPLAIN UPDATE 這類在唯讀的 session 裡有權限也回 1792，試不出權限，所以只有 CALL 在唯讀之後試。
+# 結果照 MySQL 的錯誤碼分（2026-11-02 在 MySQL 8.4.13 一種一種試過）：
+#   MISSING  1146 表、1054 欄位、1305 程序不存在
+#   DENIED   1142 表、1143 欄位、1370 程序沒有權限
+# MySQL 不告訴沒有權限的帳號東西在不在：例如 migration 和它的 GRANT 都還沒套用時，最小權限的帳號看到的是 DENIED，
+# root 或有整個資料庫權限的帳號才看到 MISSING（表、欄位被改名或刪掉時留下的舊權限，也讓最小權限的帳號拿到 1146、1054）。
+# 所以 DENIED 的那一項這個帳號在 information_schema 裡看不到時，那一行另外提醒。
+# 已知的限制：整張表的 UPDATE 只試得到這個帳號看得到的欄位（只有幾欄權限的帳號看不到其他欄）。grants.sql 給整張表
+# UPDATE 的表也都給整張表的 SELECT，它讓每一欄都看得到，所以這幾張表的結論不受影響。
+GRANTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tests", "integration", "grants.sql")
+GRANTS_SOURCE = "tests/integration/grants.sql"  # 摘要裡顯示的名字（相對於這個檔案）
+CHECK_DB_TIMEOUT_SEC = 10
+TABLE_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "DELETE")
+MISSING_ERRORS = frozenset({1054, 1146, 1305})
+DENIED_ERRORS = frozenset({1142, 1143, 1370})
+WRONG_ARGUMENTS = 1318  # CALL 的參數個數不對：在檢查權限、找到程序之後，執行之前
+UPDATE_PLACEHOLDER = "check_db_probe"  # 整張表的 UPDATE、這個帳號又看不到那張表：MySQL 在看欄位之前就回 1142 或 1146
+INVISIBLE_HINT = (" (this account cannot see it, so it may also be missing: "
+                  "if the GRANT fails because it does not exist, apply the migrations first)")
+VISIBLE_COLUMNS_SQL = ("SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS "
+                       "WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME, ORDINAL_POSITION")
+VISIBLE_ROUTINES_SQL = ("SELECT r.ROUTINE_NAME, COUNT(p.ORDINAL_POSITION) FROM information_schema.ROUTINES AS r "
+                        "LEFT JOIN information_schema.PARAMETERS AS p ON p.SPECIFIC_SCHEMA = r.ROUTINE_SCHEMA "
+                        "AND p.SPECIFIC_NAME = r.SPECIFIC_NAME AND p.ROUTINE_TYPE = r.ROUTINE_TYPE "
+                        "AND p.ORDINAL_POSITION > 0 "
+                        "WHERE r.ROUTINE_SCHEMA = DATABASE() AND r.ROUTINE_TYPE = 'PROCEDURE' GROUP BY r.ROUTINE_NAME")
+SQL_NAME = r"(?:`(?:[^`]|``)+`|[A-Za-z0-9_$]+)"
+GRANT_RE = re.compile(rf"GRANT (?P<privileges>.+?) ON (?:(?P<kind>TABLE|PROCEDURE|FUNCTION) )?(?:{SQL_NAME}\.)?"
+                      rf"(?P<name>{SQL_NAME}) TO \S.*", re.IGNORECASE)
+PRIVILEGE_RE = re.compile(r"(?P<privilege>[A-Za-z]+(?: [A-Za-z]+)*) ?(?:\((?P<columns>[^()]*)\))?")
+
+
+@dataclass(frozen=True)
+class Need:
+    """grants.sql 的一項：privilege 是 SELECT、INSERT、UPDATE、DELETE，或程序的 EXECUTE；column 是 None 時是整張表。
+    名字不帶資料庫：一律在服務連的那個資料庫（DB_NAME）裡找，和服務的 SQL 一樣。"""
+
+    privilege: str
+    name: str
+    column: Optional[str] = None
+
+    def __str__(self):
+        if self.privilege == "EXECUTE":
+            return f"EXECUTE ON PROCEDURE {self.name}"
+        return f"{self.privilege}{'' if self.column is None else f' ({self.column})'} ON {self.name}"
+
+
+class CheckDbError(Exception):
+    """這一次沒辦法判斷（例如連線斷了、MySQL 回了預期之外的錯誤）：結束碼 2。"""
+
+
+def sql_statements(text):
+    """SQL 檔 → 一句一句。拿掉 -- 、# 和 /* */ 註解；引號裡的分號和註解記號不算。"""
+    statements, current, quote, i = [], [], None, 0
+    while i < len(text):
+        char = text[i]
+        if quote is not None:
+            if char == "\\" and quote != "`":  # 字串裡的跳脫：連下一個字元一起
+                current.append(text[i:i + 2])
+                i += 2
+                continue
+            if char == quote:  # 兩個引號連在一起（跳脫）：下一個又開始一段引號，結果一樣
+                quote = None
+        elif char in "'\"`":
+            quote = char
+        elif char == "#" or (text.startswith("--", i) and (i + 2 == len(text) or text[i + 2].isspace())):
+            end = text.find("\n", i)
+            i = len(text) if end < 0 else end
+            continue
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            if end < 0:
+                raise ValueError("a /* comment is not closed")
+            current.append(" ")
+            i = end + 2
+            continue
+        elif char == ";":
+            statements.append("".join(current).strip())
+            current = []
+            i += 1
+            continue
+        current.append(char)
+        i += 1
+    if quote is not None:
+        raise ValueError(f"a {quote} quote is not closed")
+    statements.append("".join(current).strip())
+    return [statement for statement in statements if statement]
+
+
+def unquote(name):
+    return name[1:-1].replace("``", "`") if name.startswith("`") else name
+
+
+def quote_name(name):
+    return "`" + name.replace("`", "``") + "`"
+
+
+def split_privileges(text):
+    """逗號分開（括號裡的不算）：'SELECT (a, b), UPDATE (c)' → ['SELECT (a, b)', 'UPDATE (c)']。"""
+    parts, depth, start = [], 0, 0
+    for index, char in enumerate(text):
+        depth += (char == "(") - (char == ")")
+        if char == "," and depth == 0:
+            parts.append(text[start:index].strip())
+            start = index + 1
+    parts.append(text[start:].strip())
+    return parts
+
+
+def parse_grant(statement):
+    """一句 GRANT → [Need]。只認得一張表（或其中幾欄）的 SELECT、INSERT、UPDATE、DELETE 和一個程序的 EXECUTE；
+    其他的（整個資料庫、函式、別種權限）丟 ValueError：check-db 不會默默少檢查一項。"""
+    text = " ".join(statement.split())
+    match = GRANT_RE.fullmatch(text)
+    if match is None or (match["kind"] or "").upper() == "FUNCTION":
+        raise ValueError(f"only GRANTs on one table or one procedure can be checked: {text}")
+    allowed = ("EXECUTE",) if (match["kind"] or "").upper() == "PROCEDURE" else TABLE_PRIVILEGES
+    name, needs = unquote(match["name"]), []
+    for part in split_privileges(match["privileges"]):
+        privilege = PRIVILEGE_RE.fullmatch(part)
+        kind = privilege["privilege"].upper() if privilege else part
+        if kind not in allowed:
+            raise ValueError(f"{kind} cannot be checked: {text}")
+        if privilege["columns"] is None:
+            needs.append(Need(kind, name))
+            continue
+        columns = [unquote(column.strip()) for column in privilege["columns"].split(",")]
+        if kind in ("DELETE", "EXECUTE") or "" in columns:
+            raise ValueError(f"bad column list: {text}")
+        needs.extend(Need(kind, name, column) for column in columns)
+    return needs
+
+
+def read_needs(path=GRANTS_FILE):
+    """grants.sql → [Need]：照檔案的順序，拿掉重複的（整張表的權限包含同一種的欄位權限）。GRANT 以外的語句（CREATE USER）不看。"""
+    with open(path, encoding="utf-8") as source:
+        statements = sql_statements(source.read())
+    needs = [need for statement in statements if re.match(r"GRANT\s", statement, re.IGNORECASE)
+             for need in parse_grant(statement)]
+    if not needs:
+        raise ValueError("there is no GRANT in it")
+    whole = {(need.privilege, need.name) for need in needs if need.column is None}
+    return list(dict.fromkeys(need for need in needs if need.column is None or (need.privilege, need.name) not in whole))
+
+
+def probe_sql(need, columns=(), parameters=0):
+    """試這一項的語句（MySQL 都不會執行，見上面的說明）。columns：這個帳號看得到的欄位；parameters：程序的參數個數。"""
+    target = quote_name(need.name)
+    if need.privilege == "EXECUTE":
+        return f"CALL {target}({', '.join(['NULL'] * (parameters + 1))})"
+    column = None if need.column is None else quote_name(need.column)
+    if need.privilege == "SELECT":
+        return f"EXPLAIN SELECT {column or '*'} FROM {target} WHERE FALSE"
+    if need.privilege == "INSERT":
+        return f"EXPLAIN INSERT INTO {target} ({column or ''}) VALUES ({'DEFAULT' if column else ''})"
+    if need.privilege == "UPDATE":
+        names = [column] if column else [quote_name(name) for name in columns or [UPDATE_PLACEHOLDER]]
+        return f"EXPLAIN UPDATE {target} SET {', '.join(f'{name} = DEFAULT' for name in names)} WHERE FALSE"
+    return f"EXPLAIN DELETE FROM {target} WHERE FALSE"
+
+
+def mysql_error(exc):
+    """mysql.connector 的錯誤 → '錯誤碼 訊息'；其他例外照 describe()。"""
+    errno, msg = getattr(exc, "errno", None), getattr(exc, "msg", None)
+    return f"{errno} {msg}" if errno and msg else describe(exc)
+
+
+def probe(cur, need, columns=(), parameters=0):
+    """試一項，回傳 (OK、MISSING 或 DENIED, MySQL 的錯誤)。預期之外的錯誤丟 CheckDbError。"""
+    try:
+        cur.execute(probe_sql(need, columns, parameters))
+        if need.privilege != "EXECUTE":
+            cur.fetchall()  # EXPLAIN 的結果：讀掉才能送下一句
+            return "OK", None
+    except Exception as exc:
+        errno = getattr(exc, "errno", None)
+        if need.privilege == "EXECUTE" and errno == WRONG_ARGUMENTS:
+            return "OK", None
+        if errno in MISSING_ERRORS:
+            return "MISSING", mysql_error(exc)
+        if errno in DENIED_ERRORS:
+            return "DENIED", mysql_error(exc)
+        raise CheckDbError(f"could not check {need}: {mysql_error(exc)}") from exc
+    raise CheckDbError(f"could not check {need}: the procedure ran, the extra argument should have stopped it")
+
+
+def visible(need, columns, routines):
+    """這個帳號在 information_schema 看得到這一項嗎（看不到的，MySQL 不告訴它在不在）。"""
+    if need.privilege == "EXECUTE":
+        return need.name.lower() in routines
+    names = {name.lower() for name in columns.get(need.name, ())}
+    return bool(names) and (need.column is None or need.column.lower() in names)
+
+
+def check_db_summary(code, counts=None, account="-", database="-", source=GRANTS_SOURCE):
+    """最後一行（和 migrate、deploy 一樣是 <名字>: result=… code=…）。"""
+    counts = counts or dict.fromkeys(("OK", "MISSING", "DENIED"), 0)
+    return (f"check-db: result={('ok', 'failed', 'error')[code]} code={code} ok={counts['OK']} "
+            f"missing={counts['MISSING']} denied={counts['DENIED']} account={account} database={database} needs={source}")
+
+
+def check_db(conn, needs, source=GRANTS_SOURCE):
+    """唯讀：一項一項試，回傳 (每一行, 結束碼)。每一項一行，開頭是 OK、MISSING 或 DENIED，最後一行是摘要。
+    0 全部都在、1 有缺的、2 沒辦法判斷（試過的照樣列出來）。"""
+    results, columns, routines, found, problem = {}, {}, {}, ("-", "-"), None
+    try:
+        with closing(conn.cursor()) as cur:
+            cur.execute("SELECT CURRENT_USER(), DATABASE()")
+            found = tuple(cur.fetchall()[0])
+            cur.execute(VISIBLE_COLUMNS_SQL)
+            for table, column in cur.fetchall():
+                columns.setdefault(table, []).append(column)
+            cur.execute(VISIBLE_ROUTINES_SQL)
+            routines = {name.lower(): int(count) for name, count in cur.fetchall()}
+            procedures = [need for need in needs if need.privilege == "EXECUTE"]
+            for need in needs:
+                if need.privilege != "EXECUTE":
+                    results[need] = probe(cur, need, columns=columns.get(need.name, ()))
+            if procedures:
+                cur.execute("SET SESSION transaction_read_only = ON")  # 只有 CALL 在唯讀之後試（見上面的說明）
+            for need in procedures:
+                results[need] = probe(cur, need, parameters=routines.get(need.name.lower(), 0))
+    except CheckDbError as exc:
+        problem = str(exc)
+    except Exception as exc:  # 例如查 information_schema 時連線斷了
+        problem = f"could not finish: {mysql_error(exc)}"
+    lines, counts = [], dict.fromkeys(("OK", "MISSING", "DENIED"), 0)
+    for need in needs:
+        if need in results:
+            status, error = results[need]
+            counts[status] += 1
+            if status == "DENIED" and not visible(need, columns, routines):
+                error += INVISIBLE_HINT
+            lines.append(f"{status:<7} {need}" + (f": {error}" if error else ""))
+    if problem is not None:
+        lines.append(f"check-db: {problem}")
+    code = 2 if problem is not None else 1 if counts["MISSING"] or counts["DENIED"] else 0
+    lines.append(check_db_summary(code, counts, found[0], found[1] or "-", source))
+    return lines, code
+
+
+def connect_for_check(settings):
+    """check-db 自己的一條連線：autocommit（EXPLAIN 拿的 metadata lock 每一句結束就放掉）；10 秒連不上就放棄。"""
+    import mysql.connector
+    return mysql.connector.connect(**settings, autocommit=True, connection_timeout=CHECK_DB_TIMEOUT_SEC)
+
+
+def run_check_db(path=GRANTS_FILE, environ=None, connect=None):
+    """python -m analysis_queue check-db：回傳 (每一行, 結束碼)。讀不到 grants.sql、設定錯了、連不上都是 2（CONTRACTS 第 3 節）。"""
+    source = GRANTS_SOURCE if path == GRANTS_FILE else path
+
+    def give_up(message):
+        return [f"check-db: {message}", check_db_summary(2, source=source)], 2
+
+    try:
+        needs = read_needs(path)
+    except (OSError, ValueError) as exc:
+        return give_up(f"cannot read {source}: {exc}")
+    try:
+        settings = connection_settings(environ)
+    except KeyError as exc:
+        return give_up(f"{exc.args[0]} is not set")
+    except ValueError as exc:
+        return give_up(str(exc))
+    for variable, key in (("DB_HOST", "host"), ("DB_USER", "user"), ("DB_NAME", "database")):
+        if not settings[key].strip():
+            return give_up(f"{variable} is not set")
+    try:
+        conn = (connect or connect_for_check)(settings)
+    except Exception as exc:
+        return give_up(f"cannot connect to the database: {mysql_error(exc)}")
+    try:
+        return check_db(conn, needs, source)
+    finally:
+        with suppress(Exception):
+            conn.close()
 
 
 def print_status(pool, settings):
@@ -968,12 +1264,21 @@ def main(argv=None):
     requeue.add_argument("service_id")
     commands.add_parser("check-sqs", help="read the main queue's settings (read-only)")
     commands.add_parser("alive", help="exit 0 if this worker reported in the last 2 minutes (HEALTHCHECK)")
+    check_db_command = commands.add_parser(
+        "check-db", help="check that the tables, columns, procedures and privileges this version needs are there "
+                         "(read-only; exit 0 all there, 1 something missing or denied, 2 cannot check)")
+    check_db_command.add_argument("--grants", default=GRANTS_FILE, help="the GRANTs this version needs "
+                                                                        "(default: %(default)s)")
     args = parser.parse_args(argv)
     if args.command == "alive":
         try:
             return 0 if time.time() - os.path.getmtime(ALIVE_FILE) < 120 else 1
         except OSError:
             return 1
+    if args.command == "check-db":  # 不需要 SQS 的設定：部署前只檢查資料庫
+        lines, code = run_check_db(args.grants)
+        print("\n".join(lines))
+        return code
     settings = Settings.from_env()
     if args.command == "check-sqs":
         lines, ok = check_sqs(make_sqs_client(), settings)

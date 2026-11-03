@@ -1,7 +1,8 @@
 # tests/unit/test_analysis_queue.py — analysis_queue.py 不需要資料庫的部分（SQS 分析工作佇列，T49）。
 # analysis_service/ 與 analyzer/ 共用同一份，必須逐位元組相同（tools/check_report_copies.py）。
 #
-# 設定與檢查、檔名、訊息內容、退避、Worker 對每一種認領結果的處理、heartbeat、關機、暫存資料夾、serve()、管理指令的參數。
+# 設定與檢查、檔名、訊息內容、退避、Worker 對每一種認領結果的處理、heartbeat、關機、暫存資料夾、serve()、管理指令的參數、
+# check-db（讀 grants.sql、每一項怎麼試、MySQL 的錯誤碼怎麼分、輸出與結束碼）。
 # 資料庫與 SQS 都換成記錄呼叫的小替身；真的 MySQL 8.4＋moto 的流程在 tests/queue/。
 import json
 import logging
@@ -1029,7 +1030,8 @@ def test_alive_does_not_need_the_settings(monkeypatch):
     assert str(error.value) == WAIT
 
 
-@pytest.mark.parametrize("argv", [[], ["bogus"], ["fail"], ["requeue"], ["fail", SID, "--bogus"], ["status", "x"]])
+@pytest.mark.parametrize("argv", [[], ["bogus"], ["fail"], ["requeue"], ["fail", SID, "--bogus"], ["status", "x"],
+                                  ["check-db", "x"], ["check-db", "--grants"]])
 def test_bad_arguments_exit_with_the_usage(capsys, argv):
     with pytest.raises(SystemExit) as stopped:
         aq.main(argv)
@@ -1082,3 +1084,395 @@ def test_running_the_module_exits_with_main_s_code(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as stopped:
         runpy.run_path(aq.__file__, run_name="__main__")
     assert stopped.value.code == 1 and configured == [{"level": logging.INFO}]
+
+
+# ---------- check-db（CD 部署前的資料庫檢查：docs/rebuild/cd/PLAN.md 第 4 節第 3 點、CONTRACTS.md 第 3 節） ----------
+DB_ENV = {"DB_HOST": "db.example", "DB_USER": "adam_analysis", "DB_PASSWORD": "adam-test-only", "DB_NAME": "adam"}
+SUMMARY_TAIL = "account=adam_analysis@% database=adam needs=tests/integration/grants.sql"
+NEEDS = [aq.Need("SELECT", "t", "a"), aq.Need("UPDATE", "t"), aq.Need("EXECUTE", "sp"), aq.Need("DELETE", "t")]
+
+
+class MysqlError(Exception):
+    """mysql.connector.Error 的替身：有 errno 和 msg。"""
+
+    def __init__(self, errno, msg):
+        super().__init__(f"{errno} (HY000): {msg}")
+        self.errno, self.msg = errno, msg
+
+
+class FakeServer:
+    """check-db 的連線替身。columns、routines 是這個帳號在 information_schema 看得到的欄位、程序（和參數個數）；
+    answers[整句 SQL] 是例外（丟出）或結果列；沒寫到的 EXPLAIN 成功、CALL 回 1318（參數個數不對）。executed 記下每一句。"""
+
+    def __init__(self, columns=None, routines=None, answers=None, account="adam_analysis@%", database="adam"):
+        self.columns = {"t": ["a", "b"]} if columns is None else columns
+        self.routines = {"sp": 3} if routines is None else routines
+        self.answers, self.account, self.database = answers or {}, account, database
+        self.executed, self.closed = [], []
+
+    def cursor(self):
+        return FakeServerCursor(self)
+
+    def close(self):
+        self.closed.append("connection")
+
+
+class FakeServerCursor:
+    def __init__(self, server):
+        self.server, self.rows = server, []
+
+    def execute(self, sql, args=()):
+        server = self.server
+        server.executed.append(sql)
+        if sql in server.answers:
+            answer = server.answers[sql]
+            if isinstance(answer, BaseException):
+                raise answer
+            self.rows = answer
+        elif sql == "SELECT CURRENT_USER(), DATABASE()":
+            self.rows = [(server.account, server.database)]
+        elif sql == aq.VISIBLE_COLUMNS_SQL:
+            self.rows = [(table, column) for table, columns in server.columns.items() for column in columns]
+        elif sql == aq.VISIBLE_ROUTINES_SQL:
+            self.rows = list(server.routines.items())
+        elif sql.startswith("CALL "):
+            raise MysqlError(1318, "Incorrect number of arguments for PROCEDURE adam.sp; expected 3, got 4")
+        else:
+            self.rows = [(1, "SIMPLE")]
+
+    def fetchall(self):
+        return self.rows
+
+    def close(self):
+        self.server.closed.append("cursor")
+
+
+def grants_file(tmp_path, text):
+    path = tmp_path / "grants.sql"
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def test_sql_statements_drop_comments_and_split_on_semicolons():
+    text = ("-- a comment; not a statement\nCREATE USER 'u'@'%';  # another; comment\n"
+            "GRANT SELECT /* a; comment */ ON adam.t TO 'u'@'%';;\n  \nGRANT DELETE ON adam.t TO 'u'@'%' # no newline")
+    assert aq.sql_statements(text) == ["CREATE USER 'u'@'%'", "GRANT SELECT   ON adam.t TO 'u'@'%'",
+                                       "GRANT DELETE ON adam.t TO 'u'@'%'"]
+
+
+def test_quotes_hide_semicolons_and_comment_marks():
+    text = ("SELECT 'a;b', \"--c\", `#d`, 'it\\'s;', 'it''s;' FROM t; SELECT `x\\`; SELECT 1--2;\n"
+            "SELECT 3 --")
+    assert aq.sql_statements(text) == ["SELECT 'a;b', \"--c\", `#d`, 'it\\'s;', 'it''s;' FROM t", "SELECT `x\\`",
+                                       "SELECT 1--2", "SELECT 3"]  # 反引號裡的 \ 不是跳脫；--2 不是註解
+
+
+@pytest.mark.parametrize("text, message", [("GRANT SELECT ON 't", "a ' quote is not closed"),
+                                           ("GRANT /* SELECT", "a /* comment is not closed")])
+def test_an_unclosed_quote_or_comment_is_an_error(text, message):
+    with pytest.raises(ValueError) as error:
+        aq.sql_statements(text)
+    assert str(error.value) == message
+
+
+@pytest.mark.parametrize("statement, needs", [
+    ("GRANT SELECT, INSERT, UPDATE, DELETE ON adam.t TO 'u'@'%'",
+     [aq.Need("SELECT", "t"), aq.Need("INSERT", "t"), aq.Need("UPDATE", "t"), aq.Need("DELETE", "t")]),
+    ("GRANT SELECT (a, b), UPDATE (c) ON adam.t TO 'u'@'%'",
+     [aq.Need("SELECT", "t", "a"), aq.Need("SELECT", "t", "b"), aq.Need("UPDATE", "t", "c")]),
+    ("GRANT EXECUTE ON PROCEDURE adam.sp TO 'u'@'%'", [aq.Need("EXECUTE", "sp")]),
+    ("grant select(a) ,\n insert ( b )  on table t\nto u with grant option",
+     [aq.Need("SELECT", "t", "a"), aq.Need("INSERT", "t", "b")]),
+    ("GRANT SELECT (`we``ird`) ON `adam`.`tbl``x` TO 'u'@'%'", [aq.Need("SELECT", "tbl`x", "we`ird")]),
+])
+def test_a_grant_is_one_need_per_privilege_and_column(statement, needs):
+    assert aq.parse_grant(statement) == needs
+
+
+@pytest.mark.parametrize("statement, message", [
+    ("GRANT SELECT ON adam.* TO 'u'@'%'", "only GRANTs on one table or one procedure can be checked"),
+    ("GRANT EXECUTE ON FUNCTION adam.f TO 'u'@'%'", "only GRANTs on one table or one procedure can be checked"),
+    ("GRANT reporting_role TO 'u'@'%'", "only GRANTs on one table or one procedure can be checked"),
+    ("GRANT SELECT ON adam.t", "only GRANTs on one table or one procedure can be checked"),
+    ("GRANT ALL PRIVILEGES ON adam.t TO 'u'@'%'", "ALL PRIVILEGES cannot be checked"),
+    ("GRANT SELECT, ALTER ON adam.t TO 'u'@'%'", "ALTER cannot be checked"),
+    ("GRANT EXECUTE ON adam.t TO 'u'@'%'", "EXECUTE cannot be checked"),  # EXECUTE 只給程序
+    ("GRANT SELECT ON PROCEDURE adam.sp TO 'u'@'%'", "SELECT cannot be checked"),
+    ("GRANT SELECT (a ON adam.t TO 'u'@'%'", "SELECT (a cannot be checked"),
+    ("GRANT DELETE (a) ON adam.t TO 'u'@'%'", "bad column list"),
+    ("GRANT SELECT () ON adam.t TO 'u'@'%'", "bad column list"),
+    ("GRANT UPDATE (a,) ON adam.t TO 'u'@'%'", "bad column list"),
+])
+def test_grants_check_db_cannot_check_are_errors_not_skipped(statement, message):
+    with pytest.raises(ValueError) as error:
+        aq.parse_grant(statement)
+    assert str(error.value) == f"{message}: {statement}"
+
+
+def test_read_needs_keeps_the_file_order_without_repeats(tmp_path):
+    path = grants_file(tmp_path, (
+        "-- a test file\nCREATE USER 'u'@'%' IDENTIFIED BY 'p;w' REQUIRE SSL;\n"
+        "GRANT SELECT (a, b) ON adam.t TO 'u'@'%';\n"
+        "GRANT UPDATE (a) ON adam.t TO 'u'@'%';\n"
+        "GRANT SELECT ON adam.t TO 'u'@'%';  -- the whole table: (a) and (b) above are part of it\n"
+        "GRANT UPDATE (a), DELETE ON adam.t TO 'u'@'%';\n"
+        "GRANT EXECUTE ON PROCEDURE adam.sp TO 'u'@'%';\nGRANT EXECUTE ON PROCEDURE adam.sp TO 'u'@'%';\n"))
+    assert aq.read_needs(path) == [aq.Need("UPDATE", "t", "a"), aq.Need("SELECT", "t"), aq.Need("DELETE", "t"),
+                                   aq.Need("EXECUTE", "sp")]
+
+
+def test_a_file_without_grants_is_an_error(tmp_path):
+    with pytest.raises(ValueError) as error:
+        aq.read_needs(grants_file(tmp_path, "CREATE USER 'u'@'%';\n-- GRANT SELECT ON adam.t TO 'u'@'%';\n"))
+    assert str(error.value) == "there is no GRANT in it"
+
+
+def test_every_grant_in_this_service_s_grants_sql_is_read():
+    """和逐行拆開的結果一樣：兩個服務的 grants.sql 都是一行一句 GRANT、只給 adam_analysis（每一句都讀到了）。"""
+    expected = []
+    with open(aq.GRANTS_FILE, encoding="utf-8") as source:
+        for line in source:
+            match = re.fullmatch(r"GRANT (.+) ON (?:PROCEDURE )?adam\.(\w+) TO 'adam_analysis'@'%';", line.strip())
+            assert match or not line.startswith("GRANT"), line
+            if not match:
+                continue
+            for privilege, columns in re.findall(r"(\w+)(?: \(([^)]*)\))?", match[1]):
+                if columns:
+                    expected.extend(aq.Need(privilege, match[2], column) for column in columns.split(", "))
+                else:
+                    expected.append(aq.Need(privilege, match[2]))
+    needs = aq.read_needs()
+    assert needs == list(dict.fromkeys(expected)) and len(needs) > 20
+    for need in [aq.Need("UPDATE", "tbl_service", "service_status"), aq.Need("EXECUTE", "sp_insert_text_storage"),
+                 aq.Need("INSERT", "tbl_analysis_job"), aq.Need("DELETE", "tbl_analysis_worker")]:
+        assert need in needs  # 兩個服務都要的
+    assert aq.GRANTS_FILE == os.path.join(os.path.dirname(os.path.abspath(aq.__file__)), "tests", "integration",
+                                          "grants.sql")
+
+
+def test_a_need_reads_like_its_grant():
+    assert [str(need) for need in (aq.Need("SELECT", "t"), aq.Need("UPDATE", "t", "c"), aq.Need("EXECUTE", "sp"))] == [
+        "SELECT ON t", "UPDATE (c) ON t", "EXECUTE ON PROCEDURE sp"]
+
+
+@pytest.mark.parametrize("need, columns, parameters, sql", [
+    (aq.Need("SELECT", "t"), (), 0, "EXPLAIN SELECT * FROM `t` WHERE FALSE"),
+    (aq.Need("SELECT", "t", "c"), (), 0, "EXPLAIN SELECT `c` FROM `t` WHERE FALSE"),
+    (aq.Need("INSERT", "t"), (), 0, "EXPLAIN INSERT INTO `t` () VALUES ()"),
+    (aq.Need("INSERT", "t", "c"), (), 0, "EXPLAIN INSERT INTO `t` (`c`) VALUES (DEFAULT)"),
+    (aq.Need("UPDATE", "t", "c"), ["a", "b"], 0, "EXPLAIN UPDATE `t` SET `c` = DEFAULT WHERE FALSE"),
+    (aq.Need("UPDATE", "t"), ["a", "b"], 0, "EXPLAIN UPDATE `t` SET `a` = DEFAULT, `b` = DEFAULT WHERE FALSE"),
+    (aq.Need("UPDATE", "t"), (), 0, "EXPLAIN UPDATE `t` SET `check_db_probe` = DEFAULT WHERE FALSE"),
+    (aq.Need("DELETE", "t"), (), 0, "EXPLAIN DELETE FROM `t` WHERE FALSE"),
+    (aq.Need("EXECUTE", "sp"), (), 3, "CALL `sp`(NULL, NULL, NULL, NULL)"),  # 參數多一個：MySQL 在執行前就回 1318
+    (aq.Need("EXECUTE", "sp"), (), 0, "CALL `sp`(NULL)"),
+    (aq.Need("SELECT", "we`ird", "c`ol"), (), 0, "EXPLAIN SELECT `c``ol` FROM `we``ird` WHERE FALSE"),
+])
+def test_each_need_is_tried_with_a_statement_mysql_does_not_run(need, columns, parameters, sql):
+    assert aq.probe_sql(need, columns, parameters) == sql
+
+
+def test_check_db_tries_the_tables_first_then_the_procedures_in_a_read_only_session():
+    server = FakeServer()
+    lines, code = aq.check_db(server, NEEDS)
+    assert code == 0 and lines == ["OK      SELECT (a) ON t", "OK      UPDATE ON t", "OK      EXECUTE ON PROCEDURE sp",
+                                   "OK      DELETE ON t", f"check-db: result=ok code=0 ok=4 missing=0 denied=0 {SUMMARY_TAIL}"]
+    assert server.executed == [
+        "SELECT CURRENT_USER(), DATABASE()", aq.VISIBLE_COLUMNS_SQL, aq.VISIBLE_ROUTINES_SQL,
+        "EXPLAIN SELECT `a` FROM `t` WHERE FALSE", "EXPLAIN UPDATE `t` SET `a` = DEFAULT, `b` = DEFAULT WHERE FALSE",
+        "EXPLAIN DELETE FROM `t` WHERE FALSE", "SET SESSION transaction_read_only = ON",
+        "CALL `sp`(NULL, NULL, NULL, NULL)"]  # 看得到 3 個參數：多給一個
+    assert server.closed == ["cursor"]  # 連線由 run_check_db() 關
+
+
+def test_without_procedures_the_session_is_left_as_it_is():
+    server = FakeServer()
+    assert aq.check_db(server, [aq.Need("SELECT", "t")])[1] == 0
+    assert "SET SESSION transaction_read_only = ON" not in server.executed
+
+
+@pytest.mark.parametrize("need, errno, status", [
+    (aq.Need("SELECT", "t"), 1146, "MISSING"), (aq.Need("SELECT", "t", "a"), 1054, "MISSING"),
+    (aq.Need("EXECUTE", "sp"), 1305, "MISSING"), (aq.Need("SELECT", "t"), 1142, "DENIED"),
+    (aq.Need("UPDATE", "t", "a"), 1143, "DENIED"), (aq.Need("EXECUTE", "sp"), 1370, "DENIED"),
+])
+def test_mysql_s_error_code_says_missing_or_denied(need, errno, status):
+    server = FakeServer(answers={aq.probe_sql(need, ["a", "b"], 3): MysqlError(errno, "what MySQL said")})
+    lines, code = aq.check_db(server, [need, aq.Need("DELETE", "t")])
+    assert code == 1 and lines == [f"{status:<7} {need}: {errno} what MySQL said", "OK      DELETE ON t",
+                                   f"check-db: result=failed code=1 ok=1 missing={int(status == 'MISSING')} "
+                                   f"denied={int(status == 'DENIED')} {SUMMARY_TAIL}"]
+
+
+@pytest.mark.parametrize("need, errno", [(aq.Need("SELECT", "hidden"), 1142),  # 整張表都看不到
+                                         (aq.Need("SELECT", "t", "secret"), 1143),  # 表看得到、這一欄看不到
+                                         (aq.Need("EXECUTE", "hidden_sp"), 1370)])
+def test_denied_things_the_account_cannot_see_may_also_be_missing(need, errno):
+    server = FakeServer(answers={aq.probe_sql(need): MysqlError(errno, "denied")})
+    lines, code = aq.check_db(server, [need])
+    assert code == 1 and lines[0] == f"DENIED  {need}: {errno} denied{aq.INVISIBLE_HINT}"
+
+
+def test_visibility_ignores_case_like_mysql():
+    needs = [aq.Need("UPDATE", "t", "a"), aq.Need("EXECUTE", "sp")]
+    server = FakeServer(columns={"t": ["A"]}, routines={"SP": 2}, answers={
+        aq.probe_sql(needs[0]): MysqlError(1143, "denied"), "CALL `sp`(NULL, NULL, NULL)": MysqlError(1370, "denied")})
+    lines, code = aq.check_db(server, needs)
+    assert code == 1 and lines[:2] == ["DENIED  UPDATE (a) ON t: 1143 denied", "DENIED  EXECUTE ON PROCEDURE sp: 1370 denied"]
+
+
+def test_an_unexpected_error_stops_the_check_with_code_2():
+    needs = [aq.Need("SELECT", "t"), aq.Need("DELETE", "t"), aq.Need("EXECUTE", "sp")]
+    server = FakeServer(answers={"EXPLAIN SELECT * FROM `t` WHERE FALSE": MysqlError(1142, "denied"),
+                                 "EXPLAIN DELETE FROM `t` WHERE FALSE": MysqlError(2013, "Lost connection to MySQL")})
+    lines, code = aq.check_db(server, needs)
+    assert code == 2 and lines == [  # 試過的照樣列出來；沒辦法判斷比有缺的優先
+        "DENIED  SELECT ON t: 1142 denied", "check-db: could not check DELETE ON t: 2013 Lost connection to MySQL",
+        f"check-db: result=error code=2 ok=0 missing=0 denied=1 {SUMMARY_TAIL}"]
+    assert not any(sql.startswith(("SET", "CALL")) for sql in server.executed)
+
+
+def test_errors_that_are_not_from_mysql_are_described():
+    server = FakeServer(answers={"EXPLAIN SELECT * FROM `t` WHERE FALSE": RuntimeError("boom")})
+    lines, code = aq.check_db(server, [aq.Need("SELECT", "t")])
+    assert code == 2 and lines[0] == "check-db: could not check SELECT ON t: RuntimeError: boom"
+
+
+@pytest.mark.parametrize("failing, account, database", [("SELECT CURRENT_USER(), DATABASE()", "-", "-"),
+                                                        (aq.VISIBLE_COLUMNS_SQL, "adam_analysis@%", "adam"),
+                                                        (aq.VISIBLE_ROUTINES_SQL, "adam_analysis@%", "adam")])
+def test_an_error_while_looking_around_is_code_2(failing, account, database):
+    server = FakeServer(answers={failing: MysqlError(2013, "Lost connection to MySQL")})
+    lines, code = aq.check_db(server, NEEDS)
+    assert code == 2 and lines == ["check-db: could not finish: 2013 Lost connection to MySQL",
+                                   f"check-db: result=error code=2 ok=0 missing=0 denied=0 account={account} "
+                                   f"database={database} needs=tests/integration/grants.sql"]
+
+
+def test_a_procedure_that_really_runs_is_not_taken_as_ok():
+    server = FakeServer(answers={"CALL `sp`(NULL, NULL, NULL, NULL)": []})  # 不會發生：多一個參數，MySQL 不執行
+    lines, code = aq.check_db(server, [aq.Need("EXECUTE", "sp")])
+    assert code == 2 and lines[0] == ("check-db: could not check EXECUTE ON PROCEDURE sp: "
+                                      "the procedure ran, the extra argument should have stopped it")
+
+
+def test_without_a_default_database_the_summary_shows_a_dash():
+    lines, _ = aq.check_db(FakeServer(database=None), [aq.Need("SELECT", "t")])
+    assert lines[-1].endswith(" account=adam_analysis@% database=- needs=tests/integration/grants.sql")
+
+
+@pytest.mark.parametrize("changes, message", [
+    ({"DB_HOST": None}, "DB_HOST is not set"), ({"DB_USER": None}, "DB_USER is not set"),
+    ({"DB_PASSWORD": None}, "DB_PASSWORD is not set"), ({"DB_NAME": None}, "DB_NAME is not set"),
+    ({"DB_HOST": " "}, "DB_HOST is not set"), ({"DB_USER": ""}, "DB_USER is not set"), ({"DB_NAME": ""}, "DB_NAME is not set"),
+    ({"DB_PORT": "33o6"}, "DB_PORT must be a number, got '33o6'"),
+])
+def test_check_db_needs_the_service_s_db_variables(changes, message):
+    environ = {name: value for name, value in {**DB_ENV, **changes}.items() if value is not None}
+    lines, code = aq.run_check_db(environ=environ, connect=lambda settings: pytest.fail("connected"))
+    assert code == 2 and lines == [f"check-db: {message}", "check-db: result=error code=2 ok=0 missing=0 denied=0 "
+                                                           "account=- database=- needs=tests/integration/grants.sql"]
+
+
+@pytest.mark.parametrize("error, text", [
+    (MysqlError(2003, "Can't connect to MySQL server on 'db.example:3306' (111)"),
+     "2003 Can't connect to MySQL server on 'db.example:3306' (111)"),
+    (MysqlError(1298, "Unknown or incorrect time zone: 'Mars/Phobos'"), "1298 Unknown or incorrect time zone: 'Mars/Phobos'"),
+    (OSError("network is unreachable"), "OSError: network is unreachable"),
+])
+def test_check_db_that_cannot_connect_is_code_2(error, text):
+    def refuse(settings):
+        raise error
+
+    lines, code = aq.run_check_db(environ=DB_ENV, connect=refuse)
+    assert code == 2 and lines[0] == f"check-db: cannot connect to the database: {text}"
+
+
+def test_check_db_reads_the_grants_file_before_connecting(tmp_path):
+    def never(settings):
+        pytest.fail("connected")
+
+    missing = str(tmp_path / "missing.sql")
+    lines, code = aq.run_check_db(missing, environ=DB_ENV, connect=never)
+    assert code == 2 and lines[0].startswith(f"check-db: cannot read {missing}: [Errno 2] No such file or directory")
+    assert lines[1].endswith(f" needs={missing}")
+    path = grants_file(tmp_path, "-- nothing to grant\n")
+    assert aq.run_check_db(path, environ=DB_ENV, connect=never) == (
+        [f"check-db: cannot read {path}: there is no GRANT in it",
+         f"check-db: result=error code=2 ok=0 missing=0 denied=0 account=- database=- needs={path}"], 2)
+
+
+def test_check_db_connects_like_the_service_and_closes_the_connection(tmp_path):
+    connected, server = [], FakeServer()
+    path = grants_file(tmp_path, "GRANT SELECT (a) ON adam.t TO 'adam_analysis'@'%';\n")
+    lines, code = aq.run_check_db(path, environ={**DB_ENV, "DB_TIME_ZONE": "UTC"},
+                                  connect=lambda settings: connected.append(settings) or server)
+    assert code == 0 and lines == ["OK      SELECT (a) ON t", "check-db: result=ok code=0 ok=1 missing=0 denied=0 "
+                                                              f"account=adam_analysis@% database=adam needs={path}"]
+    assert connected == [{"host": "db.example", "port": 3306, "user": "adam_analysis", "password": "adam-test-only",
+                          "database": "adam", "time_zone": "UTC"}]
+    assert server.closed == ["cursor", "connection"]
+
+
+def test_an_error_while_closing_does_not_change_the_result(tmp_path):
+    server = FakeServer()
+
+    def broken_close():
+        raise MysqlError(2013, "Lost connection to MySQL")
+
+    server.close = broken_close
+    path = grants_file(tmp_path, "GRANT DELETE ON adam.t TO 'adam_analysis'@'%';\n")
+    assert aq.run_check_db(path, environ=DB_ENV, connect=lambda settings: server)[1] == 0
+
+
+def test_connection_settings_are_the_service_s(monkeypatch):
+    assert aq.connection_settings(DB_ENV) == {"host": "db.example", "port": 3306, "user": "adam_analysis",
+                                              "password": "adam-test-only", "database": "adam",
+                                              "time_zone": "America/Los_Angeles"}
+    for name, value in {**DB_ENV, "DB_PORT": "13306", "DB_TIME_ZONE": "UTC"}.items():
+        monkeypatch.setenv(name, value)
+    assert aq.connection_settings() == {**aq.connection_settings(DB_ENV), "port": 13306, "time_zone": "UTC"}
+
+
+def test_make_pool_uses_the_same_settings(monkeypatch):
+    from mysql.connector import pooling
+    made = []
+    monkeypatch.setattr(pooling, "MySQLConnectionPool", lambda **kwargs: made.append(kwargs) or "pool")
+    for name, value in DB_ENV.items():
+        monkeypatch.setenv(name, value)
+    for name in ("DB_PORT", "DB_TIME_ZONE"):
+        monkeypatch.delenv(name, raising=False)
+    assert aq.make_pool(size=5) == "pool"
+    assert made == [{"pool_name": "adam-admin", "pool_size": 5, **aq.connection_settings(DB_ENV)}]
+
+
+def test_check_db_has_its_own_autocommit_connection_with_a_timeout(monkeypatch):
+    import mysql.connector
+    calls = []
+    monkeypatch.setattr(mysql.connector, "connect", lambda **kwargs: calls.append(kwargs) or "connection")
+    assert aq.connect_for_check({"host": "db.example"}) == "connection"
+    assert calls == [{"host": "db.example", "autocommit": True, "connection_timeout": aq.CHECK_DB_TIMEOUT_SEC}]
+
+
+def test_the_check_db_command_prints_the_lines_and_exits_with_their_code(monkeypatch, capsys):
+    runs = []
+    monkeypatch.setattr(aq, "run_check_db", lambda path: runs.append(path) or (["OK      SELECT ON t", "check-db: x"], 1))
+    monkeypatch.setattr(aq, "make_pool", lambda: pytest.fail("check-db used the admin pool"))
+    monkeypatch.setenv("ANALYSIS_WAIT_SEC", "99")  # SQS 的設定錯了也不影響：check-db 只看資料庫
+    assert aq.main(["check-db"]) == 1
+    assert aq.main(["check-db", "--grants", "/elsewhere/grants.sql"]) == 1
+    assert runs == [aq.GRANTS_FILE, "/elsewhere/grants.sql"]
+    assert capsys.readouterr().out == "OK      SELECT ON t\ncheck-db: x\n" * 2
+
+
+def test_the_check_db_command_checks_every_grant_of_this_service(monkeypatch, capsys):
+    needs = aq.read_needs()
+    server = FakeServer(columns={need.name: ["x"] for need in needs if need.privilege != "EXECUTE"},
+                        routines={need.name: 3 for need in needs if need.privilege == "EXECUTE"})
+    for name, value in DB_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(aq, "connect_for_check", lambda settings: server)
+    assert aq.main(["check-db"]) == 0
+    assert capsys.readouterr().out.splitlines() == [f"OK      {need}" for need in needs] + [
+        f"check-db: result=ok code=0 ok={len(needs)} missing=0 denied=0 {SUMMARY_TAIL}"]
+    assert server.closed == ["cursor", "connection"]
