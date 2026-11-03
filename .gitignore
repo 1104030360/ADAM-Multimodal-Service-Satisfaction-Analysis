@@ -42,6 +42,8 @@ Thumbs.db
 *.jpeg
 *.heic
 *.bmp
+# 例外：移植版端對端測試用的合成對話（macOS 的 say 產生，不是錄音；services/analyzer/e2e/make_dialogue.py）
+!services/analyzer/e2e/fixtures/dialogue.wav
 # 例外：app 畫面用到的圖片（圖示、開場畫面、登入背景）要進 git，來源與授權見 myapp/src/myapp/images/SOURCES.md
 !myapp/src/myapp/images/**/*.png
 !myapp/src/myapp/images/**/*.jpg
@@ -73,6 +75,8 @@ myapp/pdf/
 *.sql
 # Reviewed test schema only; database dumps and local deployment SQL stay ignored.
 !myapp/tests/fixtures/schema.sql
+# 分析服務的整合測試用的最小權限帳號（只有測試用的密碼）
+!services/*/tests/integration/grants.sql
 *.dump
 backup/
 

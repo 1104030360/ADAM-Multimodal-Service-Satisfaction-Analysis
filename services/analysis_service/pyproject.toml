@@ -1,0 +1,60 @@
+# 第 0 階段假服務的依賴（不含 TensorFlow／DeepFace）；移植版的依賴見 steps/06_analyzer.md 的 6-5。
+# 只在 Docker（Linux、Python 3.12）裡安裝：改了這裡就執行 uv lock，Dockerfile 用 uv sync --locked 照 uv.lock 安裝
+[project]
+name = "adam-analysis-p0"
+version = "0.1.0"
+requires-python = "==3.12.*"
+dependencies = [
+    "Flask==3.1.3",
+    "gunicorn==26.2.0",
+    "boto3==1.43.122",
+    "mysql-connector-python==26.10.0",
+    "numpy==2.5.4",
+    "matplotlib==3.11.2",
+    "opencv-python-headless==5.0.0.93",
+]
+
+[tool.uv]
+# 只為 Linux 解析：x86_64 是 EC2，aarch64 是在 Mac 的 Docker 裡測試
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
+# uv add 新增套件時寫成 ==（和上面一樣釘死版本）。在 Mac 上要加 --no-sync：uv add --no-sync 套件
+add-bounds = "exact"
+
+[dependency-groups]
+# 測試用（單元測試與整合測試；moto 在測試的行程裡模擬 S3 與 SQS（moto[s3] 就包含 SQS），pypdf 讀 PDF 裡的文字）。
+# Dockerfile 會一起裝進映像檔
+dev = [
+    "coverage==7.16.2",
+    "moto[s3]==5.2.5",
+    "pypdf==6.21.4",
+    "pytest==9.2.0",
+    "pytest-cov==7.1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# tests/integration：整合測試彼此 import 的小工具（report_helpers、fake_helpers、共用測試裡的 FakeOllama）
+pythonpath = [".", "tests/integration"]
+# -ra：最後列出 skip、xfail、失敗的原因；no:cacheprovider：容器裡的 /app 不能寫入；
+# importlib：tests/unit/ 和 tests/queue/ 都有 test_analysis_queue.py（SQS 的共用測試，T49），預設的 prepend 會撞名
+addopts = "-ra --strict-markers -p no:cacheprovider --import-mode=importlib"
+markers = [
+    "integration: 需要 MySQL（docker 網路上的拋棄式容器）與 moto 的整合測試",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["app", "worker", "analysis_queue", "reports", "report_model", "report_pdf", "ollama_explain",
+          "service_outcome"]
+data_file = "/tmp/.coverage"  # 容器裡的使用者不能寫 /app
+
+[tool.coverage.report]
+fail_under = 75
+show_missing = true

@@ -32,9 +32,10 @@ loading and isolate the AWS credential files. `--require-integration` makes
 missing test prerequisites fail CI instead of silently skipping the DB tests.
 
 The schema is now committed at `myapp/tests/fixtures/schema.sql`, containing the
-eight tables, stored procedures, and two synthetic placeholder accounts required
+14 tables, stored procedures, and two synthetic placeholder accounts required
 by the tests. It was extracted from the local rebuild schema through migrations
-001–004, without the optional production-user grants. Update this test schema
+001–007, without the optional production-user grants. The analysis services'
+integration and end-to-end tests load the same file. Update this test schema
 alongside future schema changes. It is a test fixture, not a production migration.
 
 To reproduce CI on a Mac:
@@ -66,75 +67,109 @@ connectivity. Add those as separate release or staging checks as they become
 available. The fake analysis service must not publish AI explanations as if
 they came from real model results.
 
-## Should this project have CD?
+## CD for the analysis service (planned)
 
-Use CI now. Introduce continuous delivery for the EC2 analysis service after
-its deployable source and runtime definition are checked into a repository.
-Start with an explicit production release action. Automatic production
-deployment on every push is premature while the real models and packaging
-are still being validated.
+The analysis services are in Git: `services/analyzer/` (the real models,
+deployed to EC2) and `services/analysis_service/` (the fake used by local
+end-to-end tests). Their database, Hugging Face, and Ollama credentials are
+supplied at runtime. The original `service_analyzer/` source contains embedded
+credentials and stays ignored.
 
-| Component | Appropriate delivery flow |
+Status: designed, not implemented yet. Follow-up pull requests add a Linux CI
+job for the service tests, the deploy workflow, the EC2 deploy script, and the
+migration runner. The AWS and GitHub settings they rely on are made by hand
+first.
+
+| Component | Delivery |
 | --- | --- |
-| macOS desktop app | CI first; later build, sign, notarize, and publish a versioned installer on a release tag. Users install it; this is separate from EC2 deployment. |
-| EC2 analysis service | Test a container, publish it to ECR, deploy a tested image digest to staging, then explicitly promote that same digest to production. |
-| RDS | Version migrations separately, test them against disposable MySQL, and apply reviewed forward migrations as a release step. Preserve stored-procedure grants after DROP/CREATE. |
-| S3 | Deliver bucket configuration through infrastructure code. Runtime recordings, charts, transcripts, and reports are application data, not deployment artifacts. |
+| macOS desktop app | CI now; later build, sign, notarize, and publish a versioned installer on a release tag. Users install it; it is not deployed to EC2. |
+| EC2 analysis service | Merging to `main` builds, tests, and deploys the tested image automatically. A manual workflow run deploys any commit, which is also how to roll back. |
+| RDS | Versioned migrations, applied by the same deployment before the service is replaced. Additive migrations run automatically; destructive ones need a manual run. |
+| S3 | Bucket configuration is set up by hand. Recordings, charts, transcripts, and reports are application data, not deployment artifacts. |
 
-The analysis service is currently outside Git (`service_analyzer/` and the
-reference services under `docs/` are ignored). The original source contains
-embedded credentials. Prepare a reviewed service directory or a separate
-service repository with those values removed and configuration supplied at
-runtime before adding a deploy workflow. This desktop CI cannot validate
-untracked server code or make its EC2 deployment reproducible.
-
-Recommended future GitHub Actions delivery flow:
+### Flow
 
 ```text
-Reviewed service commit
-  -> service tests + image build
-  -> ECR image tagged with commit SHA; record immutable image digest
-  -> staging EC2 deployment via Systems Manager
-  -> /healthz + synthetic analyze/report smoke tests with staging RDS/S3
-  -> explicit production promotion of the tested digest
-  -> /healthz + smoke checks; restore previous image if checks fail
+Merge to main that changes the service, migration, or deploy files,
+or a manual "Run workflow" for a chosen commit
+  -> Linux runner: build the service image (cached layers)
+  -> unit + integration tests inside that image (MySQL 8.4, moto)
+  -> push the service and migration images to GitHub Container Registry,
+     tagged with the commit SHA
+  -> GitHub OIDC -> deployment role in AWS (no stored AWS keys)
+  -> write the desired commit to SSM Parameter Store
+  -> instance running: Run Command executes the deploy script; the job
+     prints its log and fails when the script fails
+     instance stopped: not a failure; a systemd unit deploys the desired
+     commit at the next boot
 ```
 
-Use GitHub OIDC to assume a scoped AWS deployment role, restricted to this
-repository and the intended branch or environment. Grant `id-token: write`
-only to deployment jobs. Keep AWS access keys out of GitHub secrets. Let the
-EC2 instance role read the image and runtime configuration from ECR and
-Secrets Manager or Parameter Store. Keep production DB/HF/Ollama credentials
-out of images and test jobs.
+The deploy script runs one at a time on the instance and does nothing when the
+desired commit is already running. Otherwise it pulls both images, applies
+pending migrations, checks that the tables, columns, and grants the new
+version needs exist, keeps the current image as `previous`, and replaces the
+API and worker containers. If `/healthz` does not report `models: ready`
+within 5 minutes, it restarts `previous` and exits non-zero. Queued jobs wait
+in SQS while the worker restarts, and a job in progress is handed back. The
+API stops for a few seconds; a desktop that submits then shows Retry.
 
-For a single EC2 instance, Systems Manager Run Command is a reasonable first
-deployment mechanism: it avoids a GitHub runner needing an inbound SSH rule.
-Track the command until completion and fail the job if the command or health
-checks fail. Serialize production deployments. Account for in-progress
-analysis/report tasks before replacing the container, and keep the previous
-image digest for rollback. A single-instance replacement can interrupt the
-service; use a load balancer and multiple instances when releases must avoid
-downtime. AWS CodePipeline is optional; using AWS services does not require
-moving this GitHub Actions pipeline into AWS.
+### Why GitHub Container Registry
 
-Keep RDS private to the deployment network for migration jobs. Run those jobs
-from within the VPC (for example, a controlled runner or Systems Manager
-command on a managed node), and use a separate migration role/database user.
-Use backward-compatible migrations so an older application image can still
-run after rollback; restoring an image does not undo a database migration.
-Do not run the rebuild/test schema against production. Take an appropriate
-backup before destructive migrations and verify required EXECUTE grants.
+GHCR container storage and transfer are currently free, and public packages
+can be pulled without credentials, so the instance needs no registry token.
+ECR would keep all access in IAM, but storage beyond its free tier is billed
+against the account's credits. Building on the instance would deploy an image
+other than the tested one and compete with the running worker for 2 vCPUs and
+8 GiB of memory. Moving to ECR later changes only where the workflow pushes
+and where the instance pulls.
 
-Configure a GitHub `production` environment and restrict allowed release
-branches/tags. Add required reviewers where the repository plan supports
-them; otherwise keep production promotion as a restricted, explicit manual
-workflow and limit repository write access. Separate staging and production
-roles, EC2 targets, databases, and buckets or data prefixes.
+There is no staging environment: the project runs one instance on the AWS
+Free plan. The safeguards are tests inside the release image, the health
+check with automatic rollback, and backward-compatible migrations.
+
+### Database migrations
+
+- Migrations are versioned in the repository and run from the instance,
+  which already reaches RDS. GitHub never connects to the database.
+- A `tbl_schema_migration` table records each applied file with its SHA-256.
+  The runner applies pending files in order under a MySQL lock, and stops if
+  an applied file has changed.
+- Only additive migrations (new tables, columns, indexes, procedures, grants)
+  run automatically, so the previous image still works after a rollback.
+  A file with destructive statements (`DROP TABLE`, `DROP COLUMN`, renames,
+  column type changes, `TRUNCATE`, `DELETE`/`UPDATE` without `WHERE`) stops
+  the deployment while the old version keeps running. It runs only from a
+  manual workflow run, after an RDS snapshot.
+- A dedicated migration user has schema privileges on the application
+  database only, without `DROP` or user creation. Its password is a Parameter
+  Store SecureString that only the instance role can read.
+- Pull request checks will apply new migrations twice to the previous schema
+  in a disposable MySQL, compare the result with the committed schemas, and
+  flag destructive statements.
+- Automated RDS backups stay enabled for point-in-time restore.
+
+### Access and secrets
+
+- The OIDC trust policy accepts only this repository's `main` branch. Its
+  subject contains the repository name, so renaming the repository requires
+  updating the trust policy.
+- The deployment role can check whether the instance is running, send Run
+  Command to that instance, read the command results, and read and write the
+  desired-commit parameter. Nothing else.
+- Only the deploy job gets `id-token: write`. GitHub stores no AWS access
+  keys; the role ARN, region, and instance ID are repository variables.
+- The service configuration (`analysis.env`, with the database password and
+  Ollama key) stays on the instance. It is never in images, the repository,
+  or test jobs.
+- Deployments are serialized and never cancelled midway. Protect `main`
+  with required pull requests and passing checks, because every merge that
+  changes the service deploys to production.
 
 References:
 
 - [uv in GitHub Actions](https://docs.astral.sh/uv/guides/integration/github/)
 - [GitHub-hosted runner capabilities](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 - [GitHub OIDC with AWS](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws)
-- [GitHub deployment environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)
+- [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
 - [AWS Systems Manager Run Command](https://docs.aws.amazon.com/systems-manager/latest/userguide/run-command.html)
+- [AWS Systems Manager Parameter Store](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-parameter-store.html)
