@@ -2,7 +2,7 @@
 # deploy/tests/run.sh — deploy.sh、install.sh、adam-deploy.service 的測試（CONTRACTS 第 5 節）：
 #   bash deploy/tests/run.sh       （在哪個目錄執行都可以；結束碼 0 才是全部通過）
 # 在 amazonlinux:2023（和 EC2 一樣的發行版）的容器裡，用 fakes/ 的假 docker、aws、curl、df、systemctl 跑 cases.sh 的每一條路，
-# 也用容器裡的 systemd-analyze verify 檢查 unit。本機有 shellcheck 的話，也檢查 deploy/ 底下所有的 .sh。
+# 也用容器裡的 systemd-analyze verify 檢查 unit。shellcheck 不在這裡跑（見檔案最後）。
 # 需要 docker；第一次要網路（建測試用的映像檔時 dnf 要下載 flock、systemd，之後用 build cache）。測試本身不連網（--network none）。
 # 用到的名稱：映像檔 cdc-deploy-test:<pid>、容器 cdC-deploy-test-<pid>，跑完都刪掉。
 # PLATFORM=linux/amd64 可以指定平台（預設是這台機器的；EC2 是 x86_64，GitHub 的 runner 也是）。
@@ -47,10 +47,6 @@ docker run --rm $PLATFORM_ARGS --name "$NAME" --network none -e SHOW -v "$DEPLOY
 wait $!
 rc=$?
 
-if command -v shellcheck >/dev/null 2>&1; then
-    echo "== shellcheck"
-    if shellcheck "$DEPLOY"/*.sh "$HERE"/*.sh "$HERE"/fakes/*.sh; then echo "沒有意見"; else rc=1; fi
-else
-    echo "== 沒有 shellcheck，跳過"
-fi
+# 這裡不跑 shellcheck：Services 的「Shell and workflow checks」用釘住的版本（0.11.0）檢查 git 裡所有的 shell 腳本，deploy/ 也在裡面。
+# 機器上現成的 shellcheck 版本不同，結果就不同（GitHub runner 預裝的舊版會把 trap 叫的函式當成走不到，SC2317）。
 exit "$rc"

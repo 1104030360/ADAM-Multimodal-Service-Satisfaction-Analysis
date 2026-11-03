@@ -316,6 +316,7 @@ bash deploy/tests/run.sh
 - **stdout 會公開**：假的 migration、check-db、`docker logs`、status、aws 的輸出故意帶著 RDS 的主機名、`DB_HOST`、IP、帳號 ID、bucket、
   SQS 的網址、服務編號；每一次跑 `deploy.sh` 都檢查 stdout 一個都沒有（成功、失敗、換回上一版都一樣），幾個情境另外確認 log 檔裡是原樣。
   `--sanitize` 有一張對照表：該換的換成代號、可以公開的照留。
-- 本機有 shellcheck 的話也檢查 `deploy/` 底下所有的 `.sh`。
+- shellcheck 不在這裡跑：PR 的「Shell and workflow checks」用釘住的 0.11.0 檢查所有 shell 腳本（機器上現成的版本不同，結果也不同）。
+  本機要檢查就自己跑 `shellcheck deploy/*.sh deploy/tests/*.sh deploy/tests/fakes/*.sh`。
 - `SHOW='正常部署|runner 回 1' bash deploy/tests/run.sh` 印出名稱符合這個 regex 的情境的輸出；`PLATFORM=linux/amd64` 指定平台。
 - 第一次要網路（建測試用的映像檔時 dnf 要下載 flock、systemd）；容器 `cdC-deploy-test-<pid>`、映像檔 `cdc-deploy-test:<pid>` 跑完都刪掉。
