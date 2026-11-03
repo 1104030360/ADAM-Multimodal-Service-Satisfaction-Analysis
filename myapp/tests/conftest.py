@@ -1,8 +1,8 @@
 """單元測試與整合測試共用的 fixture：隔離環境、Qt 應用程式、假裝置、moto 的 S3、GUI 執行緒不碰網路。"""
 import os
 
-# 這幾行要在 import myapp 之前執行（record_widget.py 等模組一 import 就會呼叫 load_dotenv()）
-os.environ["PYTHON_DOTENV_DISABLED"] = "1"  # 不讀開發者的 .env
+# 這幾行要在 import myapp 之前執行
+os.environ["PYTHON_DOTENV_DISABLED"] = "1"  # config.load() 不讀開發者的 .env（T51；test_config.py 自己打開）
 os.environ["QT_QPA_PLATFORM"] = "offscreen"  # Qt 不開真的視窗
 os.environ["OPENCV_AVFOUNDATION_SKIP_AUTH"] = "1"  # 萬一碰到真的鏡頭，也不跳出授權視窗
 os.environ["ADAM_ANIMATION_SCALE"] = "0"  # 動畫時間全部變 0（UiPrefs.animationScale → Theme），測試不必等動畫

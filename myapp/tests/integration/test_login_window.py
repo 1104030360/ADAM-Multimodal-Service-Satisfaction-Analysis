@@ -4,6 +4,7 @@
 """
 import errno
 import importlib.metadata
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -84,6 +85,55 @@ def test_failed_login_stays_on_login_window(engine, login_form, username, passwo
     assert len(engine.rootObjects()) == 1
 
 
+# ── 找不到設定檔（T51）───────────────────────────────────────────────────────
+
+MISSING_SETTINGS = ("Can't find ADAM's settings. Put the .env file from your administrator in "
+                    "~/Library/Application Support/ADAM/, then try again.")
+
+
+def open_login(engine):
+    controller = MainWindow(engine)
+    engine.load(QUrl.fromLocalFile(str(LOGIN_QML)))
+    return controller, qml(engine.rootObjects()[0], "stackView.currentItem")
+
+
+def test_missing_settings_are_explained_before_and_after_log_in(engine, monkeypatch, no_network_on_gui_thread):
+    """沒有設定檔、也沒有 DB_*（conftest 清掉了）：一打開就說明檔案放在哪裡；按 Log In 不連資料庫，焦點在按鈕上。"""
+    attempts = []
+    monkeypatch.setattr(main, "verify_login", lambda *args: attempts.append(args))
+    controller, form = open_login(engine)
+    assert controller.settingsProblem == MISSING_SETTINGS
+    assert qml(form, "error_message.text") == MISSING_SETTINGS and qml(form, "error_row.visible")
+    submit(form, "placeholder_staff", "CHANGE-ME-staff-0000")
+    assert qml(form, "error_message.text") == MISSING_SETTINGS
+    assert not controller.loggingIn and attempts == []
+    wait_until(lambda: qml(form, "loginButton.activeFocus"))  # 放好檔案之後按 Enter 就重試
+    assert len(engine.rootObjects()) == 1
+    controller.tasks.shutdown()
+
+
+def test_settings_placed_after_start_up_are_read_on_log_in(engine, db, tmp_path, monkeypatch):
+    """app 開著時才把 .env 放進 ~/Library/Application Support/ADAM/：按 Log In 時重新找一次，直接登得進去。"""
+    settings = {name: os.environ[name] for name in ("DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD")}
+    for name in settings:
+        monkeypatch.delenv(name)
+    monkeypatch.setattr(main.config, "_loaded", None)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    controller, form = open_login(engine)
+    assert controller.settingsProblem == MISSING_SETTINGS
+
+    folder = tmp_path / "home" / "Library" / "Application Support" / "ADAM"
+    folder.mkdir(parents=True)
+    (folder / ".env").write_text("".join(f"{name}={value}\n" for name, value in settings.items()))
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED")  # 這個測試要真的讀檔案（環境變數由 db 的 monkeypatch 還原）
+    submit(form, "placeholder_staff", "CHANGE-ME-staff-0000")
+    wait_until(lambda: len(engine.rootObjects()) == 2)
+    assert controller.settingsProblem == "" and engine.rootObjects()[1].title() == "Staff Home"
+    if controller.services.close_db():
+        wait_until(lambda: not controller.tasks.isBusy(CLOSE_DB_KEY))
+    controller.tasks.shutdown()
+
+
 class FakeApplication:
     """main() 會自己建立 QApplication，但一個程式只能有一個（測試已經建好了）。
 
@@ -113,8 +163,8 @@ def test_main_opens_login_window_without_touching_the_database(engine, db, monke
     monkeypatch.setattr(importlib.metadata, "metadata", lambda name: {"Formal-Name": "myapp"})
     monkeypatch.setattr(main, "QtWidgets", SimpleNamespace(QApplication=FakeApplication))
     monkeypatch.setattr(main, "QtQml", SimpleNamespace(QQmlApplicationEngine=lambda: engine))  # 測試結束時一起刪掉
-    dotenv_calls = []
-    monkeypatch.setattr(main, "load_dotenv", lambda: dotenv_calls.append(True))  # 測試不讀 .env
+    settings_loads = []
+    monkeypatch.setattr(main.config, "load", lambda: settings_loads.append(True))  # 測試不讀 .env
     windows, at_load = [], {}
 
     class RecordingMainWindow(MainWindow):  # 留住 main() 建立的物件，測試才看得到
@@ -135,9 +185,9 @@ def test_main_opens_login_window_without_touching_the_database(engine, db, monke
     assert exited.value.code == 0, capsys.readouterr().out
     login_window = engine.rootObjects()[0]
     assert login_window.title() == "Welcome to ADAM" and login_window.isVisible()
-    # 啟動時不連資料庫（UX-01、ENG-02）：舊的共用連線沒有建立，DbLane 也還沒連；.env 由 main() 自己讀
+    # 啟動時不連資料庫（UX-01、ENG-02）：舊的共用連線沒有建立，DbLane 也還沒連；設定檔由 main() 讀一次（T51）
     assert DatabaseConnector._instance is None
-    assert dotenv_calls == [True]
+    assert settings_loads == [True]
 
     [window] = windows
     assert at_load["tasks"] is window.tasks and at_load["notifier"] is window.notifier

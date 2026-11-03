@@ -35,8 +35,6 @@ from myapp.ui_prefs import UiPrefs, open_settings
 from myapp.watcher import POLL_KEY as WATCHER_KEY, AnalysisWatcher, DockAttention
 from .record_widget import FINISHING, SAVE_ROLES, SAVED, QuitGuard, RecordingSaver, RecordWidget
 from .session import ShellSession
-from dotenv import load_dotenv
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 

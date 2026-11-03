@@ -139,6 +139,11 @@ Window {
                 }
 
                 StackView.onActivated: username_textfield.forceActiveFocus() // 一進來就能打帳號
+                // 找不到設定檔、或少了登入要用的變數（T51）：一打開就說明檔案要放在哪裡，不必先按 Log In
+                Component.onCompleted: {
+                    if (mainWindow && mainWindow.settingsProblem !== "")
+                        error_message.text = mainWindow.settingsProblem
+                }
 
                 Connections {
                     target: mainWindow
@@ -163,8 +168,10 @@ Window {
                     }
 
                     function onLoginFailed(reason) {
-                        // 密碼沒錯，不清掉；焦點留在按鈕上，按 Enter 就重試
-                        error_message.text = reason === "offline"
+                        // 密碼沒錯，不清掉；焦點留在按鈕上，按 Enter 就重試（設定檔放好之後也是按一下就重試）
+                        error_message.text = reason === "settings"
+                            ? mainWindow.settingsProblem
+                            : reason === "offline"
                             ? qsTr("Can't connect to the database. Check your network and try again.")
                             : qsTr("Can't log in because of a database problem. Contact your administrator.")
                         loginButton.forceActiveFocus(Qt.TabFocusReason)
