@@ -7,20 +7,24 @@
 #   - GitHub Actions 的 deploy-analyzer.yml 透過 SSM Run Command：
 #       /opt/adam/deploy.sh --retry-failed [--allow-destructive-migrations]
 #   - 開機時 adam-deploy.service（不帶參數）：補上停機期間合併的版本；之前失敗過的版本不再試
+#     （除非 desired-commit 在失敗之後又被寫過一次）
 #
 # 流程：讀 /adam/analyzer/desired-commit → 和 /opt/adam/deployed-commit 一樣就結束
-#   → 事前檢查（analysis.env、模型的資料夾、docker、migrator 的密碼、硬碟）→ 拉兩個映像檔
+#   → 事前檢查（analysis.env、模型的資料夾、docker 和它的 log driver、migrator 的密碼、要整個下載時的硬碟）
+#   → 一律 docker pull 兩個映像檔（拉不到、本機有的話用本機的）
 #   → migration（adam-db-migrations，帳號 adam_migrator）→ check-db（新版要的資料表、欄位、權限都在）
 #   → 現在的映像檔記成 adam-analyzer:previous → worker 先 docker stop（手上的工作交還給佇列）→ 換 API → 起 worker
 #   → 等 /healthz 的 models: ready，而且這次起的每個 worker 自己回報 ready（最多 300 秒）
 #   → 成功：寫 deployed-commit、清掉 failed-commit、印 status、清掉用不到的舊映像檔
 #   → 失敗：用 previous 照原樣重建、再等一次；寫 failed-commit
-# 換版本之前的任何一步失敗，舊的容器完全不動。
+# 換版本之前的任何一步失敗，舊的容器完全不動。整次最多 DEPLOY_BUDGET 秒（含等鎖）：換容器之前要剩 SWITCH_RESERVE 秒，
+# 不然不換（18）；pull、migration、check-db 的逾時也用剩下的時間截。開機的 unit、SSM 給的時間都比預算長，換到一半不會被停掉。
 #
 # 結束碼：0 部署好了或沒有要做的｜10 等不到鎖｜11 事前檢查沒過｜12 拉不到映像檔｜13 有破壞性的 migration 待套用
-#   ｜14 migration 失敗｜15 check-db 沒過｜16 新版沒有 ready、已換回上一版｜17 換回上一版也失敗
-# stdout 精簡（SSM 只拿得到前 24,000 個字元），完整的 append 到 /var/log/adam-deploy.log。最後一行固定是
-#   deploy: result=<字> code=<數字> commit=<sha>
+#   ｜14 migration 失敗｜15 check-db 沒過｜16 新版沒有 ready、已換回上一版｜17 換回上一版也失敗｜18 時間不夠、沒有換版本
+# stdout 會原樣出現在公開 repo 的 GitHub Actions log 裡：只放精簡、可以公開的內容（每一行都經過 public 過濾；
+# 容器的 log、status 不放），SSM 也只拿得到前 24,000 個字元。完整的（不過濾）append 到 /var/log/adam-deploy.log（600、root）。
+# 最後一行固定是 deploy: result=<字> code=<數字> commit=<sha>
 # 設定都有預設值（下面「設定」），可以在 /opt/adam/deploy.conf（bash 語法）蓋掉。
 # =============================================================================
 set -uo pipefail
@@ -28,7 +32,7 @@ umask 022
 # SSM Run Command、systemd 給的環境很少：PATH 可能沒有 /usr/local/bin、HOME 沒設（docker、aws 會抱怨）
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export HOME=/root LC_ALL=C AWS_PAGER=""
-exec 2>&1 </dev/null # 錯誤訊息也走 stdout（SSM 照順序收到）；不會有人打字
+exec 2>&1 # 錯誤訊息也走 stdout（SSM 照順序收到）。只有 say、emit 會過濾，所以指令的輸出一律先存檔（capture），不直接印
 
 # ---------- 設定（/opt/adam/deploy.conf 可以蓋掉）----------
 CONF_FILE=/opt/adam/deploy.conf
@@ -61,7 +65,9 @@ MIGRATE_TIMEOUT=900
 CHECK_DB_TIMEOUT=300
 DOCKER_TIMEOUT=120
 AWS_TIMEOUT=60
-LOG_OPTS=(--log-opt max-size=20m --log-opt max-file=5) # 容器的 log 輪替：json-file 預設不輪替，會一直長
+LOG_OPTS=(--log-opt max-size=20m --log-opt max-file=5) # 容器的 log 輪替：json-file 預設不輪替，會一直長（只在 log driver 是 json-file、local 時加）
+DEPLOY_BUDGET=2700 # 整次最多幾秒（從開始執行、含等鎖）：開機的 unit 給 50 分鐘、SSM 給 3000 秒，都比這個長
+SWITCH_RESERVE=900 # 開始換容器時至少要剩幾秒：停、起容器＋等 ready（HEALTH_TIMEOUT）＋萬一換回上一版再等一次
 STDOUT_BUDGET=14000 # 附在 stdout 的詳細輸出（容器 log、status…）合計最多幾個位元組：SSM 只拿得到前 24,000 個字元，最後一行要在裡面
 
 # 容器的資訊一律用這個格式查（測試的假 docker 也只認這一個）
@@ -73,25 +79,54 @@ READY_RE='"models": *"ready"'
 FINISHED=0 INTERRUPTED=0 XTRACE=0
 DESIRED=none TMPD='' LAST_CAPTURE='' PROBLEM='' LAST_HEALTH='' READY_AFTER=0 REMOVED_COUNT=0 OUT_BYTES=0
 RETRY_FAILED=0 ALLOW_DESTRUCTIVE=0
-ENV_DB_HOST='' ENV_DB_PORT='' ENV_DB_NAME='' MIGRATOR_PASSWORD='' DOCKER_ROOT=/var/lib/docker
+ENV_DB_HOST='' ENV_DB_PORT='' ENV_DB_NAME='' ENV_S3_BUCKET='' ENV_SQS_URL='' MIGRATOR_PASSWORD='' DOCKER_ROOT=/var/lib/docker
+RUN_START_LINE=1 SANITIZE=0 LOG_DRIVER='' DESIRED_MODIFIED=''
 NEW_IMAGE='' MIGRATION_IMAGE='' NEW_ID='' CUR_ID='' PREV_ID='' PREV_COMMIT=unknown
-TO_PULL=() WORKERS=() WORKER_START=() STARTED=()
+NOT_LOCAL=() RUN_LOG_OPTS=() WORKERS=() WORKER_START=() STARTED=()
+
+# stdout 會公開（GitHub Actions 的 log）：這些換成代號。commit SHA、映像檔名稱、資料表和欄位的名稱、結束碼、計數照留。
+# analysis.env 的 DB_HOST、SQS_ANALYSIS_QUEUE_URL、S3_BUCKET 的值在 public() 裡先整串換掉，再套這些（順序有關係）
+PUBLIC_SED=(
+    -e 's#https?://sqs[.][a-z0-9-]+[.]amazonaws[.]com/[0-9]+/[A-Za-z0-9_.-]+#<SQS_URL>#g'
+    -e "s#s3://[^/[:space:]\"'<>]+#s3://<bucket>#g"
+    -e 's#[A-Za-z0-9.-]+[.]s3([.-][a-z0-9-]+)?[.]amazonaws[.]com#<bucket>.s3.amazonaws.com#g'
+    -e 's#adam-media-[A-Za-z0-9.-]*[A-Za-z0-9]#<bucket>#g'
+    -e 's#[A-Za-z0-9.-]+[.]rds[.]amazonaws[.]com#<RDS>#g'
+    -e 's#\b(AKIA|ASIA)[A-Z0-9]{16}\b#<AWS_KEY>#g'
+    -e 's#\bhf_[A-Za-z0-9]{20,}#<HF_TOKEN>#g'
+    -e 's#\b([A-Za-z_]*(PASSWORD|PASSWD|SECRET|TOKEN|API_KEY))=[^[:space:]]+#\1=<secret>#gI'
+    -e 's#\b[0-9]{12}\b#<ACCOUNT>#g'
+    -e 's#\bip-[0-9]{1,3}(-[0-9]{1,3}){3}([.][A-Za-z0-9.-]*[A-Za-z0-9])?#<HOST>#g'
+    -e 's#\b[0-9]{1,3}([.][0-9]{1,3}){3}\b#<IP>#g'
+    -e 's#\bi-[0-9a-f]{8}([0-9a-f]{9})?\b#<INSTANCE>#g'
+    -e 's#\bS[0-9]{14}([^0-9]|$)#<SERVICE_ID>\1#g'
+)
 
 # ---------- 輸出 ----------
+public() { # stdin → stdout：拿掉不該出現在公開的 GitHub Actions log 裡的東西（log 檔不經過這裡，保持完整）
+    local text
+    text=$(cat)
+    # 太短的值（例如 DB_HOST=db）整串換掉會誤傷一般的字：那種情況靠下面的規則
+    if [ "${#ENV_DB_HOST}" -ge 6 ]; then text=${text//"$ENV_DB_HOST"/<DB_HOST>}; fi
+    if [ "${#ENV_SQS_URL}" -ge 6 ]; then text=${text//"$ENV_SQS_URL"/<SQS_URL>}; fi
+    if [ "${#ENV_S3_BUCKET}" -ge 6 ]; then text=${text//"$ENV_S3_BUCKET"/<bucket>}; fi
+    printf '%s\n' "$text" | sed -E "${PUBLIC_SED[@]}"
+}
 stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log() {
     printf '%s %s\n' "$(stamp)" "$*" >>"$LOG_FILE" 2>/dev/null
     return 0
 }
-say() {
-    local line="$*"
-    printf '%s\n' "$line"
-    OUT_BYTES=$((OUT_BYTES + ${#line} + 1)) # LC_ALL=C：${#…} 是位元組數
+say() { # stdout 是過濾過的，log 是原樣
+    local line="$*" safe
+    safe=$(public <<<"$line")
+    printf '%s\n' "$safe"
+    OUT_BYTES=$((OUT_BYTES + ${#safe} + 1)) # LC_ALL=C：${#…} 是位元組數
     log "$line"
 }
-emit() { # emit <檔案>：附在 stdout（縮排）；放不進 STDOUT_BUDGET 就只說在 log 裡（內容已經在 log 裡）
+emit() { # emit <檔案>：過濾之後附在 stdout（縮排）；放不進 STDOUT_BUDGET 就只說在 log 裡（內容已經在 log 裡）
     local text
-    text=$(sed 's/^/    /' "$1" 2>/dev/null)
+    text=$(sed 's/^/    /' "$1" 2>/dev/null | public)
     [ -n "$text" ] || return 0
     if [ $((OUT_BYTES + ${#text} + 1)) -gt "$STDOUT_BUDGET" ]; then
         say "    （這裡還有 $(wc -l <"$1") 行，stdout 放不下，在 $LOG_FILE）"
@@ -104,20 +139,20 @@ show() { # show <檔案> <行數>：附上最後幾行（一行最多 300 位元
     tail -n "$2" "$1" 2>/dev/null | cut -b 1-300 >"$TMPD/show"
     emit "$TMPD/show"
 }
+last_line() { # 最後一行：每個字都是這個腳本決定的（DESIRED 是驗過的 SHA 或 none），不經過過濾，過濾壞了也一定印得出來
+    printf 'deploy: result=%s code=%s commit=%s\n' "$1" "$2" "$DESIRED"
+    log "deploy: result=$1 code=$2 commit=$DESIRED"
+}
 finish() { # finish <結束碼> <result>：印最後一行、結束（鎖跟著 process 一起放掉）
     FINISHED=1
-    say "deploy: result=$2 code=$1 commit=$DESIRED"
+    last_line "$2" "$1"
     exit "$1"
 }
 # shellcheck disable=SC2329 # trap 叫它
 on_exit() {
     local rc=$?
     if [ "$FINISHED" != 1 ]; then
-        if [ "$INTERRUPTED" = 1 ]; then
-            say "deploy: result=interrupted code=$rc commit=$DESIRED"
-        else
-            say "deploy: result=error code=$rc commit=$DESIRED"
-        fi
+        if [ "$INTERRUPTED" = 1 ]; then last_line interrupted "$rc"; else last_line error "$rc"; fi
     fi
     if [ -n "$TMPD" ]; then rm -rf "$TMPD"; fi
 }
@@ -130,6 +165,7 @@ usage() {
 用法：/opt/adam/deploy.sh [--retry-failed] [--allow-destructive-migrations]
   --retry-failed                  desired-commit 之前失敗、換回過上一版（/opt/adam/failed-commit）也照樣再試
   --allow-destructive-migrations  允許有破壞性的 migration（先在 RDS 建 snapshot）
+  --sanitize                      不部署：把 stdin 過濾成可以公開的樣子印出來（貼 log 到 GitHub 之前用）
 說明在 deploy/README.md。
 EOF
 }
@@ -157,12 +193,39 @@ xtrace_restore() { if [ "$XTRACE" = 1 ]; then set -x; fi; } 2>/dev/null
 first_line() { if [ -r "$1" ]; then head -n 1 "$1" | tr -d '[:space:]'; fi; }
 write_state() { printf '%s\n' "$2" >"$1.tmp" && mv -f "$1.tmp" "$1"; }
 
-# analysis.env 有秘密、值可能有特殊字元：不 source，只取要用的三個（和 docker --env-file 一樣，同名的取最後一個）
+# analysis.env 有秘密、值可能有特殊字元：不 source，只取要用的幾個（和 docker --env-file 一樣，同名的取最後一個）
 env_value() { sed -n "s/^[[:space:]]*$1=//p" "$ENV_FILE" | tail -n 1 | tr -d '\r'; }
+load_env_values() { # migration 要的 DB_HOST、DB_PORT、DB_NAME，和 stdout 要換掉的 S3_BUCKET、SQS 的網址（都不是密碼）
+    [ -r "$ENV_FILE" ] || return 0
+    ENV_DB_HOST=$(env_value DB_HOST)
+    ENV_DB_PORT=$(env_value DB_PORT)
+    ENV_DB_NAME=$(env_value DB_NAME)
+    ENV_S3_BUCKET=$(env_value S3_BUCKET)
+    ENV_SQS_URL=$(env_value SQS_ANALYSIS_QUEUE_URL)
+}
 
-read_param() { # read_param <名稱> [decrypt]：印出值；0 讀到、3 不存在、1 其他錯誤（訊息在 $TMPD/aws.err，也進 log）
-    local args=(ssm get-parameter --region "$REGION" --name "$1" --query Parameter.Value --output text) rc
-    if [ "${2:-}" = decrypt ]; then args+=(--with-decryption); fi
+health_summary() { # /healthz 的 JSON → 只留公開也沒關係的計數（models、workers、queue_depth）
+    local body=$1 out='' k re
+    if [ -z "$body" ]; then
+        printf '（連不上）'
+        return
+    fi
+    re='"models": *"([a-z]+)"'
+    if [[ $body =~ $re ]]; then out="models=${BASH_REMATCH[1]}"; fi
+    for k in loading ready busy failed; do
+        re="\"$k\": *([0-9]+)"
+        if [[ $body =~ $re ]]; then out+=" $k=${BASH_REMATCH[1]}"; fi
+    done
+    re='"queue_depth": *([0-9]+)'
+    if [[ $body =~ $re ]]; then out+=" queue_depth=${BASH_REMATCH[1]}"; fi
+    printf '%s' "${out:-（看不懂的回應）}"
+}
+
+log_hint() { printf 'sudo tail -n +%s %s' "$RUN_START_LINE" "$LOG_FILE"; } # 這一次的完整紀錄
+
+read_param() { # read_param <名稱> <query> [decrypt]：印出結果；0 讀到、3 不存在、1 其他錯誤（訊息在 $TMPD/aws.err，也進 log）
+    local args=(ssm get-parameter --region "$REGION" --name "$1" --query "$2" --output text) rc
+    if [ "${3:-}" = decrypt ]; then args+=(--with-decryption); fi
     timeout "$AWS_TIMEOUT" aws "${args[@]}" 2>"$TMPD/aws.err"
     rc=$?
     if [ "$rc" = 0 ]; then return 0; fi
@@ -197,7 +260,7 @@ inspect_containers() { dk inspect -f "$INSPECT_FMT" "$@" | sed 's|^/||'; }
 
 managed_names() { # 現在的 API 和 worker 容器（不管有沒有在跑）：API 在最前面，worker 照編號排
     local all
-    all=$(dk ps -a --format '{{.Names}}') || return 1
+    all=$(dk ps -a --format '{{.Names}}' 2>>"$LOG_FILE") || return 1 # docker 的錯誤只進 log（stdout 只走 say、emit）
     printf '%s\n' "$all" | grep -xF "$API_NAME"
     printf '%s\n' "$all" | grep -E "^${WORKER_PREFIX}[A-Za-z0-9_.-]+\$" | sort -V
     return 0
@@ -215,6 +278,20 @@ free_gb() { # docker 的資料夾所在的硬碟還剩幾 GB
     local dir=$DOCKER_ROOT
     [ -d "$dir" ] || dir=/
     df -Pk "$dir" 2>/dev/null | awk 'NR == 2 { print int($4 / 1048576) }'
+}
+
+# ---------- 時間預算 ----------
+time_left() { echo $((DEPLOY_BUDGET - SWITCH_RESERVE - SECONDS)); } # 開始換容器之前還能用幾秒（SECONDS 從開始執行起算）
+cap_time() { # cap_time <秒數>：不超過換容器之前剩下的時間，至少 1（timeout 0 是不限時，不能給）
+    local left
+    left=$(time_left)
+    if [ "$left" -lt "$1" ]; then echo $((left > 1 ? left : 1)); else echo "$1"; fi
+}
+need_time() { # need_time <要做的事>：換容器之前的時間用完了就停（18），舊版照常跑
+    if [ "$(time_left)" -le 0 ]; then
+        say "時間不夠了：整次最多 $DEPLOY_BUDGET 秒（含等鎖），換容器要留 $SWITCH_RESERVE 秒，已經用了 $SECONDS 秒；不$1，舊版照常跑"
+        finish 18 out-of-time
+    fi
 }
 
 remove_old_images() { # remove_old_images <要留的映像檔 ID…>：只清這個腳本自己拉的兩個 repo（手動建的 adam-analyzer:1、:2 不碰）
@@ -237,9 +314,10 @@ remove_old_images() { # remove_old_images <要留的映像檔 ID…>：只清這
 
 # ---------- 設定、鎖、log ----------
 load_config() {
+    local err
     if [ -e "$CONF_FILE" ]; then
-        if ! bash -n "$CONF_FILE"; then
-            say "$CONF_FILE 的語法有錯"
+        if ! err=$(bash -n "$CONF_FILE" 2>&1); then
+            say "$CONF_FILE 的語法有錯：$err"
             return 1
         fi
         # shellcheck source=/dev/null
@@ -248,12 +326,17 @@ load_config() {
     HEALTH_URL=${HEALTH_URL:-http://127.0.0.1:$API_PORT/healthz}
     local v
     for v in LOG_MAX_BYTES LOCK_WAIT API_PORT HEALTH_TIMEOUT HEALTH_INTERVAL MAX_RESTARTS MIN_FREE_GB PULL_TIMEOUT \
-        PULL_RETRY_DELAY MIGRATE_TIMEOUT CHECK_DB_TIMEOUT DOCKER_TIMEOUT AWS_TIMEOUT STDOUT_BUDGET; do
+        PULL_RETRY_DELAY MIGRATE_TIMEOUT CHECK_DB_TIMEOUT DOCKER_TIMEOUT AWS_TIMEOUT STDOUT_BUDGET DEPLOY_BUDGET \
+        SWITCH_RESERVE; do
         if [[ ! ${!v} =~ ^[0-9]+$ ]]; then
             say "$CONF_FILE：$v 要是整數（現在是「${!v}」）"
             return 1
         fi
     done
+    if [ "$DEPLOY_BUDGET" -le "$SWITCH_RESERVE" ]; then
+        say "$CONF_FILE：DEPLOY_BUDGET（$DEPLOY_BUDGET）要比 SWITCH_RESERVE（$SWITCH_RESERVE）大"
+        return 1
+    fi
 }
 
 take_lock() {
@@ -261,8 +344,10 @@ take_lock() {
         say "開不了鎖的檔案 $LOCK_FILE"
         finish 11 precheck-failed
     fi
-    if ! flock -w "$LOCK_WAIT" 9; then
-        say "另一個 deploy.sh 在跑（$LOCK_FILE），等了 $LOCK_WAIT 秒還沒結束；舊版照常跑"
+    local secs
+    secs=$(cap_time "$LOCK_WAIT") # 等鎖也算在預算裡
+    if ! flock -w "$secs" 9; then
+        say "另一個 deploy.sh 在跑（$LOCK_FILE），等了 $secs 秒還沒結束；舊版照常跑"
         finish 10 locked
     fi
 }
@@ -271,15 +356,15 @@ rotate_log() {
     local size
     size=$(stat -c %s "$LOG_FILE" 2>/dev/null) || return 0
     if [ "$size" -gt "$LOG_MAX_BYTES" ]; then
-        mv -f "$LOG_FILE" "$LOG_FILE.1"
-        install -m 640 /dev/null "$LOG_FILE"
+        mv -f "$LOG_FILE" "$LOG_FILE.1" 2>/dev/null
+        install -m 600 /dev/null "$LOG_FILE" 2>/dev/null
     fi
 }
 
 # ---------- 換版本之前（失敗時舊的容器完全不動）----------
-read_desired() {
-    local value rc
-    value=$(read_param "$DESIRED_PARAM")
+read_desired() { # 值和最後寫入的時間一起讀（開機時要判斷「失敗之後是不是又被寫過」）
+    local out value modified rc
+    out=$(read_param "$DESIRED_PARAM" '[Parameter.Value, Parameter.LastModifiedDate]')
     rc=$?
     case $rc in
     0) ;;
@@ -293,17 +378,32 @@ read_desired() {
         finish 11 precheck-failed
         ;;
     esac
-    if [[ ! $value =~ ^[0-9a-f]{40}$ ]]; then
+    read -r value modified <<<"$out" # text 輸出：值<tab>時間（ISO 8601）
+    if [[ ! ${value:-} =~ ^[0-9a-f]{40}$ ]]; then
         say "$DESIRED_PARAM 不是 40 個字元的小寫 commit SHA：「${value:0:80}」"
         finish 11 precheck-failed
     fi
     DESIRED=$value
+    DESIRED_MODIFIED=${modified:-}
+}
+
+rewritten_after_failure() { # desired-commit 比 failed-commit 新：失敗之後又被要求部署一次（例如修好之後、停機時 Run workflow）
+    local param file
+    file=$(stat -c %Y "$FAILED_FILE" 2>/dev/null) || file=''
+    param=''
+    if [ -n "$DESIRED_MODIFIED" ]; then param=$(date -d "$DESIRED_MODIFIED" +%s 2>/dev/null) || param=''; fi
+    if [ -z "$param" ] || [ -z "$file" ]; then
+        log "看不出 desired-commit 什麼時候寫的（「$DESIRED_MODIFIED」）或 failed-commit 的時間：照原本的規則跳過"
+        return 1
+    fi
+    log "desired-commit 寫入：$DESIRED_MODIFIED（$param）；failed-commit：$file"
+    [ "$param" -gt "$file" ]
 }
 
 read_password() { # migrator 的密碼只放在變數裡，交給 docker run -e DB_PASSWORD（不在 argv、log 裡，set -x 也印不出來）
     local rc empty=0
     xtrace_off
-    MIGRATOR_PASSWORD=$(read_param "$PASSWORD_PARAM" decrypt)
+    MIGRATOR_PASSWORD=$(read_param "$PASSWORD_PARAM" Parameter.Value decrypt)
     rc=$?
     [ -n "$MIGRATOR_PASSWORD" ] || empty=1
     xtrace_restore
@@ -321,7 +421,7 @@ read_password() { # migrator 的密碼只放在變數裡，交給 docker run -e 
     return 1
 }
 
-check_disk() { # 拉映像檔之前：不夠就先清掉這個腳本拉過、現在用不到的，還是不夠就停
+check_disk() { # 要整個下載映像檔之前：不夠就先清掉這個腳本拉過、現在用不到的，還是不夠就停
     local free keep=()
     free=$(free_gb)
     if [ -n "$free" ] && [ "$free" -lt "$MIN_FREE_GB" ]; then
@@ -351,9 +451,7 @@ precheck() {
         say "找不到 $ENV_FILE（分析服務的設定）：先在 EC2 上跑 deploy/install.sh"
         return 1
     fi
-    ENV_DB_HOST=$(env_value DB_HOST)
-    ENV_DB_PORT=$(env_value DB_PORT)
-    ENV_DB_NAME=$(env_value DB_NAME)
+    load_env_values
     ENV_DB_PORT=${ENV_DB_PORT:-3306}
     if [ -z "$ENV_DB_HOST" ] || [ -z "$ENV_DB_NAME" ]; then
         say "$ENV_FILE 裡沒有 DB_HOST 或 DB_NAME"
@@ -363,41 +461,52 @@ precheck() {
         say "找不到模型的資料夾 $MODELS_DIR"
         return 1
     fi
-    if ! DOCKER_ROOT=$(dk info --format '{{.DockerRootDir}}' 2>"$TMPD/docker.err"); then
+    local info
+    if ! info=$(dk info --format '{{.LoggingDriver}} {{.DockerRootDir}}' 2>"$TMPD/docker.err"); then
         say "docker 沒在跑："
         show "$TMPD/docker.err" 5
         return 1
     fi
+    read -r LOG_DRIVER DOCKER_ROOT <<<"$info"
     DOCKER_ROOT=${DOCKER_ROOT:-/var/lib/docker}
+    case $LOG_DRIVER in # --log-opt max-size 只有 json-file、local 認得；其他的 driver，docker run 會拒絕（新版、換回去都建不起來）
+    json-file | local) RUN_LOG_OPTS=("${LOG_OPTS[@]}") ;;
+    *)
+        RUN_LOG_OPTS=()
+        log "docker 的預設 log driver 是「${LOG_DRIVER:-?}」：這次的容器不加 LOG_OPTS（--log-opt 只有 json-file、local 認得）"
+        ;;
+    esac
     read_password || return 1
     NEW_IMAGE=$ANALYZER_REPO:$DESIRED
     MIGRATION_IMAGE=$MIGRATIONS_REPO:$DESIRED
-    TO_PULL=()
+    NOT_LOCAL=()
     for ref in "$NEW_IMAGE" "$MIGRATION_IMAGE"; do
-        image_id "$ref" >/dev/null || TO_PULL+=("$ref")
+        image_id "$ref" >/dev/null || NOT_LOCAL+=("$ref")
     done
-    if [ "${#TO_PULL[@]}" -gt 0 ]; then check_disk || return 1; fi
+    if [ "${#NOT_LOCAL[@]}" -gt 0 ]; then check_disk || return 1; fi # 只有要整個下載時才看硬碟
     return 0
 }
 
-pull_images() { # commit 的 tag 不會變：本機已經有的就不拉（GHCR 連不上時也能換回舊的 commit）
-    local ref i
+pull_images() { # 一律 docker pull：GHCR 上同一個 tag 可能重建過（沒變時只拿 manifest，很快）。拉不到、本機有的就用本機的
+    local ref i local_copy
     for ref in "$NEW_IMAGE" "$MIGRATION_IMAGE"; do
-        case " ${TO_PULL[*]} " in
-        *" $ref "*) ;;
-        *)
-            say "   已經有 $ref"
-            continue
-            ;;
-        esac
+        local_copy=1
+        case " ${NOT_LOCAL[*]} " in *" $ref "*) local_copy=0 ;; esac
         for i in 1 2 3; do
-            if capture pull timeout "$PULL_TIMEOUT" docker pull -q "$ref"; then
+            need_time "拉映像檔"
+            if capture pull timeout "$(cap_time "$PULL_TIMEOUT")" docker pull -q "$ref"; then
                 say "   $ref"
                 continue 2
             fi
+            need_time "拉映像檔（拉 $ref 的時候時間用完了）"
             grep -qiE 'manifest unknown|not found|denied|unauthorized' "$TMPD/pull" && break
             if [ "$i" -lt 3 ]; then sleep "$PULL_RETRY_DELAY"; fi
         done
+        if [ "$local_copy" = 1 ]; then
+            say "   注意：拉不到 $ref，用本機已經有的那一份（GHCR 上的可能不一樣）："
+            show "$TMPD/pull" 3
+            continue
+        fi
         say "拉不到 $ref（GHCR 的套件要是 Public、這個 tag 要存在）；舊版照常跑："
         show "$TMPD/pull" 10
         return 1
@@ -410,7 +519,7 @@ run_migrations() { # 結束碼照 runner（services/db）：0 好了、3 有破�
     dk rm -f adam-deploy-migrate >/dev/null 2>&1
     xtrace_off
     DB_HOST=$ENV_DB_HOST DB_PORT=$ENV_DB_PORT DB_NAME=$ENV_DB_NAME DB_USER=$MIGRATOR_USER DB_PASSWORD=$MIGRATOR_PASSWORD \
-        capture migrate timeout "$MIGRATE_TIMEOUT" docker run --rm --name adam-deploy-migrate \
+        capture migrate timeout "$(cap_time "$MIGRATE_TIMEOUT")" docker run --rm --name adam-deploy-migrate \
         -e DB_HOST -e DB_PORT -e DB_NAME -e DB_USER -e DB_PASSWORD "$MIGRATION_IMAGE" "${args[@]}"
     rc=$?
     MIGRATOR_PASSWORD=
@@ -422,7 +531,7 @@ run_migrations() { # 結束碼照 runner（services/db）：0 好了、3 有破�
 check_db() { # 用分析服務自己的帳號（analysis.env）、新的映像檔，只讀
     local rc
     dk rm -f adam-deploy-check-db >/dev/null 2>&1
-    capture check-db timeout "$CHECK_DB_TIMEOUT" docker run --rm --name adam-deploy-check-db --env-file "$ENV_FILE" \
+    capture check-db timeout "$(cap_time "$CHECK_DB_TIMEOUT")" docker run --rm --name adam-deploy-check-db --env-file "$ENV_FILE" \
         "$NEW_IMAGE" python -m analysis_queue check-db
     rc=$?
     dk rm -f adam-deploy-check-db >/dev/null 2>&1
@@ -436,7 +545,7 @@ plan() { # 照現在的容器決定要建哪些：API＋原本的每個 worker�
     WORKERS=() WORKER_START=() CUR_ID=
     if [ -n "$list" ]; then
         mapfile -t names <<<"$list"
-        out=$(inspect_containers "${names[@]}") || return 1
+        out=$(inspect_containers "${names[@]}" 2>>"$LOG_FILE") || return 1
         while read -r name image status _; do
             [ -n "$name" ] || continue
             [ -n "$CUR_ID" ] || CUR_ID=$image # API 排在最前面：有 API 用 API 的映像檔，沒有就用第一個 worker 的
@@ -498,13 +607,13 @@ start_version() { # start_version <映像檔> <commit>：拿掉現在的容器�
     STARTED=()
     remove_managed || return 1
     capture run-api dk run -d --name "$API_NAME" --restart unless-stopped --env-file "$ENV_FILE" -p "$API_PORT:5000" \
-        --label "adam.commit=$commit" "${LOG_OPTS[@]}" "$image" || return 1
+        --label "adam.commit=$commit" "${RUN_LOG_OPTS[@]}" "$image" || return 1
     for i in "${!WORKERS[@]}"; do
         name=${WORKERS[$i]}
         args=(--name "$name" --hostname "$name" --restart unless-stopped
             --stop-timeout 30 --env-file "$ENV_FILE" -v "$MODELS_DIR:/models:ro"
             --health-cmd "python -m analysis_queue alive" --health-interval 60s --health-start-period 300s
-            --label "adam.commit=$commit" "${LOG_OPTS[@]}" "$image" python worker.py)
+            --label "adam.commit=$commit" "${RUN_LOG_OPTS[@]}" "$image" python worker.py)
         if [ "${WORKER_START[$i]}" = 1 ]; then
             capture "run-$name" dk run -d "${args[@]}" || return 1
             STARTED+=("$name")
@@ -570,27 +679,21 @@ wait_ready() {
     done
 }
 
-diagnose() { # 失敗時附上 /healthz 和容器 log 的最後幾行（完整的在 log）
-    local c health=${LAST_HEALTH:-（連不上）}
-    say "   /healthz：${health:0:500}"
+diagnose() { # 失敗時：stdout 只有 /healthz 的計數；容器的 log（服務編號、S3 的 key、Ollama 的回應…）只寫進 log 檔
+    local c
+    say "   /healthz：$(health_summary "$LAST_HEALTH")"
     for c in "$API_NAME" "${STARTED[@]}"; do
-        capture "logs-$c" dk logs --tail 25 "$c"
-        say "   --- docker logs --tail 25 $c"
-        show "$TMPD/logs-$c" 25
+        capture "logs-$c" dk logs --tail 50 "$c"
     done
+    say "   容器的 log（每個最後 50 行）只寫在 EC2 的 $LOG_FILE：$(log_hint)"
 }
 
 succeed() {
     write_state "$DEPLOYED_FILE" "$DESIRED"
     rm -f "$FAILED_FILE"
-    say "== ready（$READY_AFTER 秒）"
-    if capture status dk exec "$API_NAME" python -m analysis_queue status; then
-        say "--- python -m analysis_queue status"
-        head -n 60 "$TMPD/status" >"$TMPD/status.head"
-        emit "$TMPD/status.head"
-    else
-        say "   （python -m analysis_queue status 失敗，見 $LOG_FILE）"
-    fi
+    say "== ready（$READY_AFTER 秒）：$(health_summary "$LAST_HEALTH")"
+    # status 有服務編號、失敗工作的錯誤訊息（S3 的 key、Ollama 的回應）：只寫進 log 檔
+    capture status dk exec "$API_NAME" python -m analysis_queue status
     remove_old_images "$NEW_ID" "$PREV_ID"
     if [ "$REMOVED_COUNT" -gt 0 ]; then say "== 清掉 $REMOVED_COUNT 個用不到的舊映像檔"; fi
     finish 0 deployed
@@ -607,7 +710,8 @@ rollback() {
         say "換回上一版也失敗：容器建不起來"
         show "$TMPD/$LAST_CAPTURE" 10
     elif wait_ready; then
-        say "== 上一版 ready（$READY_AFTER 秒）。$DESIRED 記在 $FAILED_FILE：開機時不再試，GitHub 的部署（--retry-failed）會再試"
+        say "== 上一版 ready（$READY_AFTER 秒）：$(health_summary "$LAST_HEALTH")"
+        say "   $DESIRED 記在 $FAILED_FILE：開機時不再試，GitHub 的部署（--retry-failed）會再試"
         finish 16 rolled-back
     else
         say "換回上一版也失敗：$PROBLEM"
@@ -623,6 +727,7 @@ main() {
         case $arg in
         --retry-failed) RETRY_FAILED=1 ;;
         --allow-destructive-migrations) ALLOW_DESTRUCTIVE=1 ;;
+        --sanitize) SANITIZE=1 ;;
         -h | --help)
             usage
             FINISHED=1
@@ -631,12 +736,22 @@ main() {
         *) bad=$arg ;;
         esac
     done
+    if [ "$SANITIZE" = 1 ]; then # 不部署、不加鎖：stdin 過濾之後印出來（讀得到 analysis.env 時連它的值一起換掉）
+        load_config >/dev/null
+        load_env_values
+        public
+        FINISHED=1
+        exit 0
+    fi
+    exec </dev/null # 不會有人打字；docker、aws 不要等 stdin
     load_config || finish 11 precheck-failed
+    load_env_values # 越早越好：之後印到 stdout 的都換得掉
     if [ "$(id -u)" != 0 ]; then
         say "要用 root 執行（sudo /opt/adam/deploy.sh）"
         finish 11 precheck-failed
     fi
-    [ -e "$LOG_FILE" ] || install -m 640 /dev/null "$LOG_FILE" 2>/dev/null
+    [ -e "$LOG_FILE" ] || install -m 600 /dev/null "$LOG_FILE" 2>/dev/null
+    chmod 600 "$LOG_FILE" "$LOG_FILE.1" 2>/dev/null # 完整、不過濾的紀錄：只有 root 讀得到
     if ! TMPD=$(mktemp -d -t adam-deploy.XXXXXX); then
         TMPD=
         say "建不了暫存資料夾"
@@ -650,6 +765,7 @@ main() {
 
     take_lock
     rotate_log
+    RUN_START_LINE=$(($(wc -l <"$LOG_FILE" 2>/dev/null || echo 0) + 1))
     log "==== deploy.sh 開始（pid $$；參數：${*:-無}；sha256 $(sha256sum "$0" 2>/dev/null | cut -c 1-12)）"
     read_desired
     deployed=$(first_line "$DEPLOYED_FILE")
@@ -659,9 +775,13 @@ main() {
     fi
     failed=$(first_line "$FAILED_FILE")
     if [ "$DESIRED" = "$failed" ] && [ "$RETRY_FAILED" != 1 ]; then
-        say "這一版之前部署失敗、已經換回過上一版（$FAILED_FILE），開機時不再試。"
-        say "要再試：GitHub 重新執行 Deploy analyzer，或 sudo /opt/adam/deploy.sh --retry-failed"
-        finish 0 skipped-failed
+        if rewritten_after_failure; then
+            say "這一版之前部署失敗過，但 desired-commit 在那之後又被寫過一次（$DESIRED_MODIFIED）：照樣再試"
+        else
+            say "這一版之前部署失敗、已經換回過上一版（$FAILED_FILE），開機時不再試。"
+            say "要再試：GitHub 重新執行 Deploy analyzer，或 sudo /opt/adam/deploy.sh --retry-failed"
+            finish 0 skipped-failed
+        fi
     fi
     say "== 部署 $DESIRED（目前：${deployed:-沒有記錄}）"
 
@@ -669,9 +789,13 @@ main() {
     say "== 拉映像檔"
     pull_images || finish 12 pull-failed
 
+    need_time "跑 migration"
     if [ "$ALLOW_DESTRUCTIVE" = 1 ]; then say "== migration（允許破壞性的）"; else say "== migration"; fi
     run_migrations
     rc=$?
+    if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then # migration 都可以重跑：被時間預算中斷的，下一次會接著做
+        need_time "換版本（migration 跑到一半時間用完了，被中斷；下一次部署會接著做）"
+    fi
     case $rc in
     0) say "   $(tail -n 1 "$TMPD/migrate")" ;;
     3)
@@ -687,16 +811,19 @@ main() {
         ;;
     esac
 
+    need_time "跑 check-db"
     say "== check-db"
     if check_db; then
         say "   $(tail -n 1 "$TMPD/check-db")"
     else
+        need_time "換版本（check-db 跑到一半時間用完了）"
         say "check-db 沒過（新版要的資料表、欄位、權限不全），舊版照常跑："
         grep -v '^OK' "$TMPD/check-db" >"$TMPD/check-db.bad"
         show "$TMPD/check-db.bad" 40
         finish 15 check-db-failed
     fi
 
+    need_time "換版本"
     if ! plan; then
         say "讀不到現在的容器（docker ps、inspect 失敗），舊版照常跑"
         finish 11 precheck-failed

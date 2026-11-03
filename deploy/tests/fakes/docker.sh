@@ -15,6 +15,10 @@
 #   FAKE_PULL_FAIL=<regex>    符合的 ref 拉不到（manifest unknown）
 #   FAKE_PULL_FLAKY=<n>       前 n 次 pull 失敗（網路逾時），之後成功
 #   FAKE_RUN_FAIL=<regex>     用符合的映像檔 run -d／create 失敗（port 被占用）
+#   FAKE_LOG_DRIVER=json-file docker 的預設 log driver；json-file、local 以外的，run／create 帶 --log-opt 會被拒絕
+#   FAKE_PULL_SLEEP=<秒>      pull 要花這麼久（測時間預算）
+#   FAKE_PULL_NEW_DIGEST=1    GHCR 上同一個 tag 重建過：pull 之後 tag 指到另一個映像檔
+#   FAKE_MIGRATE_SLEEP=<秒>   migration 要花這麼久（測時間預算）
 #   FAKE_NEW_BEHAVIOR=good    pull 下來的 adam-analyzer 的行為：
 #                               good     worker 第 1 次問 loading，之後 ready
 #                               never    worker 一直 loading
@@ -28,6 +32,9 @@
 #   FAKE_STOP_KILLS=1         docker stop 時 worker 30 秒內沒停下來（137）：沒登記 stopped，db 留著它最後的狀態
 #   FAKE_IMAGE_KB=6291456     有 $FAKE_DIR/df-avail-kb 時，pull、刪掉一個映像檔，假 df 的剩餘空間跟著減、加
 #   FAKE_LOG_LINES=<n>        docker logs 每個容器有 n 行、一行 400 個字（預設 2 行短的）
+#   FAKE_MIGRATE_LINES=<n>    migration 失敗時多印 n 行、一行 400 個字
+# 輸出裡故意帶著不能公開的東西（RDS 的主機名、DB_HOST、IP、帳號 ID、bucket、SQS 的網址、服務編號、EC2 的主機名），
+# 測試確認 deploy.sh 的 stdout 一個都沒有、log 檔裡都在
 # 準備狀態用的子指令（不記進 calls.log）：_fake-image <ref> <behavior>、_fake-tag <新的 ref> <已有的 ref>、
 #   _fake-container <名字> <ref> <api|worker> <running|exited|created>
 set -uo pipefail
@@ -118,7 +125,7 @@ fake_container() { # <名字> <ref> <role> <status>
 # ---------- 子指令 ----------
 do_pull() {
     [ $# = 2 ] && [ "$1" = -q ] || unsupported pull "$@"
-    local ref=$2 n behavior=''
+    local ref=$2 n behavior='' id
     if [ -n "${FAKE_PULL_FAIL:-}" ] && [[ $ref =~ $FAKE_PULL_FAIL ]]; then
         echo "Error response from daemon: manifest unknown" >&2
         exit 1
@@ -129,9 +136,17 @@ do_pull() {
         echo "error pulling image configuration: download failed after attempts=6: dial tcp 140.82.112.33:443: i/o timeout" >&2
         exit 1
     fi
+    if [ -n "${FAKE_PULL_SLEEP:-}" ]; then sleep "$FAKE_PULL_SLEEP"; fi
     if [[ $ref == */adam-analyzer:* ]]; then behavior=${FAKE_NEW_BEHAVIOR:-good}; fi
-    fake_image "$ref" "$behavior"
-    df_add $((-${FAKE_IMAGE_KB:-6291456}))
+    if [ "${FAKE_PULL_NEW_DIGEST:-0}" = 1 ]; then # 同一個 tag、另一個映像檔
+        id=$(new_id "$ref@rebuilt")
+        mkdir -p "$F/images/$id"
+        echo "$behavior" >"$F/images/$id/behavior"
+        set_tag "$ref" "$id"
+    elif [ -z "$(resolve "$ref")" ]; then # 本機沒有：整個下載
+        fake_image "$ref" "$behavior"
+        df_add $((-${FAKE_IMAGE_KB:-6291456}))
+    fi # 本機有、沒變：只拿 manifest
     echo "$ref"
 }
 
@@ -280,8 +295,15 @@ run_job() { # --rm 的一次性容器：migration 的 runner、check-db
             done
         } >"$F/migrate-env"
         rc=${FAKE_MIGRATE_RC:-0}
+        if [ -n "${FAKE_MIGRATE_SLEEP:-}" ]; then sleep "$FAKE_MIGRATE_SLEEP"; fi
+        echo "migrate: connected to ${DB_HOST:-?}:${DB_PORT:-?} as '${DB_USER:-?}'@'172.31.5.10' (ip-172-31-5-10.ec2.internal)"
         echo "migrate: baseline 001-007 recorded earlier"
         if [ "$rc" = 3 ]; then echo "migrate: pending 008_drop_old_column.sql is destructive (DROP COLUMN)"; fi
+        if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
+            echo "ERROR 1045 (28000): Access denied for user 'adam_migrator'@'172.31.5.10' (using password: YES)"
+            echo "ERROR 2003 (HY000): Can't connect to MySQL server on 'adam-db.cluster-ro-c1a2b3c4d5e6.us-east-1.rds.amazonaws.com:3306' (110)"
+            for i in $(seq 1 "${FAKE_MIGRATE_LINES:-0}"); do printf 'migrate: detail %s %400s\n' "$i" '' | tr ' ' y; done
+        fi
         if [ "$rc" = 0 ]; then echo "migrate: result=up-to-date code=0"; else echo "migrate: result=failed code=$rc"; fi
         exit "$rc"
     fi
@@ -289,9 +311,10 @@ run_job() { # --rm 的一次性容器：migration 的 runner、check-db
         echo "OK      table tbl_analysis_job"
         if [ "${FAKE_CHECKDB_RC:-0}" != 0 ]; then
             echo "MISSING column tbl_service.service_outcome"
-            echo "check-db: 1 missing"
+            echo "DENIED  table tbl_analysis_outbox: INSERT command denied to user 'adam_analysis'@'172.31.40.7' on adam-db.c1a2b3c4d5e6.us-east-1.rds.amazonaws.com"
+            echo "check-db: 1 missing, 1 denied"
         else
-            echo "check-db: 42 OK"
+            echo "check-db: 42 OK as 'adam_analysis'@'172.31.40.7'"
         fi
         exit "${FAKE_CHECKDB_RC:-0}"
     fi
@@ -327,7 +350,17 @@ do_run() { # run -d／run --rm／create
             JOB_ENVS+=("$2")
             shift
             ;;
-        --restart | --env-file | -p | -v | --health-cmd | --health-interval | --health-start-period | --stop-timeout | --log-opt) shift ;;
+        --log-opt)
+            case ${FAKE_LOG_DRIVER:-json-file} in
+            json-file | local) ;;
+            *)
+                echo "docker: Error response from daemon: unknown log opt '${2%%=*}' for ${FAKE_LOG_DRIVER} log driver." >&2
+                exit 125
+                ;;
+            esac
+            shift
+            ;;
+        --restart | --env-file | -p | -v | --health-cmd | --health-interval | --health-start-period | --stop-timeout) shift ;;
         -*) unsupported "$verb option $1" ;;
         *)
             image=$1
@@ -430,7 +463,9 @@ do_exec() {
             exit 1
         fi
         printf '{\n  "models": "ready",\n  "workers": {"loading": 0, "ready": 1, "busy": 0, "failed": 0}\n}\n\n'
-        printf 'workers (seen in the last day):\n  fake-status-marker\n'
+        printf 'workers (seen in the last day):\n  fake-status-marker adam-analysis-worker-1:1 ready\n\n'
+        printf 'jobs (queued, running, failed in the last 7 days):\n'
+        printf '  S20261101203243 failed   attempt 3/3 no lease   idle 5 min  NoSuchKey: s3://adam-media-123456789012-us-east-1/charts/x.png\n'
         exit 0
     fi
     unsupported exec "$n" "$@"
@@ -462,7 +497,7 @@ _fake-tag)
 _fake-container) fake_container "$@" ;;
 info)
     case $* in
-    "--format {{.DockerRootDir}}") echo /var/lib/docker ;;
+    "--format {{.LoggingDriver}} {{.DockerRootDir}}") echo "${FAKE_LOG_DRIVER:-json-file} /var/lib/docker" ;;
     "--format {{.ServerVersion}}") echo 25.0.8 ;;
     *) unsupported info "$@" ;;
     esac
@@ -498,7 +533,8 @@ logs)
         pad=$(printf '%400s' '' | tr ' ' x)
         for i in $(seq 1 "$((FAKE_LOG_LINES < $2 ? FAKE_LOG_LINES : $2))"); do printf 'fake log line %s of %s %s\n' "$i" "$3" "$pad"; done
     else
-        printf 'fake log line 1 of %s\nfake log line 2 of %s\n' "$3" "$3"
+        printf 'fake log line 1 of %s: job S20261101203243 start: s3://adam-media-123456789012-us-east-1/video/S20261101203243_cam0.avi\n' "$3"
+        printf 'fake log line 2 of %s: outbox sent to https://sqs.us-east-1.amazonaws.com/123456789012/adam-analysis from 172.31.5.10\n' "$3"
     fi
     ;;
 *) unsupported "$cmd" "$@" ;;

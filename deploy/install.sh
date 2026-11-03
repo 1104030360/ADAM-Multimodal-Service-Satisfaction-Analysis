@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# install.sh — 在 EC2 上裝部署腳本（deploy/README.md 的「第一次安裝」）。可以重跑。
+# install.sh — 在 EC2 上裝部署腳本（deploy/README.md 的「第一次部署」第 4 步）。可以重跑。
 #   sudo bash install.sh        （deploy.sh、adam-deploy.service、install.sh 放在同一個資料夾）
 # 做的事：
 #   1. 檢查需要的指令（docker、aws、curl、flock、systemctl、timeout）、docker 和 SSM agent 在跑
@@ -77,16 +77,31 @@ install -m 644 "$SRC_DIR/adam-deploy.service" "$UNIT_FILE" || die "裝不了 $UN
 echo "   /opt/adam/deploy.sh、$UNIT_FILE"
 
 echo "== 3. analysis.env"
+# 搬到 /opt/adam 之後，原位置留一個指向它的符號連結：docs 裡手動換容器的指令（sudo docker run --env-file
+# ~/analyzer/analysis.env）照樣能用。docker 的 CLI 以 root 讀它；不加 sudo 讀不到（檔案是 600、root）
+link_old() {
+    if [ -L "$OLD_ENV_FILE" ] || [ -e "$OLD_ENV_FILE" ] || [ ! -d "$(dirname "$OLD_ENV_FILE")" ]; then return 0; fi
+    if ln -s "$ENV_FILE" "$OLD_ENV_FILE"; then
+        echo "   $OLD_ENV_FILE 是指向 $ENV_FILE 的符號連結（sudo docker run --env-file 照樣讀得到）"
+    else
+        warn "在 $OLD_ENV_FILE 留不了符號連結"
+    fi
+}
 if [ -f "$ENV_FILE" ]; then
     chown root:root "$ENV_FILE" && chmod 600 "$ENV_FILE"
     echo "   $ENV_FILE 已經有了，不蓋掉（權限 600、root）"
-    if [ -e "$OLD_ENV_FILE" ]; then
-        warn "舊的 $OLD_ENV_FILE 還在（沒有用了）：確認 $ENV_FILE 是對的之後刪掉它（sudo rm $OLD_ENV_FILE）"
+    if [ -L "$OLD_ENV_FILE" ]; then
+        : # 之前留的符號連結
+    elif [ -e "$OLD_ENV_FILE" ]; then
+        warn "舊的 $OLD_ENV_FILE 還在，而且是一般的檔案：確認 $ENV_FILE 是對的之後刪掉它（sudo rm $OLD_ENV_FILE），再跑一次 install.sh 換成符號連結"
+    else
+        link_old
     fi
-elif [ -f "$OLD_ENV_FILE" ]; then
+elif [ -f "$OLD_ENV_FILE" ] && [ ! -L "$OLD_ENV_FILE" ]; then
     if install -m 600 -o root -g root "$OLD_ENV_FILE" "$ENV_FILE.new" && mv -f "$ENV_FILE.new" "$ENV_FILE"; then
         rm -f "$OLD_ENV_FILE"
         echo "   $OLD_ENV_FILE 搬到 $ENV_FILE（600、root）"
+        link_old
     else
         rm -f "$ENV_FILE.new"
         die "搬不了 $OLD_ENV_FILE"
@@ -143,7 +158,9 @@ cat <<EOF
   2. 看結果：sudo tail -n 80 /var/log/adam-deploy.log、cat /opt/adam/deployed-commit、
      sudo docker exec adam-analysis python -m analysis_queue status
   3. 之後每次開機會自己補上停機期間合併的版本（上一次的結果：systemctl status adam-deploy、journalctl -u adam-deploy）。
-  4. 從現在起容器由 deploy.sh 換：不要再照 sqs/DEPLOY.md 手動 docker run；analysis.env 在 $ENV_FILE（sudo 才能讀寫）。
+  4. 從現在起容器由 deploy.sh 換：不要再照 sqs/DEPLOY.md 手動 docker run。analysis.env 在 $ENV_FILE（sudo 才能讀寫）；
+     $OLD_ENV_FILE 是指向它的符號連結，緊急時手動的 sudo docker run --env-file 照樣能用。
+  開機時補部署跑的是這台現在的 /opt/adam/deploy.sh（上一次 workflow 或這個 install.sh 裝的），不是 desired-commit 那個 commit 的。
   5. 第一次部署成功之後，可以刪掉手動建的舊映像檔省硬碟（deploy/README.md 的「硬碟」）。
   adam-deploy.service 改了要再跑一次這個 install.sh。
 EOF

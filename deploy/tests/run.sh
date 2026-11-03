@@ -6,7 +6,7 @@
 # 需要 docker；第一次要網路（建測試用的映像檔時 dnf 要下載 flock、systemd，之後用 build cache）。測試本身不連網（--network none）。
 # 用到的名稱：映像檔 cdc-deploy-test:<pid>、容器 cdC-deploy-test-<pid>，跑完都刪掉。
 # PLATFORM=linux/amd64 可以指定平台（預設是這台機器的；EC2 是 x86_64，GitHub 的 runner 也是）。
-# SHOW=<情境名稱的一部分> 印出那些情境裡 deploy.sh、install.sh 的輸出（例如 SHOW=正常部署）。
+# SHOW=<regex> 印出名稱符合的情境裡 deploy.sh、install.sh 的輸出（例如 SHOW='正常部署|runner 回 1'）。
 # 這個檔案在 Mac 上用 macOS 內建的 bash 3.2 跑：不要用 mapfile、關聯陣列、set -u 下的空陣列。
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)

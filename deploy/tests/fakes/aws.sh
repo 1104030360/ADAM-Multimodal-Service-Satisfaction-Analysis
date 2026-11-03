@@ -3,6 +3,8 @@
 #   FAKE_DESIRED      /adam/analyzer/desired-commit 的值（空的 = 不存在）
 #   FAKE_PASSWORD     /adam/db/migrator-password 的值（空的 = 不存在；沒有 --with-decryption 只給密文）
 #   FAKE_AWS_FAIL=1   每一次都 AccessDenied
+#   FAKE_DESIRED_MODIFIED     desired-commit 的 LastModifiedDate（預設 2026-01-01，比測試裡的 failed-commit 舊）
+#   FAKE_AWS_SLEEP_DESIRED=<秒> 讀 desired-commit 要花這麼久（測時間預算）
 # calls.log 只記參數（密碼不會在參數裡）。
 set -uo pipefail
 F=${FAKE_DIR:-/tmp/fake}
@@ -44,7 +46,10 @@ if [ "${FAKE_AWS_FAIL:-0}" = 1 ]; then
     exit 254
 fi
 case $name in
-/adam/analyzer/desired-commit) value=${FAKE_DESIRED-} ;;
+/adam/analyzer/desired-commit)
+    value=${FAKE_DESIRED-}
+    if [ -n "${FAKE_AWS_SLEEP_DESIRED:-}" ]; then sleep "$FAKE_AWS_SLEEP_DESIRED"; fi
+    ;;
 /adam/db/migrator-password)
     value=${FAKE_PASSWORD-}
     if [ -n "$value" ] && [ "$decrypt" = 0 ]; then value=AQICAHhfakeciphertext; fi
@@ -58,6 +63,9 @@ fi
 # shellcheck disable=SC2016 # 反引號是 JMESPath 的數字
 case $query in
 Parameter.Value) printf '%s\n' "$value" ;;
+'[Parameter.Value, Parameter.LastModifiedDate]') # text 輸出：tab 隔開
+    printf '%s\t%s\n' "$value" "${FAKE_DESIRED_MODIFIED:-2026-01-01T00:00:00.000000+00:00}"
+    ;;
 Parameter.Name) printf '%s\n' "$name" ;;
 'length(Parameter.Value) > `0`') echo True ;;
 *)
