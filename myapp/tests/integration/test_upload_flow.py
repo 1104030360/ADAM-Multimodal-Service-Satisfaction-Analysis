@@ -151,6 +151,12 @@ def job_of(finder, recording):
     return finder.saver.job(recording.service_id)
 
 
+def first_file_uploaded(job):
+    """第 1 個檔案傳完、停在第 2 個（被 gate 擋住）。送出上傳時狀態就是 UPLOADING，sizes 要等背景的工作開始才寫好：
+    慢的電腦上先算到這裡，sizes 還是空的。"""
+    return job.state == UPLOADING and bool(job.sizes) and job.done == job.sizes[0]
+
+
 def shown_toasts(window):
     """ToastHost 畫出來的每一則：標題、內文（含進度的數字）、動作按鈕的字。"""
     host = window.findChild(QObject, "toastHost")
@@ -179,7 +185,7 @@ def test_upload_progress_updates_one_toast_in_place_then_saves_with_analyze(staf
     recording = record(recorder, started=lambda sid: gate.hold(f"video/{sid}_cam1.avi"))
     sid = recording.service_id
     job = job_of(finder, recording)
-    wait_until(lambda: job.state == UPLOADING and job.done == job.sizes[0])  # 第 1 個檔案傳完、停在第 2 個
+    wait_until(lambda: first_file_uploaded(job))  # 第 1 個檔案傳完、停在第 2 個
     [toast] = toasts(services.notifier)
     assert (toast["severity"], toast["title"], toast["detail"]) == ("progress", f"Uploading {sid}", "File 2 of 3")
     wait_until(lambda: shown_toasts(window) and "File 2 of 3" in shown_toasts(window)[0]["bodyText"])
@@ -363,7 +369,7 @@ def test_quit_while_uploading_asks_first_from_exit_close_and_cmd_q(engine, staff
     recording = record(recorder, started=lambda sid: gate.hold(f"video/{sid}_cam1.avi"))
     sid = recording.service_id
     job = job_of(finder, recording)
-    wait_until(lambda: job.state == UPLOADING and job.done == job.sizes[0])
+    wait_until(lambda: first_file_uploaded(job))
     dialog = quit_dialog(window)
 
     qml(window, "exitButton.click()")  # 側邊欄的 Quit
@@ -414,7 +420,7 @@ def test_log_out_while_uploading_asks_with_the_upload_warning(engine, staff, ser
     recording = record(recorder, started=lambda sid: gate.hold(f"video/{sid}_cam1.avi"))
     sid = recording.service_id
     job = job_of(finder, recording)
-    wait_until(lambda: job.state == UPLOADING and job.done == job.sizes[0])
+    wait_until(lambda: first_file_uploaded(job))
     dialog = quit_dialog(window)
     cancel, confirm = dialog.findChild(QObject, "cancelButton"), dialog.findChild(QObject, "confirmButton")
 
@@ -554,7 +560,7 @@ def test_quitting_mid_upload_is_offered_at_the_next_login(staff, services, db, s
     recording = record(finder.recorder, started=lambda sid: gate.hold(f"video/{sid}_cam1.avi"))
     sid = recording.service_id
     job = job_of(finder, recording)
-    wait_until(lambda: job.state == UPLOADING and job.done == job.sizes[0])  # 第 1 個檔案傳完、停在第 2 個
+    wait_until(lambda: first_file_uploaded(job))  # 第 1 個檔案傳完、停在第 2 個
     finder.allowQuit()  # Quit Anyway（對話框在 test_quit_while_uploading_asks_first_from_exit_close_and_cmd_q）
 
     home, window, services = relaunch(services)  # aboutToQuit 的 tasks.shutdown() 取消上傳；再登入一次

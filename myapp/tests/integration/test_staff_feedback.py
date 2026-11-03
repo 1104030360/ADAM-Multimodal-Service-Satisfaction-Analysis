@@ -422,8 +422,10 @@ def test_service_tiles_and_the_open_button_lead_to_the_analysis_page(engine, ser
     assert qml(tile, "interactive && Accessible.role === Accessible.Button")
     assert qml(tile, "Accessible.name") == "Not analyzed 1, Review"
     assert qml(tile, "Qt.colorEqual(iconFill, Theme.warningOnLight)")  # 有還沒送出的：橘色的待辦方塊
-    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, center_of(tile))
-    assert services.tasks.isBusy(ANALYSIS_KEY)  # launch 沒查分析清單：換頁時在背景查
+    # 按方塊就送出查詢；mouseClick() 會處理事件，查得快的話結果在這時候就回來了。查詢先排在後面，才一定看得到
+    with db_lane_held(services.tasks):
+        QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, center_of(tile))
+        assert services.tasks.isBusy(ANALYSIS_KEY)  # launch 沒查分析清單：換頁時在背景查
     wait_until(lambda: qml(window, "currentPage") == "analysis.qml")
     wait_until(lambda: not services.tasks.isBusy(ANALYSIS_KEY))
     assert [row["serviceId"] for row in home.serviceModel.notAnalyzedModel.rows()] == ["S20261030120000"]
@@ -518,8 +520,10 @@ def test_search_shows_an_empty_state_for_the_range(engine, services, db, no_netw
     end = find(page, "endDateField")
     end.setProperty("text", "2026-10-29")
     end.forceActiveFocus()
-    QTest.keyClick(window, Qt.Key.Key_Return)  # 在日期欄按 Enter 就查
-    assert qml(page, "searchButton.busy")
+    # keyClick() 送完按鍵會處理事件：查得快的話，結果在這時候就回來了。查詢先排在後面，才一定看得到忙碌
+    with db_lane_held(services.tasks):
+        QTest.keyClick(window, Qt.Key.Key_Return)  # 在日期欄按 Enter 就查
+        assert qml(page, "searchButton.busy")
     wait_until(lambda: not services.tasks.isBusy(SEARCH_KEY))
     empty = find(page, "searchEmpty")
     assert empty.isVisible() and not find(page, "resultList").isVisible()
