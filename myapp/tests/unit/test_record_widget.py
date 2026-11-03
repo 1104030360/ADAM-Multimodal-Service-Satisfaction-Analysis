@@ -160,10 +160,16 @@ def restart(services):
         new.tasks.shutdown()
 
 
-def record(widget, frames=3, chunks=3):
-    """錄一段：開始 → 等假鏡頭、假麥克風把資料給完 → 停止。回傳這一段的 Recording。"""
+def record(widget, frames=3, chunks=3, started=None):
+    """錄一段：開始 → 等假鏡頭、假麥克風把資料給完 → 停止。回傳這一段的 Recording。
+
+    started(sid) 在開始之後、停止之前呼叫：要擋住上傳的測試在這裡擋。停止的那一刻就開始上傳，
+    停止之後才擋的話，慢的 runner 上那個檔案可能已經傳完了（和 test_upload_flow.py 的 record() 一樣）。
+    """
     widget.start_recording()
     recording = widget.current
+    if started is not None:
+        started(recording.service_id)
     try:
         wait_until(lambda: recording.frames_written >= frames and recording.audio_chunks >= chunks)
     finally:
@@ -253,8 +259,7 @@ def test_stop_does_not_wait_for_the_files_on_the_gui_thread(widget, saver, monke
 
 
 def test_a_new_recording_can_start_while_the_previous_one_uploads(widget, saver, uploads, services):
-    first = record(widget)
-    uploads.hold(f"video/{first.service_id}_cam1.avi")
+    first = record(widget, started=lambda sid: uploads.hold(f"video/{sid}_cam1.avi"))
     wait_until(lambda: saver.job(first.service_id).file_number == 2)
     second = record(widget)  # 第一段還在傳第 2 個檔案
     assert second.service_id != first.service_id
@@ -269,9 +274,8 @@ def test_a_new_recording_can_start_while_the_previous_one_uploads(widget, saver,
 
 
 def test_progress_updates_the_status_bar_and_one_toast_in_place(widget, saver, uploads, services):
-    recording = record(widget)
+    recording = record(widget, started=lambda sid: uploads.hold(f"video/{sid}_cam1.avi"))
     sid = recording.service_id
-    uploads.hold(f"video/{sid}_cam1.avi")
     job = saver.job(sid)
     wait_until(lambda: job.file_number == 2 and job.done > job.sizes[0])
     toast = only_toast(services.notifier)  # 還是同一則：進度就地更新，不會疊兩則
