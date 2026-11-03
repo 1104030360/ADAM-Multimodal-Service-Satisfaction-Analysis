@@ -10,6 +10,8 @@
 
 PYTHON_DOTENV_DISABLED（測試設的）是 python-dotenv 的開關：設了就不讀任何檔案，只看環境變數。
 登入要用的變數（LOGIN_SETTINGS）少了時，problem() 是登入畫面上的說明：檔案要放在哪裡、少了哪幾個。
+登入時設定不完整會再讀一次：上一次從檔案設進來的變數換成檔案現在的值（例如原本 DB_NAME= 是空的、剛補上），
+外面設好的環境變數照樣不動。
 """
 import logging
 import os
@@ -26,6 +28,7 @@ LOGIN_SETTINGS = ("DB_HOST", "DB_NAME", "DB_USER")  # 少了就登不進去（DB
 _DISABLED = {"1", "true", "t", "yes", "y"}  # 和 python-dotenv 判斷 PYTHON_DOTENV_DISABLED 的值一樣
 
 _loaded = None  # 讀過的那一份（Path）；還沒讀到任何一份是 None
+_from_file = set()  # 上一次從檔案設進環境變數的名稱：再讀一次時先拿掉，換成檔案現在的值
 
 
 def _tr(text, *values):
@@ -66,13 +69,19 @@ def disabled():
 
 
 def load():
-    """main() 啟動時呼叫；登入時設定不完整也會再呼叫一次（使用者可能剛把檔案放好）。回傳這次讀的檔案或 None。"""
-    global _loaded
+    """main() 啟動時呼叫；登入時設定不完整也會再呼叫一次（使用者可能剛把檔案放好、剛改好）。回傳這次讀的檔案或 None。"""
+    global _loaded, _from_file
     if disabled():
         return None
     path = find_file()
     if path is not None:
+        # override=False 不會蓋掉已經在環境變數裡的值，包括上一次從檔案放進來的（例如空的 DB_NAME=）：
+        # 只拿掉自己放的，外面設好的照樣優先
+        for name in _from_file:
+            os.environ.pop(name, None)
+        before = set(os.environ)
         load_dotenv(path, override=False)
+        _from_file = set(os.environ) - before
         _loaded = path
         logger.info("settings loaded from %s", display_path(path))
     return path

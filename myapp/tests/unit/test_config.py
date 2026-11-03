@@ -16,6 +16,7 @@ def environment(monkeypatch, tmp_path):
     monkeypatch.delenv("PYTHON_DOTENV_DISABLED")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setattr(config, "_loaded", None)
+    monkeypatch.setattr(config, "_from_file", set())
     monkeypatch.setattr(config, "__file__", str(tmp_path / "repo" / "myapp" / "src" / "myapp" / "config.py"))
     for name in ("DB_HOST", "DB_NAME", "DB_USER", "DB_PASSWORD", "ONLY_IN_SOURCE"):
         monkeypatch.delenv(name, raising=False)
@@ -74,6 +75,33 @@ def test_a_packaged_app_does_not_look_around_the_bundle(tmp_path, monkeypatch):
     write(user_file(tmp_path), COMPLETE)  # 放好之後再找一次（登入畫面按 Log In）
     assert config.load() == user_file(tmp_path)
     assert config.problem() == ""
+
+
+def test_a_file_fixed_after_start_up_is_read_again(tmp_path):
+    """檔案裡原本是 DB_NAME=（空的）：補上之後按 Log In 再讀一次，要換成新的值，不必重開 app。"""
+    write(user_file(tmp_path), "DB_HOST=db.example\nDB_NAME=\nDB_USER=adam_app\n")
+    config.load()
+    assert config.missing() == ["DB_NAME"]
+    write(user_file(tmp_path), COMPLETE)
+    config.load()
+    assert os.environ["DB_NAME"] == "adam" and config.problem() == ""
+
+
+def test_reloading_keeps_variables_set_outside_the_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_HOST", "set-by-launchctl")
+    write(user_file(tmp_path), COMPLETE)
+    config.load()
+    write(user_file(tmp_path), COMPLETE.replace("db.example", "changed.example"))
+    config.load()
+    assert os.environ["DB_HOST"] == "set-by-launchctl"
+
+
+def test_a_setting_removed_from_the_file_is_dropped_on_reload(tmp_path):
+    write(user_file(tmp_path), COMPLETE)
+    config.load()
+    write(user_file(tmp_path), COMPLETE.replace("DB_PASSWORD=pw\n", ""))
+    config.load()
+    assert "DB_PASSWORD" not in os.environ and os.environ["DB_NAME"] == "adam"
 
 
 def test_nothing_is_read_when_dotenv_is_disabled(tmp_path, monkeypatch):
