@@ -212,6 +212,9 @@ def theme(window, token):
 def toasts(window):
     """ListView 已經建立的 toast，依模型順序（第 0 列＝最新）。"""
     view = find(window, "toastList")
+    # ListView 一個 frame 才處理一次模型的變動：count 已經是新的，itemAtIndex 可能還是舊的 delegate。
+    # forceLayout() 讓它先跟上（Qt 文件的 ListView.forceLayout），再讀。
+    qml(view, "forceLayout()")
     return [qml(view, f"itemAtIndex({i})") for i in range(qml(view, "count"))]
 
 
@@ -309,6 +312,18 @@ def test_toast_auto_dismisses_after_its_timeout_but_sticky_toasts_stay(harness):
     remaining = toasts(window)[0]
     assert remaining.property("toastId") == sticky
     assert not find(remaining, "lifeTimer").property("running")
+
+
+def test_toasts_reads_the_list_after_it_caught_up_with_the_model(harness):
+    # 2026-11-03 CI 上面那個測試 assert 2 == 1：count 一移除就變，ListView 的 delegate 要到下一個 frame 才跟上，
+    # 中間 itemAtIndex(0) 還是被移除的那一則。這裡移除之後不處理事件就讀，每次都會碰到那個空檔。
+    notifier = FakeNotifier()
+    window = harness.load(TOAST_HOST, notifier=notifier)
+    older = notifier.push("error", "Older", timeoutMs=0)
+    newer = notifier.push("error", "Newer", timeoutMs=0)
+    wait_until(lambda: [toast and toast.property("toastId") for toast in toasts(window)] == [newer, older])
+    notifier.dismiss(newer)
+    assert [toast.property("toastId") for toast in toasts(window)] == [older]
 
 
 def test_toast_timer_pauses_on_hover_focus_and_inactive_window(harness):
