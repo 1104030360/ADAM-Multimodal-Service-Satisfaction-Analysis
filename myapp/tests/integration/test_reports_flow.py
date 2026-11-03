@@ -313,6 +313,7 @@ def test_a_failed_request_marks_the_row_failed_and_retry_makes_a_new_row(ui, ser
     assert report_rows(db)[0][3] == "failed"  # 舊的留著（R5）
     wait_until(lambda: home.reportsModel.selectedId == second[0])
     assert [row["reportId"] for row in home.reportsModel.listModel.rows()] == [second[0]]  # 清單只有最新的一筆
+    wait_until(lambda: len(analysis_service.requests) == 2)  # 選好新的一列之後才送 POST（_created）
     assert [body["report_id"] for path, body in analysis_service.requests] == [first[0], second[0]]
 
     # 全公司報表：好了也不能發佈（服務人員看不到）
