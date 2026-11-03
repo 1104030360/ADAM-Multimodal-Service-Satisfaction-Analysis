@@ -31,7 +31,7 @@ APP_ENV_VARS = [
     "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD", "DB_SSL_CA",
     "S3_BUCKET", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE", "AWS_ENDPOINT_URL",
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
-    "ANALYZE_API_URL", "REPORTS_API_URL", "GOOGLE_APPLICATION_CREDENTIALS",
+    "ANALYZE_API_URL", "REPORTS_API_URL", "GOOGLE_APPLICATION_CREDENTIALS", "RECORDINGS_DIR",
 ]
 
 
@@ -81,7 +81,8 @@ def isolated_app(monkeypatch, tmp_path):
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     monkeypatch.setenv("LOCAL_MEDIA_DIR", str(tmp_path / "media"))  # 下載的影片與圖表
     monkeypatch.setenv("LOCAL_CHARTS_DIR", str(tmp_path / "charts"))
-    monkeypatch.chdir(tmp_path)  # 錄影檔寫在「目前目錄」的 video/、audio/
+    monkeypatch.setenv("RECORDINGS_DIR", str(tmp_path))  # 錄影檔寫在這裡的 video/、audio/（app 預設 ~/Movies/ADAM）
+    monkeypatch.chdir(tmp_path)  # 寫相對路徑的程式（以前的錄影）也不會寫進原始碼資料夾
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / "settings"))
 
     # 共用的資料庫連線和 S3 client 都會被記住；每個測試前後都清掉

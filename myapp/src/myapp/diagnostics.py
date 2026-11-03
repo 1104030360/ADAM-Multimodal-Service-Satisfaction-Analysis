@@ -470,8 +470,8 @@ class HelpCenter(QObject):
 
     @staticmethod
     def _places():
-        """看剩餘空間的地方：錄影（目前目錄的 video/）和下載快取（第一個快取資料夾）。"""
-        return {"recordings": local_storage.recording_dirs()[0], "cache": media.download_cache_dirs()[0]}
+        """看剩餘空間、也顯示在畫面上的地方：錄影的資料夾（T51）和下載快取（第一個快取資料夾）。"""
+        return {"recordings": local_storage.recordings_dir(), "cache": media.download_cache_dirs()[0]}
 
     @Property("QVariantMap", constant=True)
     def about(self):

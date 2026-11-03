@@ -436,6 +436,15 @@ SettingsSection {
                 value: help.storage ? help.storage.cacheText : ""
             }
 
+            // 錄影不在下載快取裡（T51）：寫出它在哪裡，預設 ~/Movies/ADAM
+            InfoRow {
+                objectName: "recordingsFolder"
+                width: parent.width
+                labelWidth: help.labelWidth
+                label: qsTr("Recordings folder")
+                value: help.storage ? help.storage.recordingsFolder : ""
+            }
+
             Repeater {
                 model: help.storage ? help.storage.disks : []
 

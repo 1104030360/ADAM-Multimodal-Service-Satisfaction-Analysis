@@ -4,8 +4,9 @@
 clear_folders()。三個地方（大小、Quit、Clear Download Cache）看的是同一份資料夾清單：media.download_cache_dirs()。
 
 - 下載快取只放雲端有原檔、隨時能重新下載的東西（影片、圖表、報表頁面圖；之後的帳號照片、報表 PDF）。
-- 不能清：錄影（目前目錄的 video/、audio/，briefcase dev 時是家目錄）、還沒存完的錄影（pending_saves 記的檔案）、
-  雲端的資料。快取資料夾設定錯了（例如 LOCAL_MEDIA_DIR 指到家目錄，裡面有 video/）時，那個資料夾整個不清，回報失敗。
+- 不能清：錄影（recordings_dir() 底下的 video/、audio/，預設 ~/Movies/ADAM，T51；以前寫在目前目錄，
+  briefcase dev 時是 ~/video、~/audio，也照樣保護）、還沒存完的錄影（pending_saves 記的絕對路徑）、雲端的資料。
+  快取資料夾設定錯了（例如 LOCAL_MEDIA_DIR 指到錄影的資料夾、家目錄）時，那個資料夾整個不清，回報失敗。
 - 掃描大小、清除都在 io lane：不在 GUI 執行緒遞迴讀檔案。保護清單（QSettings）在 GUI 執行緒讀好再交給工作。
 - 正在用快取的工作（下載、畫 PDF 頁面）還在跑時不清：看 TaskRunner 的 key 前綴（CACHE_TASK_PREFIXES）。
 """
@@ -19,6 +20,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QCoreApplication, Property, QObject, Signal, Slot
 
+from myapp import config
 from myapp.notifications import user_message
 from myapp.pending_saves import GROUP as PENDING_GROUP, PendingSave
 from myapp.ui_prefs import open_settings
@@ -31,7 +33,11 @@ CLEAR_KEY = "storage:clear"
 # 帳號照片的下載、處理、上傳（avatar:…、account:self:photo:…，T36）、報表 PDF 的下載（reports:download，T37；
 # 報表的其他 key 是資料庫的查詢，不算）。新的快取下載加進來時，把它的前綴加在這裡
 CACHE_TASK_PREFIXES = ("media:", "pdf:", "avatar:", "account:self:photo:", "reports:download")
-RECORDING_FOLDERS = ("video", "audio")  # 錄影寫在「目前目錄」底下的這兩個資料夾（record_widget.Recording）
+RECORDING_FOLDERS = ("video", "audio")  # 錄影寫在 recordings_dir() 底下的這兩個資料夾（record_widget.Recording）
+# 錄影的資料夾（T51）：從 Finder 打開的 app 目前目錄是 /，寫不進去，所以改成固定的地方；.env 的 RECORDINGS_DIR 可以改
+DEFAULT_RECORDINGS_DIR = os.path.join("~", "Movies", "ADAM")
+# T51 之前錄影寫在目前目錄：briefcase dev 從家目錄啟動，所以是這兩個。上傳過的檔案可能還在，清快取時照樣保護
+LEGACY_RECORDING_DIRS = (os.path.join("~", "video"), os.path.join("~", "audio"))
 
 IDLE, LOADING, READY, ERROR = "idle", "loading", "ready", "error"  # CacheStorage.state
 
@@ -66,9 +72,14 @@ class Protected:
     files: frozenset = frozenset()
 
 
+def recordings_dir():
+    """錄影的資料夾（絕對路徑）：RECORDINGS_DIR（可以用 ~），沒有設定是 ~/Movies/ADAM。"""
+    return os.path.abspath(os.path.expanduser(os.getenv("RECORDINGS_DIR") or DEFAULT_RECORDINGS_DIR))
+
+
 def recording_dirs():
-    """錄影的資料夾：目前目錄的 video/、audio/（絕對路徑）。"""
-    return [os.path.abspath(name) for name in RECORDING_FOLDERS]
+    """錄影的檔案所在的 video/、audio/（絕對路徑）。"""
+    return [os.path.join(recordings_dir(), name) for name in RECORDING_FOLDERS]
 
 
 def pending_files(settings=None):
@@ -91,7 +102,7 @@ def pending_files(settings=None):
 def protected_locations(settings=None):
     """在 GUI 執行緒呼叫（QSettings 只在 GUI 執行緒讀寫，pending_saves.py）。"""
     home = os.path.expanduser("~")
-    dirs = [*recording_dirs(), home]
+    dirs = [*recording_dirs(), *(os.path.expanduser(path) for path in LEGACY_RECORDING_DIRS), home]
     return Protected(tuple(os.path.realpath(path) for path in dirs),
                      frozenset(os.path.realpath(path) for path in pending_files(settings)))
 
@@ -271,11 +282,12 @@ class CacheStorage(QObject):
     cleared = Signal()
 
     def __init__(self, services, folders, places=None, parent=None):
-        """folders()：快取資料夾的清單（media.download_cache_dirs）；places()：{名稱: 路徑}，要看剩餘空間的地方。"""
+        """folders()：快取資料夾的清單（media.download_cache_dirs）；places()：{"recordings": 路徑, "cache": 路徑}，
+        要看剩餘空間、也顯示在畫面上的地方（recordingsFolder）。"""
         super().__init__(parent)
         self._services = services
         self._folders = folders
-        self._places = places or (lambda: {"recordings": recording_dirs()[0],
+        self._places = places or (lambda: {"recordings": recordings_dir(),
                                            "cache": (list(folders()) or [os.getcwd()])[0]})
         self._size = 0
         self._disks = []
@@ -316,6 +328,11 @@ class CacheStorage(QObject):
         return [{"label": self._disk_label(disk["places"]),
                  "text": _tr("%1 free of %2", size_text(disk["free"]), size_text(disk["total"]))}
                 for disk in self._disks]
+
+    @Property(str, constant=True)
+    def recordingsFolder(self):
+        """錄影的資料夾（T51），家目錄寫成 ~：錄影不在下載快取裡，畫面上寫出它在哪裡。"""
+        return config.display_path(self._places()["recordings"])
 
     @Property(bool, notify=changed)
     def scanning(self):

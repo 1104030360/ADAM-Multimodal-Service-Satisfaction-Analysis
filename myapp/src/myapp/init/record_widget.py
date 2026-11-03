@@ -37,7 +37,7 @@ import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtSvg import QSvgRenderer
 
-from myapp import devices, storage
+from myapp import devices, local_storage, storage
 from myapp.notifications import DISK_FULL, FILE_NOT_FOUND, NO_PERMISSION, user_message
 from myapp.pending_saves import PendingSave, PendingSaveStore
 from myapp.theme import RECORD_WINDOW, TOKENS
@@ -328,6 +328,8 @@ class Recording:
     - 麥克風打不開或中途壞掉：記下錯誤，影片照錄，錄音檔留下已經錄到的部分（以前整段的影片也一起丟掉，UX-11）。
     - 兩支鏡頭都讀到畫面才寫入（和以前一樣），兩支影片的影格數相同、時間對得上。
     - 檔案用絕對路徑：上傳在背景執行，不受之後目前目錄改變的影響。S3 的 key 照舊是 video/…、audio/…。
+    - 放在 local_storage.recordings_dir() 底下的 video/、audio/（預設 ~/Movies/ADAM，T51；以前是目前目錄，
+      從 Finder 打開的 app 目前目錄是 /，寫不進去）。
     """
 
     # 錄音檔的格式：16-bit PCM、單聲道、44.1 kHz（分析服務讀的就是這個格式；換成 sounddevice 之後也一樣，T51）
@@ -339,14 +341,14 @@ class Recording:
     FRAME_SIZE = (640, 480)
     FPS = 30.0
 
-    def __init__(self, service_id, account_id, camera_ids, mic_index, start_time, folder="."):
+    def __init__(self, service_id, account_id, camera_ids, mic_index, start_time, folder=None):
         self.service_id = service_id
         self.account_id = account_id
         self.camera_ids = tuple(camera_ids)
         self.mic_index = mic_index
         self.start_time = start_time
         self.end_time = None
-        folder = os.path.abspath(folder)
+        folder = os.path.abspath(folder) if folder else local_storage.recordings_dir()
         self.video_files = [os.path.join(folder, "video", f"{service_id}_cam{i}.avi") for i in range(2)]
         self.audio_file = os.path.join(folder, "audio", f"{service_id}_audio.wav")
         self._stop = threading.Event()

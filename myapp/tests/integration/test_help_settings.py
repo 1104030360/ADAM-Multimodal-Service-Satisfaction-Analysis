@@ -344,6 +344,7 @@ def test_clear_download_cache_asks_first_and_removes_only_the_cache(engine, serv
     storage = home.helpCenter.storage
     wait_until(lambda: storage.state == "ready")
     assert find(view, "cacheSize").property("value") == "2.0 MB"
+    assert find(view, "recordingsFolder").property("value") == str(tmp_path)  # RECORDINGS_DIR（T51）
     free = find_all(find(view, "storageGroup"), "freeSpace")
     assert [item.property("label") for item in free] == ["Free space"]
     assert " free of " in free[0].property("value")

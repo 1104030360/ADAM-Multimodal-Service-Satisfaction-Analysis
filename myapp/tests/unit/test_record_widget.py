@@ -458,6 +458,41 @@ def test_database_failure_is_offered_again_and_only_the_database_is_retried(widg
     assert pending() == []
 
 
+def test_a_save_left_in_the_old_folder_is_retried_from_there(services, uploads, database, restart, tmp_path):
+    """T51 之前錄影寫在目前目錄（briefcase dev 時是 ~/video、~/audio）。本機記的是絕對路徑：錄影換到
+    RECORDINGS_DIR 之後，上次沒存完的照樣從原本的地方上傳，S3 的 key 也一樣。"""
+    sid = "S20261102135229"
+    old = tmp_path / "old-home"
+    files = [old / "video" / f"{sid}_cam0.avi", old / "video" / f"{sid}_cam1.avi", old / "audio" / f"{sid}_audio.wav"]
+    for path in files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * 10)
+    PendingSaveStore().put(PendingSave(sid, "acc-1", tuple(str(path) for path in files), datetime(2026, 11, 2, 13, 52),
+                                       datetime(2026, 11, 2, 13, 53), "upload"))
+    services, saver = restart()
+    [job] = saver.restore("acc-1")
+    assert job.recording.files == [str(path) for path in files]
+    assert saver.retry(sid) is True
+    wait_until(lambda: job.state == SAVED)
+    assert uploads.keys == [f"video/{sid}_cam0.avi", f"video/{sid}_cam1.avi", f"audio/{sid}_audio.wav"]
+    assert pending() == []
+
+
+def test_recordings_go_to_the_recordings_folder(monkeypatch, tmp_path):
+    """RECORDINGS_DIR（conftest 指到暫存資料夾），沒有設定是 ~/Movies/ADAM（T51）。底下照舊是 video/、audio/。"""
+    sid, start = "S20261103090000", datetime(2026, 11, 3, 9, 0)
+    assert Recording(sid, "acc-1", (0, 1), 0, start).files == [
+        str(tmp_path / "video" / f"{sid}_cam0.avi"), str(tmp_path / "video" / f"{sid}_cam1.avi"),
+        str(tmp_path / "audio" / f"{sid}_audio.wav")]
+    monkeypatch.delenv("RECORDINGS_DIR")
+    recording = Recording(sid, "acc-1", (0, 1), 0, start)
+    assert recording.audio_file == os.path.join(os.path.expanduser("~"), "Movies", "ADAM", "audio", f"{sid}_audio.wav")
+    assert recording.keys == [f"video/{sid}_cam0.avi", f"video/{sid}_cam1.avi", f"audio/{sid}_audio.wav"]
+    monkeypatch.setenv("RECORDINGS_DIR", "~/ADAM recordings")  # .env 裡可以用 ~
+    assert Recording(sid, "acc-1", (0, 1), 0, start).video_files[0] == os.path.join(
+        os.path.expanduser("~"), "ADAM recordings", "video", f"{sid}_cam0.avi")
+
+
 def test_save_cut_off_by_quitting_is_offered_after_a_restart(widget, saver, uploads, restart):
     widget.start_recording()
     recording = widget.current
