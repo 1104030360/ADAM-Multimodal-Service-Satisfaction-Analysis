@@ -119,6 +119,12 @@ pass, and add these checks (the names are stable):
 - `Deploy script tests`
 - `Shell and workflow checks`
 
+Also tick **Require branches to be up to date before merging**. The
+migration checks compare a pull request with the `main` it was branched
+from; without this rule, two pull requests that each add a migration with the
+next number both pass, and `main` then has two files with the same number (the
+runner refuses them and every deployment stops at exit code 14).
+
 Every merge that changes the service, the migrations, or the deploy script
 deploys to production, so set this up before relying on automatic deployment.
 Creating the workflow files alone does not enable a branch rule.
@@ -191,7 +197,8 @@ or a manual "Run workflow" for a commit on main
   the instance gets exactly the image that was tested before. Rebuilding would
   produce a different image (newer base image and system packages) under the
   same tag. To rebuild a commit anyway, delete that version in the package's
-  settings on GitHub first. Images carry the `org.opencontainers.image.source`
+  settings on GitHub first; the instance pulls on every deployment, so it
+  picks up the rebuilt image. Images carry the `org.opencontainers.image.source`
   and `org.opencontainers.image.revision` labels.
 - **Only `main` deploys.** The OIDC trust policy accepts
   `repo:<owner>/<repo>:ref:refs/heads/main` only, and the deploy job sets no
@@ -199,7 +206,8 @@ or a manual "Run workflow" for a commit on main
   refuse the role). A run started from another branch fails in **Resolve
   commit** and says so.
 - **On the instance.** The workflow sends `AWS-RunShellScript` with a
-  30-minute limit: it downloads `deploy/deploy.sh` from the deployed commit
+  50-minute limit (`deploy.sh` keeps itself within 45 minutes, and the
+  job's AWS session lasts one hour): it downloads `deploy/deploy.sh` from the deployed commit
   into `/opt/adam/deploy.sh` (a new file, so a running copy is unaffected) and
   runs `/opt/adam/deploy.sh --retry-failed`, plus
   `--allow-destructive-migrations` when that box is ticked. Right after a
@@ -219,12 +227,15 @@ or a manual "Run workflow" for a commit on main
 | 15 | `check-db` failed: tables, columns, procedures, or grants the new version needs are missing | Yes |
 | 16 | No `models: ready` within 5 minutes; rolled back | Yes (the previous one) |
 | 17 | The rollback failed too: check the instance now | Not necessarily |
+| 18 | Not enough time left to switch versions (a long wait for the lock, the pull, or migrations); rerun | Yes |
 
-At boot, `adam-deploy.service` runs `deploy.sh` without `--retry-failed`, so a
-commit that already failed is not retried at every boot; a workflow run always
-retries it. The deploy script itself (lock, migrations, `check-db`, health
-check, rollback, logs in `/var/log/adam-deploy.log`) is described in
-`deploy/README.md`.
+At boot, `adam-deploy.service` runs the `deploy.sh` installed by the last
+deployment, without `--retry-failed`: a commit whose deployment was rolled
+back is not retried at every boot, unless the desired commit was written again
+after that failure (a workflow run while the instance was stopped). A workflow
+run on a running instance always retries it. The deploy script itself (lock,
+time budget, migrations, `check-db`, health check, rollback, logs in
+`/var/log/adam-deploy.log`) is described in `deploy/README.md`.
 
 ### First deployment
 
@@ -235,9 +246,10 @@ role, the instance role's permissions, the repository variables
 `adam_migrator` account and its Parameter Store password, and RDS backups.
 Then:
 
-1. Install the deploy script on the instance once, as `deploy/README.md`
-   describes (`deploy/install.sh`: moves `analysis.env` to `/opt/adam/` and
-   installs `adam-deploy.service`).
+1. On the instance, check the free disk space (`df -h /`; the first pull
+   downloads about 6 GB and `deploy.sh` wants 10 GB free) and the Docker
+   logging driver (`docker info --format '{{.LoggingDriver}}'`). Remove
+   images you no longer need, as `deploy/README.md` describes.
 2. Merge the pull request that adds these files. **Deploy analyzer** starts
    on its own, builds, tests, and pushes both images, then stops in **Deploy
    to EC2** at *Check that the instance can pull both images*, because new
@@ -247,12 +259,15 @@ Then:
    `adam-analyzer` → **Package settings** → **Change visibility** → **Public**;
    then the same for `adam-db-migrations`. A public package cannot be made
    private again.
-4. Open the failed run and choose **Re-run failed jobs**. Only the deploy job
+4. Install the deploy script on the instance once, from `main`, as
+   `deploy/README.md` describes (`deploy/install.sh`: moves `analysis.env` to
+   `/opt/adam/` and installs `adam-deploy.service`).
+5. Open the failed run and choose **Re-run failed jobs**. Only the deploy job
    runs again; the images are not rebuilt. The first migration run records
    001–007 as already applied (they were applied by hand) without running them.
-5. Check the job summary: the last line should be
+6. Check the job summary: the last line should be
    `deploy: result=… code=0 commit=…`.
-6. Add the required checks (above), then merge a small change under
+7. Add the required checks (above), then merge a small change under
    `services/analyzer/` through a pull request to see the automatic path.
 
 ### Manual deployment and rollback
@@ -260,8 +275,9 @@ Then:
 **Actions → Deploy analyzer → Run workflow**, with **Use workflow from** set
 to `main`:
 
-- `commit`: the 40-character SHA of a commit on `main`; empty deploys the
-  latest commit on `main`. A rollback is a run with an older commit. If GHCR
+- `commit`: the 40-character SHA of a commit on `main`'s first-parent line
+  (the merge commit of a pull request, not a commit inside it); empty deploys
+  the latest commit on `main`. A rollback is a run with an older commit. If GHCR
   has its images, nothing is rebuilt; otherwise they are built and tested
   first. Commits from before this workflow existed cannot be deployed.
 - `allow_destructive_migrations`: see below.
@@ -336,6 +352,11 @@ check with automatic rollback, and backward-compatible migrations.
 - Workflow inputs and commit messages reach scripts only through environment
   variables, never by `${{ }}` inside a script, and output from the instance
   is printed with workflow commands disabled.
+- The workflow logs of this public repository are public. The role ARN (with
+  the account ID) and the instance ID appear in them; they are identifiers,
+  not credentials. `deploy.sh` prints only its steps and a filtered summary:
+  database host names, IP addresses, bucket names, container logs, and job
+  details stay in `/var/log/adam-deploy.log` on the instance.
 - Actions are pinned to commit SHAs; shellcheck and actionlint are pinned
   releases verified by SHA-256.
 - The service configuration (`analysis.env`, with the database password and

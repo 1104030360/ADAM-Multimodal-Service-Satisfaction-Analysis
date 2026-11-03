@@ -13,9 +13,10 @@
 set -euo pipefail
 
 PARAMETER=/adam/analyzer/desired-commit
-# Run Command stops deploy.sh after this long: deploy.sh may wait up to 15 minutes for another deploy.sh
-# (the boot unit), then pull, migrate, and wait up to 5 minutes for the new version and 5 more to roll back.
-EXECUTION_TIMEOUT_SEC=3600
+# Run Command stops deploy.sh after this long. deploy.sh keeps itself within 45 minutes (waiting for another
+# deploy.sh included) and does not start switching containers when less than 15 minutes are left, so it ends
+# before this. The whole wait also has to fit in the role session that configure-aws-credentials gets (1 hour).
+EXECUTION_TIMEOUT_SEC=3000
 DELIVERY_TIMEOUT_SEC=600   # how long Systems Manager keeps trying to reach the SSM agent
 OUTPUT_LIMIT=24000         # Run Command returns only this many characters of stdout
 POLL_INTERVAL_SEC=${POLL_INTERVAL_SEC:-10}
@@ -172,6 +173,9 @@ while :; do
       sleep "$POLL_INTERVAL_SEC"
       continue
     fi
+    if grep -q ExpiredToken "$work/err"; then
+      fail "GitHub 拿到的 AWS 憑證（1 小時）到期了，deploy.sh 可能還在 EC2 上跑：到 Systems Manager → Run Command 看 $command_id 的結果。"
+    fi
     errors=$((errors + 1))
     if ((errors >= 5)); then
       show_error
@@ -219,6 +223,7 @@ explain() {
     15) echo "資料庫檢查（check-db）沒過：新版需要的資料表、欄位、預存程序或權限不在（看 MISSING、DENIED 那幾行）。舊版照常跑。" ;;
     16) echo "新版 5 分鐘內沒有 models: ready，已經換回上一版（上一版在跑）。" ;;
     17) echo "換回上一版也失敗：分析服務可能停了。馬上到 EC2 看 docker ps 和 /var/log/adam-deploy.log。" ;;
+    18) echo "時間不夠（等鎖、拉映像檔或 migration 用掉太久），沒有換版本，舊版照常跑。Re-run 這個 job 再試一次。" ;;
     *) echo "deploy.sh 的結束碼是 $1（約定裡沒有）：看 EC2 的 /var/log/adam-deploy.log。" ;;
   esac
 }

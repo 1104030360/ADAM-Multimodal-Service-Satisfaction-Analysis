@@ -32,6 +32,14 @@ special=$(commit_files "fix | pipes and \`ticks\`" other.txt)
 git -C "$repo" update-ref refs/remotes/origin/main "$special"
 git -C "$repo" checkout -q -b side
 off_main=$(commit_files "side branch" side.txt)
+# A pull request merged into main with a merge commit: its own commit is an ancestor of main, but not on
+# main's first-parent line.
+git -C "$repo" checkout -q -b pr "$special"
+in_pr=$(commit_files "pull request commit" pr.txt)
+git -C "$repo" checkout -q --detach "$special"
+git -C "$repo" merge -q --no-ff -m "Merge pull request" "$in_pr"
+merged=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" update-ref refs/remotes/origin/main "$merged"
 git -C "$repo" checkout -q "$with_cd"
 
 # The fake lookup answers by image name: FAKE_ANALYZER and FAKE_MIGRATIONS are its exit codes.
@@ -126,6 +134,17 @@ begin "commit not on main"
 resolve INPUT_COMMIT="$off_main"
 assert_eq "$code" 1 "exit code"
 assert_contains "$dir/out" "不在 main 上"
+
+begin "a merge commit on main"
+resolve INPUT_COMMIT="$merged"
+assert_eq "$code" 0 "exit code"
+assert_eq "$(output commit)" "$merged" "commit"
+
+begin "a commit inside a merged pull request"
+resolve INPUT_COMMIT="$in_pr"
+assert_eq "$code" 1 "exit code"
+assert_contains "$dir/out" "不在 main 的主線上（first-parent）"
+assert_eq "$(wc -c <"$dir/output" | tr -d ' ')" 0 "step outputs"
 
 begin "commit from before CD"
 resolve INPUT_COMMIT="$before_cd"

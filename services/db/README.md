@@ -168,7 +168,7 @@ runner 和 `adam-mysql` 共用網路（`--network container:adam-mysql`），用
 
 ```bash
 docker build -t adam-db-migrations:local services/db
-read -r -s -p "adam-mysql 的 root 密碼: " DB_PASSWORD && echo && export DB_PASSWORD
+printf 'adam-mysql 的 root 密碼: ' && read -rs DB_PASSWORD && echo && export DB_PASSWORD   # bash、zsh 都能用（zsh 的 read -p 是別的意思）
 # 只要做一次：建兩個鎖住、不能登入的帳號，migration 的 GRANT 才跑得過（規則第 7 點）
 MYSQL_PWD=$DB_PASSWORD docker run --rm -e MYSQL_PWD --network container:adam-mysql mysql:8.4 \
   mysql -h127.0.0.1 -uroot -e "CREATE USER IF NOT EXISTS 'adam_app'@'%' ACCOUNT LOCK; CREATE USER IF NOT EXISTS 'adam_analysis'@'%' ACCOUNT LOCK;"

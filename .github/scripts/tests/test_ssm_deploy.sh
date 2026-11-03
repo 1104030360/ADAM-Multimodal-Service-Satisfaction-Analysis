@@ -96,7 +96,7 @@ assert_contains "$dir/summary" "deploy: result=x code=0 commit=$COMMIT"
 assert_contains "$dir/summary" "cmd-1"
 assert_contains "$dir/calls" "--document-name AWS-RunShellScript"
 assert_contains "$dir/calls" "--timeout-seconds 600"
-assert_eq "$(jq -r '.executionTimeout[0]' "$dir/parameters.json")" 3600 "executionTimeout"
+assert_eq "$(jq -r '.executionTimeout[0]' "$dir/parameters.json")" 3000 "executionTimeout"
 assert_eq "$(jq -r '.commands | join("\n")' "$dir/parameters.json")" "set -eu
 install -d -m 755 /opt/adam
 curl -fsSL --retry 3 -o /opt/adam/.deploy.sh.new \"https://raw.githubusercontent.com/Owner/Repo.Name/$COMMIT/deploy/deploy.sh\"
@@ -111,7 +111,7 @@ assert_eq "$code" 0 "exit code"
 assert_eq "$(jq -r '.commands[-1]' "$dir/parameters.json")" \
   "/opt/adam/deploy.sh --retry-failed --allow-destructive-migrations" "last command"
 
-for case_code in 10 11 12 13 14 15 16 17; do
+for case_code in 10 11 12 13 14 15 16 17 18; do
   new_case "deploy.sh exit code $case_code"
   running_with Failed Failed "$case_code" "$(deploy_line "$case_code")"
   deploy
@@ -119,6 +119,11 @@ for case_code in 10 11 12 13 14 15 16 17; do
   assert_contains "$dir/out" "::error::"
   assert_contains "$dir/summary" "code=$case_code"
 done
+assert_contains "$dir/out" "時間不夠"
+
+new_case "exit code 17 says the service may be down"
+running_with Failed Failed 17 "$(deploy_line 17)"
+deploy
 assert_contains "$dir/out" "換回上一版也失敗"
 
 new_case "exit code 13 explains how to allow destructive migrations"
@@ -215,6 +220,17 @@ answer get-command-invocation 1 254 "An error occurred (InvocationDoesNotExist) 
 invocation 2 Success Success 0 "$(deploy_line 0)"
 deploy
 assert_eq "$code" 0 "exit code"
+
+new_case "the role session expires while waiting"
+answer describe-instances 1 0 running
+answer send-command 1 0 cmd-1
+invocation 1 InProgress InProgress -1 ""
+answer get-command-invocation 2 254 "An error occurred (ExpiredTokenException) when calling the GetCommandInvocation operation: The security token included in the request is expired"
+deploy
+assert_eq "$code" 1 "exit code"
+assert_eq "$(calls get-command-invocation)" 2 "get-command-invocation calls"
+assert_contains "$dir/out" "AWS 憑證（1 小時）到期了"
+assert_contains "$dir/out" "cmd-1"
 
 new_case "execution timeout"
 running_with TimedOut ExecutionTimedOut -1 "still pulling"

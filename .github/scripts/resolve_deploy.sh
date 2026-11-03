@@ -53,6 +53,13 @@ fi
 if ! git merge-base --is-ancestor "$commit" "$main_ref"; then
   fail "commit $commit 不在 main 上：只能部署已經合併到 main 的 commit。"
 fi
+# A merged pull request's own commits are ancestors of main too, but the checks ran on the merge, not on
+# them (a migration may still change later in the same pull request). Only main's first-parent line counts.
+# No `| grep -q`: grep stops reading early, and with pipefail git's SIGPIPE would fail the check.
+first_parent=$(git rev-list --first-parent "$main_ref")
+if [[ $'\n'$first_parent$'\n' != *$'\n'$commit$'\n'* ]]; then
+  fail "commit ${commit:0:12} 是某個已經合併的 PR 裡的 commit，不在 main 的主線上（first-parent）：部署合併進 main 的那個 commit。"
+fi
 if ! git cat-file -e "$commit:deploy/deploy.sh" 2>/dev/null; then
   fail "commit ${commit:0:12} 裡沒有 deploy/deploy.sh：自動部署之前的版本不能用這個 workflow 部署。"
 fi
