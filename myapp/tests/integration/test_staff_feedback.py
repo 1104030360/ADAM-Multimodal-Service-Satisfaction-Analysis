@@ -518,8 +518,10 @@ def test_search_shows_an_empty_state_for_the_range(engine, services, db, no_netw
     end = find(page, "endDateField")
     end.setProperty("text", "2026-10-29")
     end.forceActiveFocus()
-    QTest.keyClick(window, Qt.Key.Key_Return)  # 在日期欄按 Enter 就查
-    assert qml(page, "searchButton.busy")
+    # keyClick() 送完按鍵會處理事件：查得快的話，結果在這時候就回來了。查詢先排在後面，才一定看得到忙碌
+    with db_lane_held(services.tasks):
+        QTest.keyClick(window, Qt.Key.Key_Return)  # 在日期欄按 Enter 就查
+        assert qml(page, "searchButton.busy")
     wait_until(lambda: not services.tasks.isBusy(SEARCH_KEY))
     empty = find(page, "searchEmpty")
     assert empty.isVisible() and not find(page, "resultList").isVisible()
