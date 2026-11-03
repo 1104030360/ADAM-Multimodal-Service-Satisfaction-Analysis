@@ -13,6 +13,7 @@
   PREVIEW_FPS 張；GUI 執行緒每 POLL_MS 看一次有沒有新的畫面，有就換 Image 的網址（image://devicepreview/…）。
   鏡頭權限已經允許時，連打開也在那條執行緒做（和錄影一樣），GUI 執行緒不會卡住。
 - **麥克風**：一條執行緒用和錄影一樣的格式（Recording 的 16-bit、單聲道、44.1 kHz）讀資料，只算峰值，資料不留。
+  打開、關掉都經過 devices.open_microphone()（sounddevice，和錄音同一條路，T51）。
 - 裝置的執行緒不用 TaskRunner 的 lane：lane 給有結束的工作用，預覽會一直跑到關掉（和 Recording 的兩條執行緒一樣）。
 """
 import logging
@@ -23,7 +24,6 @@ from itertools import count
 
 import cv2
 import numpy as np
-import pyaudio
 from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QImage
 from PySide6.QtQml import QQmlEngine
@@ -220,35 +220,24 @@ class MicrophoneMeter:
         self._thread.start()
 
     def _run(self):
-        audio = stream = None
         try:
-            audio = pyaudio.PyAudio()
-            stream = audio.open(format=Recording.SAMPLE_FORMAT, channels=Recording.CHANNELS, rate=Recording.RATE,
-                                input=True, input_device_index=self.device_index,
-                                frames_per_buffer=Recording.CHUNK)
-            self.opened_at = self._clock()
-            self.opened = True
-            while not self._stop.is_set():
-                data = stream.read(Recording.CHUNK, exception_on_overflow=False)
-                if data:
-                    self.last_chunk_at = self._clock()
-                    self._peak = max(self._peak, peak_of(data))
-                else:
-                    self._stop.wait(0.005)
+            with devices.open_microphone(self.device_index, Recording.DTYPE, Recording.CHANNELS, Recording.RATE,
+                                         Recording.CHUNK) as stream:
+                self.opened_at = self._clock()
+                self.opened = True
+                while not self._stop.is_set():
+                    data, _overflowed = stream.read(Recording.CHUNK)
+                    if data:
+                        self.last_chunk_at = self._clock()
+                        self._peak = max(self._peak, peak_of(data))
+                    else:
+                        self._stop.wait(0.005)
         except Exception as error:  # 打不開（別的 app 獨佔、拔掉、格式不支援）
             logger.warning("the microphone test failed: %r", error)
             self.error = error
             if self.opened is None:
                 self.opened = False
         finally:
-            if stream is not None:
-                with suppress(Exception):
-                    stream.stop_stream()
-                with suppress(Exception):
-                    stream.close()
-            if audio is not None:
-                with suppress(Exception):
-                    audio.terminate()
             self.released = True
 
     def stop(self, wait=STOP_WAIT_S):

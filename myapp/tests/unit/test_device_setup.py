@@ -88,19 +88,18 @@ def test_opening_rescans_then_previews_both_cameras_and_the_microphone(finder, l
     wait_until(lambda: setup.microphoneLevel > 0.5)  # 9000／32768 ≈ -11 dBFS
     assert live.live() == [0, 1] and len(microphone.open_streams()) == 1
     # 麥克風照錄影的格式打開：測試順便確認錄影用得了這支麥克風
-    assert microphone.opened_with == {"format": Recording.SAMPLE_FORMAT, "channels": Recording.CHANNELS,
-                                      "rate": Recording.RATE, "input": True, "input_device_index": 0,
-                                      "frames_per_buffer": Recording.CHUNK}
+    assert microphone.opened_with == {"device": 0, "channels": Recording.CHANNELS, "samplerate": Recording.RATE,
+                                      "dtype": Recording.DTYPE, "blocksize": Recording.CHUNK}
     image = FRAMES.image("customer")
     assert (image.width(), image.height()) == (320, 240)
 
 
 def test_closing_releases_the_cameras_and_the_microphone(finder, live, microphone):
     setup = opened(finder)
-    terminated = microphone.terminated
+    stream = microphone.open_streams()[0]
     setup.closeSetup()
     assert released(live, microphone)  # closeSetup 等執行緒放開裝置才回來
-    assert microphone.terminated == terminated + 1
+    assert stream.closed and not stream.started
     assert not setup.active
     assert (setup.customerPreview, setup.staffPreview, setup.microphoneState) == ("off", "off", "off")
     assert (setup.customerFrame, setup.staffFrame, setup.microphoneLevel) == ("", "", 0.0)
@@ -149,7 +148,7 @@ def test_the_same_camera_twice_is_an_error_and_is_opened_once(finder, live):
 def test_changing_the_microphone_reopens_it(finder, live, microphone):
     setup = opened(finder)
     setup.selectMicrophone(1)
-    wait_until(lambda: microphone.opened_with["input_device_index"] == 1 and setup.microphoneState == "live")
+    wait_until(lambda: microphone.opened_with["device"] == 1 and setup.microphoneState == "live")
     assert len(microphone.open_streams()) == 1
 
 
@@ -265,9 +264,9 @@ def test_a_camera_without_pictures_says_so(finder, live, fast_problems):
 
 def test_a_broken_microphone_is_reported_and_released(finder, live, microphone):
     microphone.broken = True
-    terminated = microphone.terminated
+    attempts = microphone.attempts
     setup = opened(finder, microphone="unavailable")
-    wait_until(lambda: microphone.terminated > terminated)
+    assert microphone.attempts > attempts and microphone.open_streams() == []
     assert setup.microphoneLevel == 0.0
 
 

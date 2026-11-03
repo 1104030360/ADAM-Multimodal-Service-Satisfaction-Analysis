@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import cv2
 import pytest
+import sounddevice
 from PySide6.QtCore import QCoreApplication, QObject, Signal
 
 from myapp import devices
@@ -102,19 +103,17 @@ def scanned(finder):
     return finder
 
 
-def test_nothing_is_probed_until_the_record_page_asks(camera_opens, microphone, monkeypatch):
-    audio_inits = []
-    monkeypatch.setattr(devices.pyaudio, "PyAudio", lambda: audio_inits.append(1) or microphone)
+def test_nothing_is_probed_until_the_record_page_asks(camera_opens, microphone):
     finder = DeviceFinder(STAFF)
     assert (finder.status, finder.cameras, finder.microphones) == ("idle", [], [])
-    assert camera_opens == [] and audio_inits == []  # 登入時不開鏡頭、不初始化音訊（UX-02）
+    assert camera_opens == [] and microphone.rescans == 0  # 登入時不開鏡頭、不初始化音訊（UX-02）
 
     finder.ensureScanned()
     assert finder.status == "scanning"  # 先讓「Looking for…」畫出來，下一輪事件才探測
     assert camera_opens == []
     wait_until(lambda: finder.status == "ready")
     # AVFoundation 列得出兩支，就只試開這兩支（以前一律試開 0～9 號，T41）
-    assert camera_opens == [0, 1] and audio_inits == [1]
+    assert camera_opens == [0, 1] and microphone.rescans == 1
 
     finder.ensureScanned()  # 再回到錄影頁：用上次的結果
     QCoreApplication.processEvents()
@@ -140,11 +139,14 @@ def test_microphone_list_has_only_input_devices(cameras, microphone):
     assert scanned(DeviceFinder(STAFF)).microphones == ["USB 麥克風"]
 
 
-def test_portaudio_is_released_after_probing(cameras, microphone, monkeypatch):
-    released = []
-    monkeypatch.setattr(microphone, "terminate", lambda: released.append(True))
-    scanned(DeviceFinder(STAFF))
-    assert released == [True]  # 以前沒有 terminate（ENG-06）
+def test_rescan_picks_up_a_microphone_plugged_in_later(cameras, microphone):
+    """sounddevice 的清單是 PortAudio 初始化時列的：每次探測重新初始化，之後插上的麥克風也看得到（T51）。"""
+    finder = scanned(DeviceFinder(STAFF))
+    assert finder.microphones == ["MacBook 麥克風"]
+    microphone.devices = [("MacBook 麥克風", 1), ("USB 麥克風", 1)]
+    finder.rescan()
+    wait_until(lambda: finder.status == "ready")
+    assert finder.microphones == ["MacBook 麥克風", "USB 麥克風"] and microphone.rescans == 2
 
 
 def test_rescan_picks_up_a_camera_plugged_in_later(cameras, microphone):
@@ -162,13 +164,13 @@ def test_rescan_picks_up_a_camera_plugged_in_later(cameras, microphone):
 
 def test_probe_failure_is_reported_and_can_be_retried(cameras, microphone):
     def broken(index):
-        raise OSError(-9999, "Unanticipated host error (fake)")
+        raise sounddevice.PortAudioError("Unanticipated host error (fake)", -9999)
 
-    microphone.get_host_api_info_by_index = broken  # 蓋過替身的方法（只有這個測試的替身）
+    microphone.query_hostapis = broken  # 蓋過替身的方法（只有這個測試的替身）
     finder = scanned(DeviceFinder(STAFF))
     assert finder.status == "error"
-    assert finder.errorTechnical == "OSError: [Errno -9999] Unanticipated host error (fake)"
-    del microphone.get_host_api_info_by_index  # 例如重新接上音訊裝置
+    assert finder.errorTechnical == "PortAudioError: Unanticipated host error (fake) [PaErrorCode -9999]"
+    del microphone.query_hostapis  # 例如重新接上音訊裝置
     finder.rescan()
     wait_until(lambda: finder.status != "scanning")
     assert (finder.status, finder.errorTechnical) == ("ready", "")

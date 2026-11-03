@@ -8,17 +8,17 @@ version = "0.0.1"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 requires-python = "==3.13.*"
-# 桌面用戶端（macOS、Python 3.13）的直接依賴。PyAudio 需要先安裝 PortAudio：brew install portaudio
+# 桌面用戶端（macOS、Python 3.13）的直接依賴。都有預先編好的 wheel：sounddevice 自帶 PortAudio，不需要 Homebrew
 dependencies = [
     "PySide6_Essentials==6.12.0",
     "PySide6_Addons==6.12.0",
     "opencv-python==4.10.0.84",
-    "PyAudio==0.2.14",
     "mysql-connector-python==26.10.0",
     "python-dotenv==1.2.4",
     "PyMuPDF==1.25.5",
     "requests==2.34.2",
     "boto3[crt]==1.43.122",
+    "sounddevice==0.5.6",
 ]
 
 # 測試用的套件。briefcase dev --test 會把它們當成 test_requires 安裝；

@@ -20,6 +20,7 @@ import botocore.exceptions
 import cv2
 import mysql.connector
 import pytest
+import sounddevice
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt
 from PySide6.QtWidgets import QMessageBox
 
@@ -233,9 +234,9 @@ def test_stop_does_not_wait_for_the_files_on_the_gui_thread(widget, saver, monke
     gate = threading.Event()
     write_wav = Recording._write_wav
 
-    def slow_write(self, frames, sample_width):
+    def slow_write(self, frames):
         gate.wait(5)  # 錄音檔還沒寫完（例如很長的一段）
-        write_wav(self, frames, sample_width)
+        write_wav(self, frames)
 
     monkeypatch.setattr(Recording, "_write_wav", slow_write)
     try:
@@ -571,9 +572,9 @@ def test_saves_list_follows_a_save_in_place_from_finishing_to_saved(widget, save
     gate = threading.Event()
     write_wav = Recording._write_wav
 
-    def slow_write(self, frames, sample_width):
+    def slow_write(self, frames):
         gate.wait(5)  # 錄音檔還沒寫完
-        write_wav(self, frames, sample_width)
+        write_wav(self, frames)
 
     monkeypatch.setattr(Recording, "_write_wav", slow_write)
     try:
@@ -794,7 +795,7 @@ def test_microphone_failure_is_shown_and_the_video_is_still_saved(widget, saver,
     wait_until(lambda: recording.frames_written >= 3)
     widget.stop_recording()
     wait_for(saver, recording, SAVED)  # 以前影片也一起丟掉（UX-11）
-    assert isinstance(recording.audio_error, OSError)
+    assert isinstance(recording.audio_error, sounddevice.PortAudioError)
     with wave.open(recording.audio_file) as wav:
         assert wav.getnframes() == 0
     assert row.problem  # 停止之後還看得到，直到下一段開始
@@ -813,8 +814,7 @@ def test_stalled_microphone_is_shown(widget, monkeypatch):
 # ── 錄影中的狀態（UX-12）──────────────────────────────────────────────────────
 
 def test_recording_shows_a_steady_dot_the_elapsed_time_and_the_level(widget, monkeypatch):
-    monkeypatch.setattr(tests.fakes._FakeStream, "read", lambda self, chunk, exception_on_overflow=True:
-                        b"\x00\x40" * chunk)  # 16384：-6 dBFS
+    monkeypatch.setattr(tests.fakes._FakeStream, "read", lambda self, frames: (b"\x00\x40" * frames, False))  # 16384：-6 dBFS
     assert widget.poll_timer.interval() == 250  # 計時、音量每秒最多更新 4 次
     widget.start_recording()
     bar = widget.status_bar

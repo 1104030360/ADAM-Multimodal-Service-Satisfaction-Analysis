@@ -13,7 +13,6 @@ import threading
 import boto3
 import cv2
 import mysql.connector
-import pyaudio
 import pytest
 import requests
 from moto import mock_aws
@@ -105,9 +104,9 @@ def cameras(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def microphone(monkeypatch):
-    """假麥克風（每個測試都換上）：一支輸入裝置。"""
+    """假麥克風（每個測試都換上，絕不碰真的麥克風）：一支輸入裝置。換掉的是 sounddevice 的函式（tests/fakes.py）。"""
     fake = FakeMicrophone()
-    monkeypatch.setattr(pyaudio, "PyAudio", fake)
+    fake.install(monkeypatch)
     return fake
 
 

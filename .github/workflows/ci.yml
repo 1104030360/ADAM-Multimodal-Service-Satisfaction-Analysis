@@ -40,9 +40,8 @@ jobs:
 
       - name: Install native dependencies
         run: |
-          brew install portaudio mysql@8.4
+          brew install mysql@8.4
           echo "$(brew --prefix mysql@8.4)/bin" >> "$GITHUB_PATH"
-          echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
 
       - name: Set up uv and Python
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3

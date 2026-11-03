@@ -6,8 +6,10 @@
   [AVCaptureDevice devicesWithMediaType:AVMediaTypeMuxed]]` 的第 n 個（cv2.abi3.so 用 strings、nm 查到，T41 第 2 節）。
   所以這裡用同一個呼叫（ctypes 直接呼叫 Objective-C runtime，不加新的套件）拿到每個編號的 uniqueID 和名稱：
   uniqueID 是身分，名稱給人看。列出裝置不需要相機權限，也不會打開鏡頭。
-- **麥克風的身分**：PyAudio 只給名稱和 host API（CoreAudio）。身分是「名稱＋host API」；同名的好幾支認不出來，
-  要使用者確認。
+- **麥克風的身分**：PortAudio（sounddevice）只給名稱和 host API（Core Audio）。身分是「名稱＋host API」；
+  同名的好幾支認不出來，要使用者確認。
+- **麥克風**：sounddevice 的 wheel 自帶 PortAudio，打包的 app 不需要 Homebrew（以前 PyAudio 連到 Homebrew 的
+  libportaudio，T51）。錄音和設定頁的麥克風測試都經過 open_microphone()。
 - **權限**：`[AVCaptureDevice authorizationStatusForMediaType:]`，分得出還沒問、拒絕、允許。
 - **存的設定**：每台電腦一份（QSettings，不分帳號；PLAN 13.8）。resolve() 把存的設定對到這次探測到的清單：
   身分對得上才算 ok；清單變了、身分認不出來就要使用者重新確認，不會默默換成另一支鏡頭。
@@ -20,12 +22,13 @@ import json
 import logging
 import re
 import sys
+import threading
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
 
 import cv2
-import pyaudio
 from PySide6.QtCore import QCoreApplication, QSettings
 
 from myapp.ui_prefs import open_settings
@@ -53,6 +56,10 @@ ROLES = ("customer", "staff", "microphone")
 
 SETTINGS_KEY = "deviceSetup"  # QSettings 的 key：一段 JSON（SavedSetup.to_json）
 SETUP_VERSION = 1
+
+# 開著的麥克風（open_microphone）有幾支：探測時看它決定能不能重新列出裝置（probe_microphones）
+_audio_lock = threading.Lock()
+_open_microphones = 0
 
 
 def _tr(text, *values):
@@ -179,7 +186,7 @@ class CameraInfo:
 
 @dataclass(frozen=True)
 class MicrophoneInfo:
-    """有輸入聲道的一支麥克風。index 是 PyAudio 的裝置編號（錄音用）。"""
+    """有輸入聲道的一支麥克風。index 是 PortAudio 的裝置編號（sounddevice 的 device，錄音用）。"""
     index: int
     name: str
     host_api: str = ""
@@ -222,20 +229,57 @@ def probe_cameras():
     return CameraScan(tuple(cameras), tuple(unavailable), True, media_access("video"))
 
 
+def _sounddevice():
+    """第一次用到麥克風（探測、錄音）時才 import：import sounddevice 就會初始化 PortAudio、列出音訊裝置，
+    登入時不做（UX-02）。"""
+    import sounddevice
+    return sounddevice
+
+
 def probe_microphones():
-    """有輸入聲道的音訊裝置（PyAudio 的第一個 host API，macOS 是 Core Audio）。"""
-    audio = pyaudio.PyAudio()
-    try:
-        host = audio.get_host_api_info_by_index(0)
-        host_name = host.get("name", "")
+    """有輸入聲道的音訊裝置（PortAudio 的第一個 host API，macOS 是 Core Audio）。
+
+    sounddevice 的裝置清單是 PortAudio 初始化那一刻列的，所以每次探測先重新初始化（_terminate、_initialize），
+    之後才插上的麥克風也看得到（以前 PyAudio 每次探測都初始化一次）。有麥克風開著時（錄音中、設定頁的測試）
+    不重新初始化：最後一次 Pa_Terminate 會關掉所有開著的串流，錄音會中斷；這時用 PortAudio 上次列的清單。
+    """
+    sd = _sounddevice()
+    with _audio_lock:
+        if _open_microphones == 0:
+            with suppress(sd.PortAudioError):  # 上次初始化失敗，PortAudio 沒有在執行：照樣初始化
+                sd._terminate()
+            sd._initialize()
+        host = sd.query_hostapis(0)
         found = []
-        for device_index in range(host.get("deviceCount")):
-            info = audio.get_device_info_by_host_api_device_index(0, device_index)
-            if info.get("maxInputChannels") > 0:
-                found.append(MicrophoneInfo(info.get("index", device_index), info.get("name"), host_name))
-        return found
+        for device_index in host["devices"]:
+            info = sd.query_devices(device_index)
+            if info["max_input_channels"] > 0:
+                found.append(MicrophoneInfo(info["index"], info["name"], host["name"]))
+    return found
+
+
+@contextmanager
+def open_microphone(device, dtype, channels, rate, frames):
+    """打開一支麥克風（PortAudio 的裝置編號）並開始收音，離開 with 時停止、關掉。在錄音的執行緒呼叫。
+
+    給的是 sounddevice 的 RawInputStream：stream.read(frames) 回傳 (資料, 是否溢位)。溢位時 PortAudio 丟掉
+    讀不及的那一段，照樣回傳這一段（和以前 PyAudio 的 exception_on_overflow=False 一樣，不中斷錄音）。
+    """
+    global _open_microphones
+    sd = _sounddevice()
+    with _audio_lock:  # 不和探測的重新初始化同時進行
+        stream = sd.RawInputStream(device=device, channels=channels, samplerate=rate, dtype=dtype, blocksize=frames)
+        _open_microphones += 1
+    try:
+        stream.start()
+        yield stream
     finally:
-        audio.terminate()  # PortAudio 有參照計數，不影響錄影視窗自己的那一份（ENG-06）
+        with suppress(Exception):
+            stream.stop()
+        with suppress(Exception):
+            stream.close()
+        with _audio_lock:
+            _open_microphones -= 1
 
 
 def display_names(names):
@@ -255,7 +299,7 @@ class SavedDevice:
     name: str
     uid: str = ""        # 鏡頭：AVFoundation 的 uniqueID（存的時候認不出就是空的）
     index: int = -1      # 存的時候的編號：同名的好幾支時用來猜，一定要使用者確認
-    host_api: str = ""   # 麥克風：PyAudio 的 host API 名稱
+    host_api: str = ""   # 麥克風：PortAudio 的 host API 名稱（以前 PyAudio 存的也是同一個名稱）
     label: str = ""      # 存的時候下拉選單上的名稱（同名的有「 (2)」）：只給人看，比對用 name
 
     @property

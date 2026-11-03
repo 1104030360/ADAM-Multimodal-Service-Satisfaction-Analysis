@@ -11,6 +11,7 @@ import threading
 from datetime import datetime
 
 import pytest
+import sounddevice
 from PySide6.QtCore import QSettings
 
 from myapp import devices
@@ -68,7 +69,44 @@ def test_microphones_carry_the_host_api(microphone):
     microphone.devices = [("MacBook Pro Speakers", 0), ("MacBook Pro Microphone", 1), ("Shure MV7", 1)]
     assert devices.probe_microphones() == [MicrophoneInfo(1, "MacBook Pro Microphone", "Core Audio"),
                                            MicrophoneInfo(2, "Shure MV7", "Core Audio")]
-    assert microphone.terminated == 1
+    assert microphone.rescans == 1 and microphone.initialized  # 重新列出裝置之後，PortAudio 照樣在執行
+
+
+def test_microphones_are_not_rescanned_while_one_is_open(microphone):
+    """錄音中重新初始化 PortAudio 會關掉開著的串流（最後一次 Pa_Terminate）：這時用上次列的清單（T51）。"""
+    with devices.open_microphone(0, "int16", 1, 44100, 1024) as stream:
+        assert stream.read(1024)[0]
+        microphone.devices.append(("USB 麥克風", 1))
+        assert [mic.name for mic in devices.probe_microphones()] == ["MacBook 麥克風", "USB 麥克風"]
+        assert microphone.rescans == 0 and microphone.open_streams() == [stream]
+    assert microphone.open_streams() == []
+    devices.probe_microphones()
+    assert microphone.rescans == 1
+
+
+def test_a_failed_rescan_is_retried_on_the_next_probe(microphone, monkeypatch):
+    """上次初始化失敗（PortAudio 沒有在執行）：下一次探測照樣初始化，不會卡在 _terminate() 的錯誤。"""
+    microphone.initialized = False
+    assert [mic.name for mic in devices.probe_microphones()] == ["MacBook 麥克風"]
+    assert microphone.rescans == 1
+
+
+def test_a_microphone_is_opened_in_the_recording_format_and_closed(microphone):
+    with devices.open_microphone(3, "int16", 1, 44100, 1024) as stream:
+        assert stream.started
+    assert microphone.opened_with == {"device": 3, "channels": 1, "samplerate": 44100, "dtype": "int16",
+                                      "blocksize": 1024}
+    assert stream.closed and not stream.started
+
+
+def test_a_microphone_that_cannot_open_leaves_nothing_counted(microphone):
+    microphone.broken = True
+    with pytest.raises(sounddevice.PortAudioError):
+        with devices.open_microphone(0, "int16", 1, 44100, 1024):
+            pass  # pragma: no cover  打不開，不會進來
+    microphone.broken = False
+    devices.probe_microphones()
+    assert microphone.rescans == 1  # 失敗的那一次沒有被算成「開著」：照樣重新列出裝置
 
 
 def test_the_opencv_camera_order_was_checked_for_this_version():

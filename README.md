@@ -84,16 +84,16 @@ Use **Log Out** to return to sign-in or **Quit** to close ADAM. Both ask for con
 
 ### 1. Install dependencies
 
-Install Homebrew, Xcode Command Line Tools, and these native dependencies, then run from the repository root:
+Install Homebrew, Xcode Command Line Tools, and uv, then run from the repository root:
 
 ```bash
-brew install uv portaudio
+brew install uv
 cd myapp
 uv python install 3.13
 uv sync --locked
 ```
 
-Dependencies are declared in [pyproject.toml](myapp/pyproject.toml) and pinned in [uv.lock](myapp/uv.lock). PyAudio compiles locally; if Xcode selects an incompatible beta SDK, set `SDKROOT` to a compatible installed macOS SDK before installing.
+Dependencies are declared in [pyproject.toml](myapp/pyproject.toml) and pinned in [uv.lock](myapp/uv.lock). Every dependency installs from a prebuilt wheel; the microphone library (sounddevice) bundles PortAudio, so Homebrew's `portaudio` isn't needed.
 
 ### 2. Configure the desktop
 
