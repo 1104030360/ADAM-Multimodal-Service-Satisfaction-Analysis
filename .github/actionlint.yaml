@@ -1,0 +1,6 @@
+# actionlint settings (https://github.com/rhysd/actionlint/blob/main/docs/config.md).
+# The repository variables the workflows may read; actionlint reports any other vars.* name as a typo.
+config-variables:
+  - AWS_DEPLOY_ROLE_ARN
+  - AWS_REGION
+  - EC2_INSTANCE_ID

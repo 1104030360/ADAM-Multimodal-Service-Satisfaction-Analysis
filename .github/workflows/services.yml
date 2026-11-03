@@ -1,0 +1,310 @@
+name: Services
+
+# Pull request checks for the analysis services, the database migrations, the EC2 deploy script, and the
+# workflow scripts (.github/CI.md). Every job runs on every pull request so that it can be a required
+# check; a job whose files did not change finishes in seconds (.github/scripts/changed_paths.sh).
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  analyzer-image:
+    name: Analyzer image tests
+    # Builds services/analyzer (about 6 GB) for linux/amd64, like the deployment, and runs all of its tests
+    # inside that image. On main, Deploy analyzer builds and tests the image it pushes, so pushes skip this.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Decide whether to run
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [[ $EVENT_NAME == push ]]; then
+            echo "run=false" >>"$GITHUB_OUTPUT"
+            echo "push：main 上由 Deploy analyzer 建置、測試同一個映像檔，這裡不重複"
+            exit 0
+          fi
+          bash .github/scripts/changed_paths.sh '^services/analyzer/' '^myapp/tests/fixtures/schema\.sql$' \
+            '^\.github/workflows/services\.yml$' \
+            '^\.github/scripts/(changed_paths|free_disk_space|disposable_mysql|test_service_image)\.sh$'
+
+      - name: Free disk space
+        if: steps.scope.outputs.run == 'true'
+        run: bash .github/scripts/free_disk_space.sh
+
+      - name: Set up Docker Buildx
+        if: steps.scope.outputs.run == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build the image (linux/amd64)
+        if: steps.scope.outputs.run == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: services/analyzer
+          platforms: linux/amd64
+          load: true
+          provenance: false
+          sbom: false
+          tags: adam-analyzer:ci
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=adam-analyzer
+          cache-to: type=gha,scope=adam-analyzer,mode=max,ignore-error=true
+
+      - name: Run all tests inside the image
+        if: steps.scope.outputs.run == 'true'
+        run: bash .github/scripts/test_service_image.sh adam-analyzer:ci services/analyzer ci-results/analyzer
+
+      - name: Upload test results
+        if: ${{ !cancelled() && steps.scope.outputs.run == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: analyzer-test-results
+          path: ci-results/analyzer/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  fake-service:
+    name: Fake service tests
+    # services/analysis_service: the fake with the same API and queue, used by local end-to-end tests.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Decide whether to run
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          bash .github/scripts/changed_paths.sh '^services/analysis_service/' '^myapp/tests/fixtures/schema\.sql$' \
+            '^\.github/workflows/services\.yml$' \
+            '^\.github/scripts/(changed_paths|disposable_mysql|test_service_image)\.sh$'
+
+      - name: Set up Docker Buildx
+        if: steps.scope.outputs.run == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build the image (linux/amd64)
+        if: steps.scope.outputs.run == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: services/analysis_service
+          platforms: linux/amd64
+          load: true
+          provenance: false
+          sbom: false
+          tags: adam-analysis:ci
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=adam-analysis
+          cache-to: type=gha,scope=adam-analysis,mode=max,ignore-error=true
+
+      - name: Run all tests inside the image
+        if: steps.scope.outputs.run == 'true'
+        run: bash .github/scripts/test_service_image.sh adam-analysis:ci services/analysis_service ci-results/fake-service
+
+      - name: Upload test results
+        if: ${{ !cancelled() && steps.scope.outputs.run == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fake-service-test-results
+          path: ci-results/fake-service/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  shared-copies:
+    name: Shared code copies
+    # The two services share report, AI explanation, outcome, and queue code byte for byte.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compare the shared files
+        run: python3 -I services/analysis_service/tools/check_report_copies.py
+
+  migrations:
+    name: Migration checks
+    # services/db: the runner's own tests, the upgrade check against the base (PLAN 9-2, point 5), and a
+    # smoke test of the migration image that the deployment pushes.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # the upgrade check reads the base's schema and migrations
+
+      - name: Decide whether to run
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [[ ! -f services/db/tests/run.sh ]]; then
+            echo "run=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::這個版本沒有 services/db/tests/run.sh：跳過"
+            exit 0
+          fi
+          bash .github/scripts/changed_paths.sh '^services/db/' '^myapp/tests/fixtures/schema\.sql$' \
+            '^\.github/workflows/services\.yml$' \
+            '^\.github/scripts/(changed_paths|disposable_mysql|test_migrations_image)\.sh$'
+
+      - name: Migration runner tests
+        if: steps.scope.outputs.run == 'true'
+        run: bash services/db/tests/run.sh
+
+      - name: Upgrade check against the base
+        if: steps.scope.outputs.run == 'true'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # The version this change is applied to: the pull request's base, the previous tip of the
+          # pushed branch, or main for a manual run.
+          case $EVENT_NAME in
+            pull_request) base=$(git rev-parse 'HEAD^1') ;;
+            push)
+              if [[ $BEFORE =~ ^[0-9a-f]{40}$ && ! $BEFORE =~ ^0+$ ]] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+                base=$BEFORE
+              else
+                base=$(git rev-parse 'HEAD^1')
+              fi
+              ;;
+            *) base=origin/main ;;
+          esac
+          echo "base：$base"
+          bash services/db/tools/verify.sh --base-ref "$base"
+
+      - name: Build the migration image
+        if: steps.scope.outputs.run == 'true'
+        run: docker build -t adam-db-migrations:ci services/db
+
+      - name: Smoke-test the migration image
+        if: steps.scope.outputs.run == 'true'
+        run: bash .github/scripts/test_migrations_image.sh adam-db-migrations:ci
+
+  deploy-script:
+    name: Deploy script tests
+    # deploy/: the script the EC2 instance runs (deploy.sh, the boot unit, install.sh).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Decide whether to run
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [[ ! -f deploy/tests/run.sh ]]; then
+            echo "run=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::這個版本沒有 deploy/tests/run.sh：跳過"
+            exit 0
+          fi
+          bash .github/scripts/changed_paths.sh '^deploy/' '^\.github/workflows/services\.yml$' \
+            '^\.github/scripts/changed_paths\.sh$'
+
+      - name: Deploy script tests
+        if: steps.scope.outputs.run == 'true'
+        run: bash deploy/tests/run.sh
+
+  lint:
+    name: Shell and workflow checks
+    # shellcheck on every shell script, actionlint on the workflows (with shellcheck on their run: blocks),
+    # and the tests of .github/scripts/. Pinned tool versions, verified by SHA-256.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      SHELLCHECK_VERSION: v0.11.0
+      SHELLCHECK_SHA256: b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install shellcheck and actionlint
+        run: |
+          tools=$RUNNER_TEMP/tools
+          mkdir -p "$tools/bin"
+          curl -fsSL --retry 3 -o "$tools/shellcheck.tar.gz" \
+            "https://github.com/koalaman/shellcheck/releases/download/$SHELLCHECK_VERSION/shellcheck-$SHELLCHECK_VERSION.linux.x86_64.tar.gz"
+          echo "$SHELLCHECK_SHA256  $tools/shellcheck.tar.gz" | sha256sum -c -
+          tar -xzf "$tools/shellcheck.tar.gz" -C "$tools"
+          install -m 755 "$tools/shellcheck-$SHELLCHECK_VERSION/shellcheck" "$tools/bin/shellcheck"
+          curl -fsSL --retry 3 -o "$tools/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $tools/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$tools/actionlint.tar.gz" -C "$tools" actionlint
+          install -m 755 "$tools/actionlint" "$tools/bin/actionlint"
+          echo "$tools/bin" >>"$GITHUB_PATH"
+
+      - name: shellcheck
+        run: |
+          # Tracked *.sh files and files with an sh/bash shebang. shellcheck cannot parse zsh.
+          shell_shebang='^#!.*(/|[[:space:]])(ba|da|k)?sh([[:space:]]|$)'
+          zsh_shebang='^#!.*zsh'
+          scripts=()
+          while IFS= read -r -d '' file; do
+            first=$(head -n 1 -- "$file" 2>/dev/null | tr -d '\0' || true)
+            if [[ $file != *.sh && ! $first =~ $shell_shebang ]]; then
+              continue
+            fi
+            if [[ $first =~ $zsh_shebang ]]; then
+              echo "::notice file=$file::zsh 的腳本：shellcheck 不支援，跳過"
+              continue
+            fi
+            scripts+=("$file")
+          done < <(git ls-files -z)
+          printf '%s\n' "${scripts[@]}"
+          shellcheck --version
+          shellcheck -x --source-path=SCRIPTDIR "${scripts[@]}"
+
+      - name: actionlint
+        run: |
+          actionlint -version
+          actionlint
+
+      - name: Workflow script tests
+        run: bash .github/scripts/tests/run.sh

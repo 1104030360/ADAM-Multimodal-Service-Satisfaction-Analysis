@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Stand-in for the AWS CLI in test_ssm_deploy.sh. Every call is appended to $FAKE_AWS_DIR/calls, and the
+# parameters file passed to send-command is kept as $FAKE_AWS_DIR/parameters.json.
+# Answers come from $FAKE_AWS_DIR/<operation>.<n> for the n-th call of that operation (the highest existing
+# n repeats): the first line is the exit code, the rest is printed to stdout (exit code 0) or stderr.
+set -euo pipefail
+
+dir=${FAKE_AWS_DIR:?}
+operation=${2:?fake aws: aws SERVICE OPERATION ...}
+printf '%s\n' "$*" >>"$dir/calls"
+for argument in "$@"; do
+  case $argument in
+    file://*) cp "${argument#file://}" "$dir/parameters.json" ;;
+  esac
+done
+
+count=$(($(cat "$dir/$operation.count" 2>/dev/null || echo 0) + 1))
+echo "$count" >"$dir/$operation.count"
+n=$count
+while [[ ! -f $dir/$operation.$n ]] && ((n > 1)); do
+  n=$((n - 1))
+done
+answer=$dir/$operation.$n
+if [[ ! -f $answer ]]; then
+  echo "fake aws: no answer for $operation (call $count)" >&2
+  exit 255
+fi
+code=$(head -n 1 "$answer")
+if [[ $code == 0 ]]; then
+  tail -n +2 "$answer"
+else
+  tail -n +2 "$answer" >&2
+fi
+exit "$code"

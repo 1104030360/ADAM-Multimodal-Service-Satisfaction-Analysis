@@ -14,7 +14,7 @@
 |---|---|
 | `app.py` | API（Flask＋gunicorn）：`POST /analyze` 在一個交易裡接受工作（工作、outbox、狀態 1 → 2）、`GET /healthz`（從 RDS 讀 worker 的心跳與工作數）、`POST /reports`；outbox 的送出器（執行緒）把工作送到 SQS。不做分析 |
 | `worker.py` | worker（`python worker.py`）：從 SQS 領工作，假分數與 3 張圖、報表要畫的假數字 `report-data/{service_id}_{tag}.json`、有錄音時一份假的逐字稿（N6），檔名都帶這一次的 tag（token 的前 12 個字）；提交之後才排入服務結果（W1） |
-| `analysis_queue.py` | 和 `analyzer/` 共用（逐位元組相同）：接受工作的交易、outbox 送出器、worker 的認領／續期／提交／重試、`/healthz` 的內容、管理指令 `python -m analysis_queue status｜fail｜requeue｜check-sqs｜alive` |
+| `analysis_queue.py` | 和 `analyzer/` 共用（逐位元組相同）：接受工作的交易、outbox 送出器、worker 的認領／續期／提交／重試、`/healthz` 的內容、管理指令 `python -m analysis_queue status｜fail｜requeue｜check-sqs｜alive｜check-db` |
 | `reports.py` | `POST /reports`：報表自己的佇列與 worker、每份的時間上限、重新啟動時補做（new-feature N4、N5） |
 | `report_model.py` | 報表的資料：SQL、頁面模型、report-data JSON 的格式、N6 的 `explain()`（交給 `ollama_explain.py`） |
 | `ollama_explain.py` | N6：報表右側的 AI 說明，呼叫 Ollama Cloud 的 `/api/chat`，檢查引言、數字、長度；`python -m ollama_explain --live-check` 是給你的連線檢查（只標準函式庫） |
@@ -38,6 +38,7 @@
 - **輸出的檔名帶這一次的 tag**（token 的前 12 個字）：`charts/{sid}_{tag}_01_summary.png`…、`text/{sid}_{tag}_transcript.txt`、`report-data/{sid}_{tag}.json`（記在 `tbl_analysis_job.report_data_key`，報表從那裡讀）。被搶走 lease 的舊 worker 晚到的上傳不會蓋掉提交的那一份；資料庫只引用提交成功的那一次。
 - **`/healthz`**：`{"status": "ok", "models", "workers", "queue_depth", "jobs", "outbox_pending", "oldest_pending_sec", "stale_jobs", "sqs"}`，都從 RDS 讀（`analysis_queue.health()`）。假服務沒有模型：有 worker 在等或在做就是 `"models": "ready"`，一個 worker 都沒有是 `"failed"`。資料庫連不上回 `503 {"status": "error", "database": "unavailable"}`。
 - **管理**：`docker exec adam-analysis python -m analysis_queue status`（worker、卡住的工作、outbox）、`fail SID`、`requeue SID`、`check-sqs`（教學第 8 節）。
+- **資料庫檢查**（CD 換版本之前跑，`docs/rebuild/cd/PLAN.md` 第 3 節）：`docker run --rm --env-file analysis.env <映像檔> python -m analysis_queue check-db`。只讀，照這個服務的 `tests/integration/grants.sql` 一項一項試這一版要的資料表、欄位、程序和權限，每一項一行 `OK`、`MISSING`（不存在）或 `DENIED`（沒有權限），最後一行是摘要；結束碼 0 全部都在、1 有缺的、2 連不上或設定錯了。
 - **設定**：`analysis.env` 加上 `AWS_REGION`、`SQS_ANALYSIS_QUEUE_URL`，選用的 `ANALYSIS_*`（`analysis.env.example`）；`STATUS_WAIT_SEC` 拿掉了。資料庫要先套用 `new-feature/migrations/007_analysis_queue.sql` 和 `grants_007.sql`。
 - 在 EC2 上跑假服務（例如換回假服務時），把 DEPLOY.md 第 6 步的映像檔換成這裡建的，worker 不用掛模型：
 

@@ -55,63 +55,250 @@ Use a stable macOS SDK if the local Xcode default selects a beta SDK (see the
 root README). The Docker alternative is `docker pull mysql:8.4`, followed by
 `uv run --locked pytest --require-integration --cov` from `myapp/`.
 
-After committing and pushing these files, check **Actions → CI**. Once the first
-run passes, open **Settings → Rules → Rulesets**, select the branch you merge
-into, require pull requests and status checks, and select **macOS tests**.
-CI runs automatically; preventing merges also requires this GitHub repository
-setting. Creating the files alone does not enable a branch rule.
-
 CI does not yet validate Briefcase packaging, code signing, notarization,
 physical devices, the real models, RDS TLS/grants/time zone, or production
 connectivity. Add those as separate release or staging checks as they become
 available. The fake analysis service must not publish AI explanations as if
 they came from real model results.
 
-## CD for the analysis service (planned)
+## Service checks
+
+The [Services workflow](workflows/services.yml) checks the analysis services,
+the database migrations, the EC2 deploy script, and the workflows themselves
+on Linux runners. It runs on every pull request, pushes to `main` and
+`master`, and manual **Run workflow** requests.
+
+Every job runs on every pull request, so each one can be a required check, but
+a job whose files did not change stops after its **Decide whether to run**
+step and passes in seconds ([changed_paths.sh](scripts/changed_paths.sh)). For
+a pull request it compares GitHub's merge commit with the base; for a push,
+with the previous tip of the branch; a manual run checks everything. The
+workflow has no `paths` filter on purpose: a required check that never starts
+leaves the pull request waiting.
+
+| Job (check name) | What it runs | Pull request | Push to `main` | Manual run |
+| --- | --- | --- | --- | --- |
+| Analyzer image tests | Builds `services/analyzer` for `linux/amd64` (about 6 GB) and runs all of its tests inside that image | When `services/analyzer/`, the test schema, or its CI scripts change | Skipped: Deploy analyzer tests the image it pushes | Yes |
+| Fake service tests | The same for `services/analysis_service/` | When `services/analysis_service/`, the test schema, or its CI scripts change | Same rule | Yes |
+| Shared code copies | `check_report_copies.py`: the files both services share are identical | Always | Always | Yes |
+| Migration checks | `services/db/tests/run.sh`; `services/db/tools/verify.sh --base-ref <base>`; builds the migration image and smoke-tests it | When `services/db/`, the test schema, or its CI scripts change | Same rule | Yes (base: `origin/main`) |
+| Deploy script tests | `deploy/tests/run.sh` | When `deploy/` changes | Same rule | Yes |
+| Shell and workflow checks | shellcheck 0.11.0 on every tracked shell script (zsh scripts are skipped: shellcheck cannot parse them), actionlint 1.7.12 on the workflows, and the tests of `.github/scripts/` | Always | Always | Yes |
+
+- **Tests inside the image.** [test_service_image.sh](scripts/test_service_image.sh)
+  starts a throwaway MySQL 8.4 loaded with `myapp/tests/fixtures/schema.sql`
+  and the service's least-privilege `tests/integration/grants.sql`, on an
+  internal Docker network (no internet, no published ports), then runs
+  `python -m pytest --cov` in the image as its non-root `app` user, using the
+  code built into the image. S3 and SQS are the tests' own moto. `pytest.xml`
+  and `coverage.xml` are kept as artifacts for 14 days.
+- **Build cache.** Images are built with Buildx and the GitHub Actions cache
+  (one scope per image). Caches written on `main` are shared with pull
+  requests; a pull request's cache is visible only to that pull request. The
+  analyzer job first deletes unused SDKs on the hosted runner to make room.
+- **Migration image smoke test.** [test_migrations_image.sh](scripts/test_migrations_image.sh)
+  checks the interface the deploy script relies on: exit code `2` without
+  `DB_HOST`, `7` when the database does not answer, and `0` for `status` as
+  `adam_migrator` (production privileges, TLS) on a database loaded from
+  `services/db/schema.sql`. Every run must end with a
+  `migrate: result=… code=…` line and must not print the password.
+- **Upgrade check base.** Pull request: the base the merge commit was made
+  from. Push: the previous tip. Manual run: `origin/main`.
+
+### Required checks
+
+After the first runs pass, open **Settings → Rules → Rulesets**, add a ruleset
+for `main`, require a pull request before merging, require status checks to
+pass, and add these checks (the names are stable):
+
+- `macOS tests`
+- `Analyzer image tests`
+- `Fake service tests`
+- `Shared code copies`
+- `Migration checks`
+- `Deploy script tests`
+- `Shell and workflow checks`
+
+Also tick **Require branches to be up to date before merging**. The
+migration checks compare a pull request with the `main` it was branched
+from; without this rule, two pull requests that each add a migration with the
+next number both pass, and `main` then has two files with the same number (the
+runner refuses them and every deployment stops at exit code 14).
+
+Every merge that changes the service, the migrations, or the deploy script
+deploys to production, so set this up before relying on automatic deployment.
+Creating the workflow files alone does not enable a branch rule.
+
+To reproduce the service checks locally, from the repository root with Docker
+running:
+
+```bash
+docker build -t adam-analysis:local services/analysis_service
+.github/scripts/test_service_image.sh adam-analysis:local services/analysis_service
+python3 -I services/analysis_service/tools/check_report_copies.py
+.github/scripts/tests/run.sh    # workflow script tests: needs git and jq, no Docker or AWS
+actionlint
+shellcheck .github/scripts/*.sh .github/scripts/tests/*.sh .github/scripts/tests/fake_aws
+```
+
+`services/analyzer/` works the same way; its image is about 6 GB.
+
+## CD for the analysis service
 
 The analysis services are in Git: `services/analyzer/` (the real models,
 deployed to EC2) and `services/analysis_service/` (the fake used by local
 end-to-end tests). Their database, Hugging Face, and Ollama credentials are
 supplied at runtime. The original `service_analyzer/` source contains embedded
-credentials and stays ignored.
-
-Status: designed, not implemented yet. Follow-up pull requests add a Linux CI
-job for the service tests, the deploy workflow, the EC2 deploy script, and the
-migration runner. The AWS and GitHub settings they rely on are made by hand
-first.
+credentials and stays ignored. Database migrations and their runner are in
+`services/db/`; the script that deploys on the instance is in `deploy/`.
 
 | Component | Delivery |
 | --- | --- |
 | macOS desktop app | CI now; later build, sign, notarize, and publish a versioned installer on a release tag. Users install it; it is not deployed to EC2. |
-| EC2 analysis service | Merging to `main` builds, tests, and deploys the tested image automatically. A manual workflow run deploys any commit, which is also how to roll back. |
-| RDS | Versioned migrations, applied by the same deployment before the service is replaced. Additive migrations run automatically; destructive ones need a manual run. |
+| EC2 analysis service | [Deploy analyzer](workflows/deploy-analyzer.yml): merging to `main` builds, tests, and deploys the tested image automatically. A manual run deploys any commit on `main`, which is also how to roll back. |
+| RDS | Versioned migrations in `services/db/`, applied by the same deployment before the service is replaced. Additive migrations run automatically; destructive ones need a manual run. |
 | S3 | Bucket configuration is set up by hand. Recordings, charts, transcripts, and reports are application data, not deployment artifacts. |
 
 ### Flow
 
 ```text
-Merge to main that changes the service, migration, or deploy files,
-or a manual "Run workflow" for a chosen commit
-  -> Linux runner: build the service image (cached layers)
-  -> unit + integration tests inside that image (MySQL 8.4, moto)
-  -> push the service and migration images to GitHub Container Registry,
-     tagged with the commit SHA
-  -> GitHub OIDC -> deployment role in AWS (no stored AWS keys)
-  -> write the desired commit to SSM Parameter Store
-  -> instance running: Run Command executes the deploy script; the job
-     prints its log and fails when the script fails
-     instance stopped: not a failure; a systemd unit deploys the desired
-     commit at the next boot
+Merge to main that changes services/analyzer/, services/db/, deploy/, or the workflow,
+or a manual "Run workflow" for a commit on main
+  -> Resolve commit: only main; the commit must be on main
+  -> Build, test, and push images (skipped when GHCR already has both images):
+       build adam-analyzer and adam-db-migrations for linux/amd64 (cached layers)
+       all analyzer tests inside that image (MySQL 8.4, moto); migration image smoke test
+       push both to ghcr.io/<owner>/<image>:<commit> only after both passed
+  -> Deploy to EC2:
+       the instance can pull both images anonymously? (else stop, nothing changed)
+       GitHub OIDC -> deployment role in AWS (no stored AWS keys)
+       write the commit to /adam/analyzer/desired-commit (SSM Parameter Store)
+       instance running: Run Command runs that commit's deploy/deploy.sh and the
+         job prints its output and fails when it fails
+       instance stopped, stopping, or pending: success; adam-deploy.service
+         deploys the desired commit at boot
 ```
 
-The deploy script runs one at a time on the instance and does nothing when the
-desired commit is already running. Otherwise it pulls both images, applies
-pending migrations, checks that the tables, columns, and grants the new
-version needs exist, keeps the current image as `previous`, and replaces the
-API and worker containers. If `/healthz` does not report `models: ready`
-within 5 minutes, it restarts `previous` and exits non-zero. Queued jobs wait
-in SQS while the worker restarts, and a job in progress is handed back. The
-API stops for a few seconds; a desktop that submits then shows Retry.
+| Job | Push to `main` | Manual run | Pull request |
+| --- | --- | --- | --- |
+| Resolve commit | Yes | Yes; fails at once when started from another branch | The workflow does not run |
+| Build, test, and push images | When GHCR lacks an image for the commit | Same | — |
+| Deploy to EC2 | Yes | Yes, unless `build_only` is ticked | — |
+
+- **One run at a time.** Runs are serialized and never cancelled midway; a
+  newer run waits, and GitHub keeps only the newest waiting run. Cancelling a
+  run does not stop `deploy.sh` on the instance: it finishes or rolls back on
+  its own.
+- **The tested image is the deployed image.** Each image is built once,
+  tested in that image, and pushed only after both images passed; the push
+  step checks that the tag still points at the tested image ID. Tags are the
+  full commit SHA and are never overwritten: when GHCR already has both images
+  for a commit (a redeploy, a rollback, or a rerun), the build is skipped and
+  the instance gets exactly the image that was tested before. Rebuilding would
+  produce a different image (newer base image and system packages) under the
+  same tag. To rebuild a commit anyway, delete that version in the package's
+  settings on GitHub first; the instance pulls on every deployment, so it
+  picks up the rebuilt image. Images carry the `org.opencontainers.image.source`
+  and `org.opencontainers.image.revision` labels.
+- **Only `main` deploys.** The OIDC trust policy accepts
+  `repo:<owner>/<repo>:ref:refs/heads/main` only, and the deploy job sets no
+  `environment:` (an environment changes the OIDC subject and AWS would
+  refuse the role). A run started from another branch fails in **Resolve
+  commit** and says so.
+- **On the instance.** The workflow sends `AWS-RunShellScript` with a
+  50-minute limit (`deploy.sh` keeps itself within 45 minutes, and the
+  job's AWS session lasts one hour): it downloads `deploy/deploy.sh` from the deployed commit
+  into `/opt/adam/deploy.sh` (a new file, so a running copy is unaffected) and
+  runs `/opt/adam/deploy.sh --retry-failed`, plus
+  `--allow-destructive-migrations` when that box is ticked. Right after a
+  boot the SSM agent may not be online yet (`InvalidInstanceId`); the job
+  retries for 5 minutes. The job then polls the result, prints the output
+  with workflow commands disabled, and writes the last line,
+  `deploy: result=… code=… commit=…`, with an explanation to the summary.
+
+| `deploy.sh` exit code | Meaning | Previous version still running? |
+| --- | --- | --- |
+| 0 | Deployed, or nothing to do | — |
+| 10 | Another `deploy.sh` holds the lock (for example the boot unit); rerun later | Yes |
+| 11 | Preflight failed: no `/opt/adam/analysis.env`, Docker not running, low disk, or Parameter Store unreadable | Yes |
+| 12 | Image pull failed (package not public, missing tag) | Yes |
+| 13 | A destructive migration is pending; see below | Yes |
+| 14 | A migration failed | Yes |
+| 15 | `check-db` failed: tables, columns, procedures, or grants the new version needs are missing | Yes |
+| 16 | No `models: ready` within 5 minutes; rolled back | Yes (the previous one) |
+| 17 | The rollback failed too: check the instance now | Not necessarily |
+| 18 | Not enough time left to switch versions (a long wait for the lock, the pull, or migrations); rerun | Yes |
+
+At boot, `adam-deploy.service` runs the `deploy.sh` installed by the last
+deployment, without `--retry-failed`: a commit whose deployment was rolled
+back is not retried at every boot, unless the desired commit was written again
+after that failure (a workflow run while the instance was stopped). A workflow
+run on a running instance always retries it. The deploy script itself (lock,
+time budget, migrations, `check-db`, health check, rollback, logs in
+`/var/log/adam-deploy.log`) is described in `deploy/README.md`.
+
+### First deployment
+
+The AWS and GitHub settings come first (`docs/rebuild/cd/PLAN.md` section 8,
+on the development machine): the OIDC provider, the `adam-github-deploy`
+role, the instance role's permissions, the repository variables
+`AWS_DEPLOY_ROLE_ARN`, `AWS_REGION`, and `EC2_INSTANCE_ID`, the
+`adam_migrator` account and its Parameter Store password, and RDS backups.
+Then:
+
+1. On the instance, check the free disk space (`df -h /`; the first pull
+   downloads about 6 GB and `deploy.sh` wants 10 GB free) and the Docker
+   logging driver (`docker info --format '{{.LoggingDriver}}'`). Remove
+   images you no longer need, as `deploy/README.md` describes.
+2. Merge the pull request that adds these files. **Deploy analyzer** starts
+   on its own, builds, tests, and pushes both images, then stops in **Deploy
+   to EC2** at *Check that the instance can pull both images*, because new
+   GHCR packages are private. Nothing on AWS has changed at that point. (A
+   manual run with `build_only` does the same without the failing job.)
+3. Make both packages public, once each: your GitHub profile → **Packages** →
+   `adam-analyzer` → **Package settings** → **Change visibility** → **Public**;
+   then the same for `adam-db-migrations`. A public package cannot be made
+   private again.
+4. Install the deploy script on the instance once, from `main`, as
+   `deploy/README.md` describes (`deploy/install.sh`: moves `analysis.env` to
+   `/opt/adam/` and installs `adam-deploy.service`).
+5. Open the failed run and choose **Re-run failed jobs**. Only the deploy job
+   runs again; the images are not rebuilt. The first migration run records
+   001–007 as already applied (they were applied by hand) without running them.
+6. Check the job summary: the last line should be
+   `deploy: result=… code=0 commit=…`.
+7. Add the required checks (above), then merge a small change under
+   `services/analyzer/` through a pull request to see the automatic path.
+
+### Manual deployment and rollback
+
+**Actions → Deploy analyzer → Run workflow**, with **Use workflow from** set
+to `main`:
+
+- `commit`: the 40-character SHA of a commit on `main`'s first-parent line
+  (the merge commit of a pull request, not a commit inside it); empty deploys
+  the latest commit on `main`. A rollback is a run with an older commit. If GHCR
+  has its images, nothing is rebuilt; otherwise they are built and tested
+  first. Commits from before this workflow existed cannot be deployed.
+- `allow_destructive_migrations`: see below.
+- `build_only`: build, test, and push without deploying.
+
+Rolling back the service does not roll the database back. That is safe
+because automatic migrations only add things, so older code keeps working; the
+migration runner reports migrations it does not know (newer than the image)
+and continues. Use **Re-run failed jobs** after fixing a cause outside the
+code (for example after starting the SSM agent): it reruns only the deploy job.
+
+### Destructive migrations
+
+A migration that drops, renames, or retypes something, or deletes rows
+without `WHERE`, is never applied automatically: `deploy.sh` stops with exit
+code 13 and the previous version keeps running. To apply it:
+
+1. Take an RDS snapshot: **RDS → Databases → your database → Actions → Take
+   snapshot**.
+2. **Run workflow** on `main` with the same commit (or empty for the latest)
+   and tick `allow_destructive_migrations`.
 
 ### Why GitHub Container Registry
 
@@ -129,8 +316,9 @@ check with automatic rollback, and backward-compatible migrations.
 
 ### Database migrations
 
-- Migrations are versioned in the repository and run from the instance,
-  which already reaches RDS. GitHub never connects to the database.
+- Migrations are versioned in `services/db/migrations/` and run from the
+  instance, which already reaches RDS, by the `adam-db-migrations` image.
+  GitHub never connects to the database.
 - A `tbl_schema_migration` table records each applied file with its SHA-256.
   The runner applies pending files in order under a MySQL lock, and stops if
   an applied file has changed.
@@ -143,9 +331,9 @@ check with automatic rollback, and backward-compatible migrations.
 - A dedicated migration user has schema privileges on the application
   database only, without `DROP` or user creation. Its password is a Parameter
   Store SecureString that only the instance role can read.
-- Pull request checks will apply new migrations twice to the previous schema
-  in a disposable MySQL, compare the result with the committed schemas, and
-  flag destructive statements.
+- **Migration checks** apply each pull request's new migrations to the
+  previous schema in a disposable MySQL, compare the result with the committed
+  schemas, and flag destructive statements.
 - Automated RDS backups stay enabled for point-in-time restore.
 
 ### Access and secrets
@@ -156,8 +344,21 @@ check with automatic rollback, and backward-compatible migrations.
 - The deployment role can check whether the instance is running, send Run
   Command to that instance, read the command results, and read and write the
   desired-commit parameter. Nothing else.
-- Only the deploy job gets `id-token: write`. GitHub stores no AWS access
-  keys; the role ARN, region, and instance ID are repository variables.
+- Each job gets only the token permissions it needs: `contents: read`
+  everywhere, `packages: read` to look up existing images, `packages: write`
+  only in the job that pushes, and `id-token: write` only in the deploy job.
+  GitHub stores no AWS access keys; the role ARN, region, and instance ID are
+  repository variables, not secrets.
+- Workflow inputs and commit messages reach scripts only through environment
+  variables, never by `${{ }}` inside a script, and output from the instance
+  is printed with workflow commands disabled.
+- The workflow logs of this public repository are public. The role ARN (with
+  the account ID) and the instance ID appear in them; they are identifiers,
+  not credentials. `deploy.sh` prints only its steps and a filtered summary:
+  database host names, IP addresses, bucket names, container logs, and job
+  details stay in `/var/log/adam-deploy.log` on the instance.
+- Actions are pinned to commit SHAs; shellcheck and actionlint are pinned
+  releases verified by SHA-256.
 - The service configuration (`analysis.env`, with the database password and
   Ollama key) stays on the instance. It is never in images, the repository,
   or test jobs.
@@ -169,7 +370,9 @@ References:
 
 - [uv in GitHub Actions](https://docs.astral.sh/uv/guides/integration/github/)
 - [GitHub-hosted runner capabilities](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+- [Required status checks and skipped jobs](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
 - [GitHub OIDC with AWS](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws)
 - [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
+- [Docker build cache in GitHub Actions](https://docs.docker.com/build/ci/github-actions/cache/)
 - [AWS Systems Manager Run Command](https://docs.aws.amazon.com/systems-manager/latest/userguide/run-command.html)
 - [AWS Systems Manager Parameter Store](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-parameter-store.html)
