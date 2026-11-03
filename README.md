@@ -97,7 +97,7 @@ Dependencies are declared in [pyproject.toml](myapp/pyproject.toml) and pinned i
 
 ### 2. Configure the desktop
 
-Create `.env` in the repository root or `myapp/`, replacing the placeholders:
+Create `.env` in the repository root or `myapp/` (the packaged app reads `~/Library/Application Support/ADAM/.env` instead; see [Package a macOS app](#4-package-a-macos-app)), replacing the placeholders:
 
 ```dotenv
 DB_HOST=<mysql-host>
@@ -127,6 +127,18 @@ uv run briefcase dev
 ```
 
 After changing dependencies, use `uv run briefcase dev -r`. Launch through Briefcase, which supplies the application metadata required by the entry point.
+
+### 4. Package a macOS app
+
+Run inside `myapp/` (Xcode Command Line Tools required):
+
+```bash
+uv run briefcase create
+uv run briefcase build
+uv run briefcase run
+```
+
+This builds `build/myapp/macos/app/ADAM.app` for Apple Silicon (macOS 14 or later) with an ad-hoc signature, which runs on the Mac that built it; distributing to other Macs needs Developer ID signing and notarization. The app never contains `.env`: each Mac keeps its own copy at `~/Library/Application Support/ADAM/.env` (`mkdir -p ~/Library/Application\ Support/ADAM`, then copy the file and `chmod 600` it). Settings already set in the environment take precedence. Without required database settings, the login screen says where the file belongs. Use an absolute `DB_SSL_CA` path, because an app opened from Finder starts in `/`.
 
 ## Architecture
 
@@ -165,11 +177,12 @@ The `.env` example above covers required desktop settings. Additional options:
 | `DB_SSL_CA` | CA certificate path; enables certificate and hostname verification |
 | `REPORTS_API_URL` | Override the report endpoint; otherwise replace the trailing `/analyze` in `ANALYZE_API_URL` with `/reports` |
 | `AWS_ENDPOINT_URL` | Local AWS emulator endpoint, such as moto; remove for real AWS |
-| `LOCAL_MEDIA_DIR`, `LOCAL_CHARTS_DIR` | Override download caches; defaults are under `src/myapp/init/` |
+| `LOCAL_MEDIA_DIR`, `LOCAL_CHARTS_DIR` | Override download caches; defaults are under `~/Library/Caches/ADAM/` |
+| `RECORDINGS_DIR` | Recordings folder (`~` allowed); defaults to `~/Movies/ADAM/`, with `video/` and `audio/` inside |
 
 **Backend-only settings:** SQS queue/worker settings and `OLLAMA_BASE_URL`, `OLLAMA_API_KEY`, `OLLAMA_MODEL` belong in the backend environment, not the desktop `.env`. When AI is enabled, relevant scores, statistics, and translated transcript text are sent to Ollama Cloud.
 
-Recordings normally remain in `~/video/` and `~/audio/` when launched with Briefcase. Failed uploads preserve them for retry. **Settings → Help → Clear Download Cache** removes downloaded copies while retaining original recordings. Align desktop, database, and backend time settings: service times use desktop local time, while period reports use `America/Los_Angeles`; queue bookkeeping uses UTC.
+Recordings remain in `~/Movies/ADAM/video/` and `~/Movies/ADAM/audio/` (earlier versions wrote `~/video/` and `~/audio/`; those files are left in place). Failed uploads preserve them for retry. **Settings → Help → Storage** shows both the recordings and download cache folders. **Settings → Help → Clear Download Cache** removes downloaded copies while retaining original recordings. Align desktop, database, and backend time settings: service times use desktop local time, while period reports use `America/Los_Angeles`; queue bookkeeping uses UTC.
 
 ## Development and tests
 
@@ -205,6 +218,6 @@ Integration tests add a disposable MySQL 8.4 container loaded with the test sche
 
 Keep network/database work off the UI thread and statistics free of missing-score values (`-1`). Update `pyproject.toml` and `uv.lock` together when dependencies change; preserve existing CRLF line endings in QML files.
 
-**Still to validate:** the SQS desktop flow on physical hardware, Windows/Linux, Briefcase build/package with the current uv setup, and packaged system-notification banners. In-app notifications and Dock reminders are implemented.
+**Still to validate:** the SQS desktop flow against the deployed backend, Developer ID signing and notarization of the packaged app (an ad-hoc build passed a Finder-launched walkthrough on Apple Silicon against local services), Windows/Linux, and packaged system-notification banners. In-app notifications and Dock reminders are implemented.
 
 Licensed under [BSD-3-Clause](myapp/LICENSE). See [README image sources](assets/readme/SOURCES.md) and [application asset licenses](myapp/src/myapp/images/SOURCES.md) for attribution.
