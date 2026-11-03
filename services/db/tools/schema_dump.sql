@@ -1,0 +1,94 @@
+-- =============================================================================
+-- tools/verify.sh 的結構傾印：目前資料庫（DATABASE()）的結構，一項一行，欄位用 | 分隔。
+-- 用看得到全部程序內容的帳號跑（verify.sh 用 root），mysql --raw -N -B；再經過 lib/sqlscan.awk 的 mode=dump
+-- （程序、觸發程序的內容去掉註解、壓縮空白）和 sort。兩個資料庫的傾印一樣＝結構一樣。
+-- 有比：資料表（種類、引擎、列格式、定序、建表選項）、欄位（順序、型別、NULL、預設值、字元集、定序、EXTRA、
+--   產生的欄位）、索引（唯一、欄位順序、前綴長度、排序、種類、運算式、可見）、限制條件、外鍵（欄位、參照、ON UPDATE、
+--   ON DELETE）、CHECK（內容、ENFORCED）、程序和函式（特性、sql_mode、字元集、參數、內容）、檢視、觸發程序、事件。
+-- 不比：tbl_schema_migration（runner 的記錄）、AUTO_INCREMENT 的計數、資料列數、各種 COMMENT 和 SQL 註解、
+--   程序的 DEFINER（schema.sql 是 master 建的，migration 是 adam_migrator 建的）、建立和修改的時間、權限。
+-- =============================================================================
+SET NAMES utf8mb4;
+SET SESSION group_concat_max_len = 1048576;
+
+SELECT CONCAT_WS('|', 'schema', DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME)
+  FROM information_schema.SCHEMATA
+ WHERE SCHEMA_NAME = DATABASE();
+
+SELECT CONCAT_WS('|', 'table', TABLE_NAME, TABLE_TYPE, IFNULL(ENGINE, '<null>'), IFNULL(ROW_FORMAT, '<null>'),
+                 IFNULL(TABLE_COLLATION, '<null>'), IFNULL(CREATE_OPTIONS, ''))
+  FROM information_schema.TABLES
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME <> 'tbl_schema_migration';
+
+SELECT CONCAT_WS('|', 'column', TABLE_NAME, LPAD(ORDINAL_POSITION, 3, '0'), COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE,
+                 IFNULL(COLUMN_DEFAULT, '<null>'), IFNULL(CHARACTER_SET_NAME, '<null>'), IFNULL(COLLATION_NAME, '<null>'),
+                 EXTRA, IFNULL(GENERATION_EXPRESSION, ''), IFNULL(SRS_ID, '<null>'))
+  FROM information_schema.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME <> 'tbl_schema_migration';
+
+SELECT CONCAT_WS('|', 'index', TABLE_NAME, INDEX_NAME, NON_UNIQUE, LPAD(SEQ_IN_INDEX, 2, '0'),
+                 IFNULL(COLUMN_NAME, '<expr>'), IFNULL(SUB_PART, '<null>'), IFNULL(COLLATION, '<null>'), INDEX_TYPE,
+                 IFNULL(EXPRESSION, ''), IS_VISIBLE)
+  FROM information_schema.STATISTICS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME <> 'tbl_schema_migration';
+
+SELECT CONCAT_WS('|', 'constraint', TABLE_NAME, CONSTRAINT_NAME, CONSTRAINT_TYPE, ENFORCED)
+  FROM information_schema.TABLE_CONSTRAINTS
+ WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME <> 'tbl_schema_migration';
+
+SELECT CONCAT_WS('|', 'fk', k.TABLE_NAME, k.CONSTRAINT_NAME,
+                 GROUP_CONCAT(k.COLUMN_NAME ORDER BY k.ORDINAL_POSITION SEPARATOR ','),
+                 k.REFERENCED_TABLE_SCHEMA = k.TABLE_SCHEMA, k.REFERENCED_TABLE_NAME,
+                 GROUP_CONCAT(k.REFERENCED_COLUMN_NAME ORDER BY k.ORDINAL_POSITION SEPARATOR ','),
+                 r.UPDATE_RULE, r.DELETE_RULE, r.MATCH_OPTION)
+  FROM information_schema.KEY_COLUMN_USAGE AS k
+  JOIN information_schema.REFERENTIAL_CONSTRAINTS AS r
+    ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME
+   AND r.TABLE_NAME = k.TABLE_NAME
+ WHERE k.TABLE_SCHEMA = DATABASE() AND k.REFERENCED_TABLE_NAME IS NOT NULL
+ GROUP BY k.TABLE_NAME, k.CONSTRAINT_NAME, k.TABLE_SCHEMA, k.REFERENCED_TABLE_SCHEMA, k.REFERENCED_TABLE_NAME,
+          r.UPDATE_RULE, r.DELETE_RULE, r.MATCH_OPTION;
+
+SELECT CONCAT_WS('|', 'check', tc.TABLE_NAME, tc.CONSTRAINT_NAME, tc.ENFORCED, cc.CHECK_CLAUSE)
+  FROM information_schema.TABLE_CONSTRAINTS AS tc
+  JOIN information_schema.CHECK_CONSTRAINTS AS cc
+    ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+ WHERE tc.CONSTRAINT_SCHEMA = DATABASE() AND tc.CONSTRAINT_TYPE = 'CHECK';
+
+SELECT CONCAT_WS('|', 'routine', ROUTINE_TYPE, ROUTINE_NAME, IFNULL(DTD_IDENTIFIER, ''), ROUTINE_BODY, SQL_DATA_ACCESS,
+                 IS_DETERMINISTIC, SECURITY_TYPE, SQL_MODE, CHARACTER_SET_CLIENT, COLLATION_CONNECTION, DATABASE_COLLATION)
+  FROM information_schema.ROUTINES
+ WHERE ROUTINE_SCHEMA = DATABASE();
+
+SELECT CONCAT_WS('|', 'param', ROUTINE_TYPE, SPECIFIC_NAME, LPAD(ORDINAL_POSITION, 2, '0'),
+                 IFNULL(PARAMETER_MODE, '<return>'), IFNULL(PARAMETER_NAME, '<return>'), DTD_IDENTIFIER,
+                 IFNULL(CHARACTER_SET_NAME, '<null>'), IFNULL(COLLATION_NAME, '<null>'))
+  FROM information_schema.PARAMETERS
+ WHERE SPECIFIC_SCHEMA = DATABASE();
+
+SELECT CONCAT('@@BEGIN routine-body|', ROUTINE_TYPE, '|', ROUTINE_NAME, '\n', IFNULL(ROUTINE_DEFINITION, '<null>'), '\n@@END')
+  FROM information_schema.ROUTINES
+ WHERE ROUTINE_SCHEMA = DATABASE();
+
+SELECT CONCAT_WS('|', 'view', TABLE_NAME, CHECK_OPTION, IS_UPDATABLE, SECURITY_TYPE, CHARACTER_SET_CLIENT,
+                 COLLATION_CONNECTION, VIEW_DEFINITION)
+  FROM information_schema.VIEWS
+ WHERE TABLE_SCHEMA = DATABASE();
+
+SELECT CONCAT_WS('|', 'trigger', TRIGGER_NAME, EVENT_OBJECT_TABLE, ACTION_TIMING, EVENT_MANIPULATION, ACTION_ORDER,
+                 SQL_MODE, CHARACTER_SET_CLIENT, COLLATION_CONNECTION)
+  FROM information_schema.TRIGGERS
+ WHERE TRIGGER_SCHEMA = DATABASE();
+
+SELECT CONCAT('@@BEGIN trigger-body|', TRIGGER_NAME, '\n', ACTION_STATEMENT, '\n@@END')
+  FROM information_schema.TRIGGERS
+ WHERE TRIGGER_SCHEMA = DATABASE();
+
+SELECT CONCAT_WS('|', 'event', EVENT_NAME, EVENT_TYPE, IFNULL(INTERVAL_VALUE, ''), IFNULL(INTERVAL_FIELD, ''),
+                 STATUS, ON_COMPLETION, SQL_MODE)
+  FROM information_schema.EVENTS
+ WHERE EVENT_SCHEMA = DATABASE();
+
+SELECT CONCAT('@@BEGIN event-body|', EVENT_NAME, '\n', EVENT_DEFINITION, '\n@@END')
+  FROM information_schema.EVENTS
+ WHERE EVENT_SCHEMA = DATABASE();

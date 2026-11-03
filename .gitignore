@@ -77,6 +77,8 @@ myapp/pdf/
 !myapp/tests/fixtures/schema.sql
 # 分析服務的整合測試用的最小權限帳號（只有測試用的密碼）
 !services/*/tests/integration/grants.sql
+# 資料庫 migration：migration 檔、新建用的 schema.sql（沒有帳號）、基準檢查、CI 和測試用的 SQL（只有測試用的密碼）
+!services/db/**/*.sql
 *.dump
 backup/
 

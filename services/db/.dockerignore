@@ -1,0 +1,8 @@
+# 映像檔只要 Dockerfile 用到的檔案（白名單）：tests/、tools/、schema.sql、README 都不進 build context
+*
+!migrate.sh
+!lib/sqlscan.awk
+!baseline/check_001_007.sql
+!certs/rds-global-bundle.pem
+!migrations/
+!migrations/*.sql
