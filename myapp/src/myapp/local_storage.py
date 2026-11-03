@@ -334,6 +334,11 @@ class CacheStorage(QObject):
         """錄影的資料夾（T51），家目錄寫成 ~：錄影不在下載快取裡，畫面上寫出它在哪裡。"""
         return config.display_path(self._places()["recordings"])
 
+    @Property(str, constant=True)
+    def cacheFolder(self):
+        """下載快取所在的資料夾（T51），家目錄寫成 ~：預設 ~/Library/Caches/ADAM。"""
+        return config.display_path(self._places()["cache"])
+
     @Property(bool, notify=changed)
     def scanning(self):
         return self._scanning

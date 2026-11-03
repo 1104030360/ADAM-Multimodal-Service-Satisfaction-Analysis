@@ -397,6 +397,10 @@ def test_the_recordings_folder_is_shown_with_a_tilde(services, monkeypatch):
     """設定頁 Storage 寫出錄影在哪裡（T51）：錄影不在下載快取裡，預設 ~/Movies/ADAM。"""
     monkeypatch.delenv("RECORDINGS_DIR")
     assert CacheStorage(services, lambda: []).recordingsFolder == "~/Movies/ADAM"
+    places = {"recordings": "/Volumes/Data/ADAM", "cache": os.path.join(os.path.expanduser("~"), "Library", "Caches",
+                                                                        "ADAM")}
+    storage = CacheStorage(services, lambda: [], lambda: places)
+    assert (storage.recordingsFolder, storage.cacheFolder) == ("/Volumes/Data/ADAM", "~/Library/Caches/ADAM")
     assert local_storage.recording_dirs() == [os.path.join(os.path.expanduser("~"), "Movies", "ADAM", name)
                                               for name in ("video", "audio")]
 

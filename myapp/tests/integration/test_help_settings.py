@@ -345,6 +345,7 @@ def test_clear_download_cache_asks_first_and_removes_only_the_cache(engine, serv
     wait_until(lambda: storage.state == "ready")
     assert find(view, "cacheSize").property("value") == "2.0 MB"
     assert find(view, "recordingsFolder").property("value") == str(tmp_path)  # RECORDINGS_DIR（T51）
+    assert find(view, "cacheFolder").property("value") == str(tmp_path)  # LOCAL_MEDIA_DIR 的上一層
     free = find_all(find(view, "storageGroup"), "freeSpace")
     assert [item.property("label") for item in free] == ["Free space"]
     assert " free of " in free[0].property("value")
