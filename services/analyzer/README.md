@@ -4,6 +4,7 @@
 Wav2Vec2、DeepFace 都在 EC2 的 CPU 上跑，分析工作經由 Amazon SQS 交給 worker（API 和 worker 用同一個映像檔）。
 和第 0 階段的假服務 `../analysis_service/` 共用報表、AI 說明、服務結果、分析佇列的程式（`check_report_copies.py` 檢查）。
 設計、部署和取捨的文件在 repo 的 `docs/rebuild/`（只在開發的電腦上，不在 git 裡）；下面的連結指向那裡。
+EC2 上的版本由 CD 更新：改了這個資料夾的 PR 合併到 `main` 就會自動部署，不要再手動 `docker run`（[`deploy/README.md`](../../deploy/README.md)）。
 
 | 檔案 | 內容 | 在哪一步 |
 |---|---|---|
