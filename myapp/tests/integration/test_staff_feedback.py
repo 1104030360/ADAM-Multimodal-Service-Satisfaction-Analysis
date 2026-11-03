@@ -22,6 +22,7 @@ from types import SimpleNamespace
 
 import cv2
 import pytest
+import sounddevice
 from PySide6.QtCore import QObject, QPointF, Qt, QUrl, qInstallMessageHandler
 from PySide6.QtTest import QAbstractItemModelTester, QTest
 
@@ -709,15 +710,15 @@ def test_too_few_devices_show_an_empty_state_with_scan_again(engine, services, d
 
 def test_probe_failure_shows_an_error_with_scan_again(engine, services, db, microphone):
     def broken(index):
-        raise OSError(-9999, "Unanticipated host error (fake)")
+        raise sounddevice.PortAudioError("Unanticipated host error (fake)", -9999)
 
-    microphone.get_host_api_info_by_index = broken
+    microphone.query_hostapis = broken
     home, window = launch_staff(engine, services)
     page = open_record_page(window)
     error = find(page, "scanError")
     assert error.isVisible() and error.property("title") == "Couldn't check cameras and microphones"
     assert error.property("retryText") == "Scan Again"
-    del microphone.get_host_api_info_by_index
+    del microphone.query_hostapis
     qml(error, "retry()")
     wait_until(lambda: qml(window, "deviceFinder.status") == "ready")
     assert find(page, "deviceForm").isVisible() and not error.isVisible()

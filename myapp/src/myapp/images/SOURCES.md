@@ -46,6 +46,17 @@
 | Jura Light | 「ADAM」字標 | SIL OFL 1.1，© 2019 The Jura Project Authors（https://github.com/ossobuffo/jura） |
 | Geist Mono Regular | 副標、角落的文字 | SIL OFL 1.1，© 2024 The Geist Project Authors（https://github.com/vercel/geist-font） |
 
+## app 的圖示（`myapp/icons/adam.icns`）
+
+打包出來的 `ADAM.app` 在 Finder、Dock 用的圖示（2026-11-03，T51）。檔案放在 `myapp/icons/`，不在這個資料夾：
+`sources` 會把 `src/myapp` 整個複製進 app，放在這裡會多包一份。
+
+- **內容**：上一節 `logo.jpg` 的原創標誌（眼睛形狀的聲波、中間的虹膜和瞳孔），重新畫成 21 條比較粗的線條，16×16 也認得出來；
+  放在石墨灰的圓角方塊上（Apple 的 1024 圖示網格：本體 824×824、四周留 100）。沒有照片、字型或第三方素材。
+- **授權**：本專案原創，和 `logo.jpg` 的原創部分一樣。沒有做過商標檢索。
+- **產生**：本機的 `docs/rebuild/assets/scripts/make_app_icon.py`（被 git 忽略），用專案 venv 的 PySide6 畫每一種尺寸
+  （16～1024，4 倍超取樣），再用 macOS 的 `iconutil` 打包成 `.icns`。
+
 ## 介面的圖示（`qml/components/icons/`）
 
 共用元件、頁面和側邊欄的 82 個 SVG 圖示。它們放在 `myapp/src/myapp/qml/components/icons/`（側邊欄的在 `nav/`），不在這個資料夾，但來源和授權一起記在這裡。

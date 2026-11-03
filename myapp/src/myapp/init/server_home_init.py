@@ -35,8 +35,6 @@ from myapp.ui_prefs import UiPrefs, open_settings
 from myapp.watcher import POLL_KEY as WATCHER_KEY, AnalysisWatcher, DockAttention
 from .record_widget import FINISHING, SAVE_ROLES, SAVED, QuitGuard, RecordingSaver, RecordWidget
 from .session import ShellSession
-from dotenv import load_dotenv
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -409,7 +407,7 @@ class DeviceFinder(QObject):
         self._cameras = []
         self._camera_ids = []  # 清單第 n 項對應的鏡頭編號
         self._microphones = []
-        self._microphone_ids = []  # 清單第 n 項對應的 PyAudio 裝置編號
+        self._microphone_ids = []  # 清單第 n 項對應的 PortAudio 裝置編號（sounddevice 的 device）
         self._status = "idle"
         self._error_technical = ""
         self._recorder = None  # 開著的錄影視窗

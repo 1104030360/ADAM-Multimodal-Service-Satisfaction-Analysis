@@ -20,6 +20,7 @@ import botocore.exceptions
 import cv2
 import mysql.connector
 import pytest
+import sounddevice
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt
 from PySide6.QtWidgets import QMessageBox
 
@@ -159,10 +160,16 @@ def restart(services):
         new.tasks.shutdown()
 
 
-def record(widget, frames=3, chunks=3):
-    """錄一段：開始 → 等假鏡頭、假麥克風把資料給完 → 停止。回傳這一段的 Recording。"""
+def record(widget, frames=3, chunks=3, started=None):
+    """錄一段：開始 → 等假鏡頭、假麥克風把資料給完 → 停止。回傳這一段的 Recording。
+
+    started(sid) 在開始之後、停止之前呼叫：要擋住上傳的測試在這裡擋。停止的那一刻就開始上傳，
+    停止之後才擋的話，慢的 runner 上那個檔案可能已經傳完了（和 test_upload_flow.py 的 record() 一樣）。
+    """
     widget.start_recording()
     recording = widget.current
+    if started is not None:
+        started(recording.service_id)
     try:
         wait_until(lambda: recording.frames_written >= frames and recording.audio_chunks >= chunks)
     finally:
@@ -233,9 +240,9 @@ def test_stop_does_not_wait_for_the_files_on_the_gui_thread(widget, saver, monke
     gate = threading.Event()
     write_wav = Recording._write_wav
 
-    def slow_write(self, frames, sample_width):
+    def slow_write(self, frames):
         gate.wait(5)  # 錄音檔還沒寫完（例如很長的一段）
-        write_wav(self, frames, sample_width)
+        write_wav(self, frames)
 
     monkeypatch.setattr(Recording, "_write_wav", slow_write)
     try:
@@ -252,8 +259,7 @@ def test_stop_does_not_wait_for_the_files_on_the_gui_thread(widget, saver, monke
 
 
 def test_a_new_recording_can_start_while_the_previous_one_uploads(widget, saver, uploads, services):
-    first = record(widget)
-    uploads.hold(f"video/{first.service_id}_cam1.avi")
+    first = record(widget, started=lambda sid: uploads.hold(f"video/{sid}_cam1.avi"))
     wait_until(lambda: saver.job(first.service_id).file_number == 2)
     second = record(widget)  # 第一段還在傳第 2 個檔案
     assert second.service_id != first.service_id
@@ -268,9 +274,8 @@ def test_a_new_recording_can_start_while_the_previous_one_uploads(widget, saver,
 
 
 def test_progress_updates_the_status_bar_and_one_toast_in_place(widget, saver, uploads, services):
-    recording = record(widget)
+    recording = record(widget, started=lambda sid: uploads.hold(f"video/{sid}_cam1.avi"))
     sid = recording.service_id
-    uploads.hold(f"video/{sid}_cam1.avi")
     job = saver.job(sid)
     wait_until(lambda: job.file_number == 2 and job.done > job.sizes[0])
     toast = only_toast(services.notifier)  # 還是同一則：進度就地更新，不會疊兩則
@@ -457,6 +462,41 @@ def test_database_failure_is_offered_again_and_only_the_database_is_retried(widg
     assert pending() == []
 
 
+def test_a_save_left_in_the_old_folder_is_retried_from_there(services, uploads, database, restart, tmp_path):
+    """T51 之前錄影寫在目前目錄（briefcase dev 時是 ~/video、~/audio）。本機記的是絕對路徑：錄影換到
+    RECORDINGS_DIR 之後，上次沒存完的照樣從原本的地方上傳，S3 的 key 也一樣。"""
+    sid = "S20261102135229"
+    old = tmp_path / "old-home"
+    files = [old / "video" / f"{sid}_cam0.avi", old / "video" / f"{sid}_cam1.avi", old / "audio" / f"{sid}_audio.wav"]
+    for path in files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * 10)
+    PendingSaveStore().put(PendingSave(sid, "acc-1", tuple(str(path) for path in files), datetime(2026, 11, 2, 13, 52),
+                                       datetime(2026, 11, 2, 13, 53), "upload"))
+    services, saver = restart()
+    [job] = saver.restore("acc-1")
+    assert job.recording.files == [str(path) for path in files]
+    assert saver.retry(sid) is True
+    wait_until(lambda: job.state == SAVED)
+    assert uploads.keys == [f"video/{sid}_cam0.avi", f"video/{sid}_cam1.avi", f"audio/{sid}_audio.wav"]
+    assert pending() == []
+
+
+def test_recordings_go_to_the_recordings_folder(monkeypatch, tmp_path):
+    """RECORDINGS_DIR（conftest 指到暫存資料夾），沒有設定是 ~/Movies/ADAM（T51）。底下照舊是 video/、audio/。"""
+    sid, start = "S20261103090000", datetime(2026, 11, 3, 9, 0)
+    assert Recording(sid, "acc-1", (0, 1), 0, start).files == [
+        str(tmp_path / "video" / f"{sid}_cam0.avi"), str(tmp_path / "video" / f"{sid}_cam1.avi"),
+        str(tmp_path / "audio" / f"{sid}_audio.wav")]
+    monkeypatch.delenv("RECORDINGS_DIR")
+    recording = Recording(sid, "acc-1", (0, 1), 0, start)
+    assert recording.audio_file == os.path.join(os.path.expanduser("~"), "Movies", "ADAM", "audio", f"{sid}_audio.wav")
+    assert recording.keys == [f"video/{sid}_cam0.avi", f"video/{sid}_cam1.avi", f"audio/{sid}_audio.wav"]
+    monkeypatch.setenv("RECORDINGS_DIR", "~/ADAM recordings")  # .env 裡可以用 ~
+    assert Recording(sid, "acc-1", (0, 1), 0, start).video_files[0] == os.path.join(
+        os.path.expanduser("~"), "ADAM recordings", "video", f"{sid}_cam0.avi")
+
+
 def test_save_cut_off_by_quitting_is_offered_after_a_restart(widget, saver, uploads, restart):
     widget.start_recording()
     recording = widget.current
@@ -571,9 +611,9 @@ def test_saves_list_follows_a_save_in_place_from_finishing_to_saved(widget, save
     gate = threading.Event()
     write_wav = Recording._write_wav
 
-    def slow_write(self, frames, sample_width):
+    def slow_write(self, frames):
         gate.wait(5)  # 錄音檔還沒寫完
-        write_wav(self, frames, sample_width)
+        write_wav(self, frames)
 
     monkeypatch.setattr(Recording, "_write_wav", slow_write)
     try:
@@ -794,7 +834,7 @@ def test_microphone_failure_is_shown_and_the_video_is_still_saved(widget, saver,
     wait_until(lambda: recording.frames_written >= 3)
     widget.stop_recording()
     wait_for(saver, recording, SAVED)  # 以前影片也一起丟掉（UX-11）
-    assert isinstance(recording.audio_error, OSError)
+    assert isinstance(recording.audio_error, sounddevice.PortAudioError)
     with wave.open(recording.audio_file) as wav:
         assert wav.getnframes() == 0
     assert row.problem  # 停止之後還看得到，直到下一段開始
@@ -813,8 +853,7 @@ def test_stalled_microphone_is_shown(widget, monkeypatch):
 # ── 錄影中的狀態（UX-12）──────────────────────────────────────────────────────
 
 def test_recording_shows_a_steady_dot_the_elapsed_time_and_the_level(widget, monkeypatch):
-    monkeypatch.setattr(tests.fakes._FakeStream, "read", lambda self, chunk, exception_on_overflow=True:
-                        b"\x00\x40" * chunk)  # 16384：-6 dBFS
+    monkeypatch.setattr(tests.fakes._FakeStream, "read", lambda self, frames: (b"\x00\x40" * frames, False))  # 16384：-6 dBFS
     assert widget.poll_timer.interval() == 250  # 計時、音量每秒最多更新 4 次
     widget.start_recording()
     bar = widget.status_bar

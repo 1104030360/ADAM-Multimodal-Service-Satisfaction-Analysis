@@ -124,6 +124,9 @@ def test_protected_locations_cover_recordings_home_and_every_pending_file(tmp_pa
     protected = local_storage.protected_locations()
     assert {os.path.realpath(tmp_path / "video"), os.path.realpath(tmp_path / "audio"),
             os.path.realpath(os.path.expanduser("~"))} <= set(protected.dirs)
+    # T51 之前 briefcase dev 的錄影寫在 ~/video、~/audio：快取資料夾設定成它們也不清
+    assert {os.path.realpath(os.path.expanduser(os.path.join("~", name))) for name in ("video", "audio")} <= set(
+        protected.dirs)
     assert {os.path.realpath(path) for path in (*files, *other)} == protected.files
     assert PendingSaveStore()._settings.value("pendingSaves/broken") == "not json"
 
@@ -386,8 +389,20 @@ def test_without_services_nothing_runs():
 
 def test_default_places_are_the_recordings_and_the_first_cache_folder(services, tmp_path, cache):
     storage = make_storage(services, cache)
-    assert storage._places() == {"recordings": str(tmp_path / "video"), "cache": cache[0]}
+    assert storage._places() == {"recordings": str(tmp_path), "cache": cache[0]}
     assert CacheStorage(services, lambda: [])._places()["cache"] == os.getcwd()
+
+
+def test_the_recordings_folder_is_shown_with_a_tilde(services, monkeypatch):
+    """設定頁 Storage 寫出錄影在哪裡（T51）：錄影不在下載快取裡，預設 ~/Movies/ADAM。"""
+    monkeypatch.delenv("RECORDINGS_DIR")
+    assert CacheStorage(services, lambda: []).recordingsFolder == "~/Movies/ADAM"
+    places = {"recordings": "/Volumes/Data/ADAM", "cache": os.path.join(os.path.expanduser("~"), "Library", "Caches",
+                                                                        "ADAM")}
+    storage = CacheStorage(services, lambda: [], lambda: places)
+    assert (storage.recordingsFolder, storage.cacheFolder) == ("/Volumes/Data/ADAM", "~/Library/Caches/ADAM")
+    assert local_storage.recording_dirs() == [os.path.join(os.path.expanduser("~"), "Movies", "ADAM", name)
+                                              for name in ("video", "audio")]
 
 
 def test_report_pages_are_forgotten_after_clearing(tmp_path):

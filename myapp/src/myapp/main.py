@@ -7,9 +7,9 @@ import logging
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
 from PySide6 import QtWidgets, QtQml
 from PySide6.QtCore import QUrl, QObject, Property, Signal, Slot
+from myapp import config
 from myapp.database import DatabaseConnector, verify_login
 from myapp.init import server_home_init, admin_home_init
 from myapp.db_lane import DbLane
@@ -28,13 +28,16 @@ class MainWindow(QObject):
 
     F2：啟動時不連資料庫，登入在 db lane 背景驗證（UX-01、ENG-02、ENG-06）。QML 呼叫 logIn()，
     結果從三個 signal 回來：登入成功、帳號或密碼不正確、連不上資料庫（或其他錯誤）。
+    找不到設定檔、或少了登入要用的變數時（T51），settingsProblem 是登入畫面上的說明，logIn() 不連資料庫。
     """
 
     loggingInChanged = Signal()
     loginSucceeded = Signal(str, str)  # accountId, accountLevel（字串，"1" 是服務人員）
     loginRejected = Signal()           # 帳號或密碼不正確
-    loginFailed = Signal(str)          # "offline"：連不上資料庫；"error"：其他錯誤（例如資料庫設定錯了）
+    # "offline"：連不上資料庫；"error"：其他錯誤（例如資料庫設定錯了）；"settings"：設定不完整（settingsProblem）
+    loginFailed = Signal(str)
     loginRequested = Signal()          # 登出了（N1）：login.qml 換一份新的表單，登入視窗再出現
+    settingsProblemChanged = Signal()
 
     def __init__(self, engine):
         super().__init__()
@@ -48,6 +51,7 @@ class MainWindow(QObject):
         self.services = AppServices(self.tasks, self.notifier, DbLane(), self.ui_prefs)
         self.tasks.failed.connect(self._on_task_failed)  # 沒給 on_err 的工作失敗時，跳一則通知
         self.tasks.busyChanged.connect(self._on_busy_changed)
+        self._settings_problem = config.problem()
         context = self.engine.rootContext()
         context.setContextProperty("mainWindow", self)
         context.setContextProperty("tasks", self.tasks)
@@ -67,12 +71,32 @@ class MainWindow(QObject):
     def loggingIn(self):
         return self.tasks.isBusy(LOGIN_KEY)
 
+    @Property(str, notify=settingsProblemChanged)
+    def settingsProblem(self):
+        """設定檔要放在哪裡、少了哪些變數（英文，config.problem()）；設定齊全是空字串。"""
+        return self._settings_problem
+
     @Slot(str, str, result=bool)
     def logIn(self, username, password):
-        """在 db lane 驗證帳號密碼。回傳 False 表示上一次登入還沒結束（防重複送出）。"""
+        """在 db lane 驗證帳號密碼。回傳 False 表示上一次登入還沒結束（防重複送出）。
+
+        設定不完整時先重新找一次設定檔（使用者可能剛放好），還是不完整就發 loginFailed("settings")，不連資料庫。
+        """
+        if self._settings_problem and not self._reload_settings():
+            self.loginFailed.emit("settings")
+            return True
         return self.tasks.submit("db", LOGIN_KEY,
                                  lambda token, report: verify_login(self.services.db, username, password),
                                  on_ok=self._login_done, on_err=self._login_error)
+
+    def _reload_settings(self):
+        """讀一個本機的小檔案（不是網路），在 GUI 執行緒做。回傳設定是不是齊全了。"""
+        config.load()
+        problem = config.problem()
+        if problem != self._settings_problem:
+            self._settings_problem = problem
+            self.settingsProblemChanged.emit()
+        return not problem
 
     def _login_done(self, account):
         if account is None:
@@ -106,8 +130,9 @@ class MainWindow(QObject):
 def main():
     try:
         print("Starting application")
-        # DbLane 第一次連線時才讀 DB_*；以前是 DatabaseConnector 建立時順便讀 .env，現在啟動時不連資料庫，要自己讀
-        load_dotenv()
+        # 設定檔只在這裡讀一次（T51）：環境變數 → ~/Library/Application Support/ADAM/.env → repo 裡的 .env。
+        # DbLane 第一次連線時才讀 DB_*，錄影、快取的位置也是用到時才讀
+        config.load()
         app_module = sys.modules["__main__"].__package__
         metadata = importlib.metadata.metadata(app_module)
         QtWidgets.QApplication.setApplicationName(metadata["Formal-Name"])

@@ -1,4 +1,6 @@
 """側邊欄「Quit」呼叫的 clearDir()：先取消還在下載的檔案，再清掉影片、圖表、報表頁面、報表 PDF 的快取（兩端共用 myapp/media.py）。"""
+import os
+
 import pytest
 
 from myapp import local_storage, media
@@ -32,15 +34,21 @@ def fill(folder):
     (folder / "half.avi.0123.download.part").write_bytes(b"half")  # 下載到一半的暫存檔也要清掉
 
 
-def test_quit_empties_the_caches_next_to_the_module_by_default(home, tmp_path, monkeypatch):
-    monkeypatch.delenv("LOCAL_MEDIA_DIR")  # 沒有另外設定時，快取在 init/ 底下的 media/、charts/、reports/、reports-pdf/
+def test_quit_empties_the_caches_in_the_cache_root_by_default(home, tmp_path, monkeypatch):
+    monkeypatch.delenv("LOCAL_MEDIA_DIR")  # 沒有另外設定時，快取在 CACHE_ROOT 底下的 media/、charts/、reports/…
     monkeypatch.delenv("LOCAL_CHARTS_DIR")
-    monkeypatch.setattr(media, "CACHE_ROOT", str(tmp_path / "init"))  # 不能刪到真的快取
-    for name in ("media", "charts", "reports", "reports-pdf"):
-        fill(tmp_path / "init" / name)
+    monkeypatch.setattr(media, "CACHE_ROOT", str(tmp_path / "Caches" / "ADAM"))  # 不能刪到真的快取
+    for name in ("media", "charts", "reports", "avatars", "reports-pdf"):
+        fill(tmp_path / "Caches" / "ADAM" / name)
     home.clearDir()
-    for name in ("media", "charts", "reports", "reports-pdf"):
-        assert list((tmp_path / "init" / name).iterdir()) == []  # 資料夾留著，裡面清空
+    for name in ("media", "charts", "reports", "avatars", "reports-pdf"):
+        assert list((tmp_path / "Caches" / "ADAM" / name).iterdir()) == []  # 資料夾留著，裡面清空
+
+
+def test_the_cache_root_is_in_the_users_caches_folder():
+    """T51：~/Library/Caches/ADAM（briefcase dev、打包的 app 都一樣），不在模組旁邊（會被包進 app）。"""
+    assert media.CACHE_ROOT == os.path.join(os.path.expanduser("~"), "Library", "Caches", "ADAM")
+    assert not media.CACHE_ROOT.startswith(os.path.dirname(media.__file__))
 
 
 def test_quit_empties_the_cache_dirs_set_in_env(home, tmp_path):

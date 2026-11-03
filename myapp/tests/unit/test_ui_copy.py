@@ -44,7 +44,8 @@ PYTHON_FILES = [SRC / "init" / "record_widget.py", SRC / "init" / "server_home_i
                 SRC / "service_list.py", SRC / "account.py", SRC / "reports.py",
                 SRC / "diagnostics.py", SRC / "local_storage.py",
                 SRC / "devices.py", SRC / "device_setup.py",
-                SRC / "coaching.py"]   # 員工輔導的清單、明細、歷史和通知（PLAN1 W2，T45）
+                SRC / "coaching.py",   # 員工輔導的清單、明細、歷史和通知（PLAN1 W2，T45）
+                SRC / "config.py"]     # 找不到設定檔時登入畫面的說明（T51）
 
 # 中日韓的字和全形標點：U+3000–303F、U+3400–4DBF、U+4E00–9FFF、U+F900–FAFF、U+FF00–FFEF
 CJK = re.compile("[" + "".join(f"{chr(first)}-{chr(last)}" for first, last in (

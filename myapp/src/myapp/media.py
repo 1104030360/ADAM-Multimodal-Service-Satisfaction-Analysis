@@ -50,8 +50,9 @@ MISSING, WAITING, DOWNLOADING = "missing", "waiting", "downloading"
 PENDING = (WAITING, DOWNLOADING)
 MEDIA_KINDS = ("cam0", "cam1", "audio")  # 顧客鏡頭、員工鏡頭、錄音
 
-# 快取的位置：沒有設定 LOCAL_MEDIA_DIR／LOCAL_CHARTS_DIR 時，和以前一樣在 init/ 底下（模組旁邊的 media/、charts/）
-CACHE_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "init")
+# 快取的位置（T51）：沒有設定 LOCAL_MEDIA_DIR／LOCAL_CHARTS_DIR 時在 ~/Library/Caches/ADAM/ 底下（macOS 放隨時能重新
+# 下載的檔案的地方），briefcase dev 也一樣。以前在模組旁邊的 init/：會跟著 sources 包進打包的 app，app 裡面也不該寫入
+CACHE_ROOT = os.path.join(os.path.expanduser("~"), "Library", "Caches", "ADAM")
 
 # 一個查詢取回一筆服務的所有檔案（ENG-04：以前 4 個查詢）。每個鏡頭、錄音取最新的一列；圖表依寫入的順序。
 # UNION 裡個別的 ORDER BY 不保證最後的順序，所以多選 part、seq 兩欄，最後再排一次
@@ -105,19 +106,25 @@ def charts_dir():
     return os.getenv("LOCAL_CHARTS_DIR") or os.path.join(CACHE_ROOT, "charts")
 
 
+def cache_folder():
+    """影片的快取的上一層：報表頁面圖、帳號照片、報表 PDF 也放在這裡，設定頁 Storage 寫的就是它（T51）。
+    預設是 CACHE_ROOT；測試時跟著 LOCAL_MEDIA_DIR 進暫存資料夾。"""
+    return os.path.dirname(os.path.normpath(media_dir()))
+
+
 def reports_cache_dir():
-    """報表頁面圖的快取：和影片的快取放在同一層（測試時跟著 LOCAL_MEDIA_DIR 進暫存資料夾）。"""
-    return os.path.join(os.path.dirname(os.path.normpath(media_dir())), "reports")
+    """報表頁面圖的快取：和影片的快取放在同一層。"""
+    return os.path.join(cache_folder(), "reports")
 
 
 def avatar_cache_dir():
     """帳號照片的快取（new-feature N3，myapp/account.py）：和影片的快取放在同一層，Quit 時一起清掉。"""
-    return os.path.join(os.path.dirname(os.path.normpath(media_dir())), "avatars")
+    return os.path.join(cache_folder(), "avatars")
 
 
 def report_pdf_dir():
     """下載的報表 PDF（new-feature N4）：和其他快取放在同一層的 reports-pdf/。"""
-    return os.path.join(os.path.dirname(os.path.normpath(media_dir())), "reports-pdf")
+    return os.path.join(cache_folder(), "reports-pdf")
 
 
 def list_key(service_id):
@@ -287,7 +294,7 @@ def download_cache_dirs():
     """可以重新下載的快取資料夾（new-feature S5，T40）：雲端有原檔、隨時能重新下載的東西才放進來。
 
     Quit 時的 clear_cache()、設定頁 Storage 的大小與 Clear Download Cache 都看這一份，三個地方一定一致。
-    錄影（~/video、~/audio）、還沒上傳的檔案不能放進來（local_storage 另外會擋）。新的快取資料夾加在清單後面。
+    錄影（~/Movies/ADAM）、還沒上傳的檔案不能放進來（local_storage 另外會擋）。新的快取資料夾加在清單後面。
     """
     return [
         media_dir(),

@@ -3,22 +3,23 @@
 # 套件清單只寫在這裡：uv sync 照它（與 uv.lock）安裝 .venv，briefcase 也從這裡讀 requires
 [project]
 name = "myapp"
-version = "0.0.1"
+# app 的版本（Info.plist 的 CFBundleShortVersionString、設定頁 About）。每次發佈新的 app 手動加（T51）
+version = "1.0.0"
 # PEP 639 的寫法；原本 [tool.briefcase] 的 license.file 會讓 briefcase 每次都印一大段警告
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 requires-python = "==3.13.*"
-# 桌面用戶端（macOS、Python 3.13）的直接依賴。PyAudio 需要先安裝 PortAudio：brew install portaudio
+# 桌面用戶端（macOS、Python 3.13）的直接依賴。都有預先編好的 wheel：sounddevice 自帶 PortAudio，不需要 Homebrew
 dependencies = [
     "PySide6_Essentials==6.12.0",
     "PySide6_Addons==6.12.0",
     "opencv-python==4.10.0.84",
-    "PyAudio==0.2.14",
     "mysql-connector-python==26.10.0",
     "python-dotenv==1.2.4",
     "PyMuPDF==1.25.5",
     "requests==2.34.2",
     "boto3[crt]==1.43.122",
+    "sounddevice==0.5.6",
 ]
 
 # 測試用的套件。briefcase dev --test 會把它們當成 test_requires 安裝；
@@ -73,24 +74,40 @@ show_missing = true
 fail_under = 75
 
 [tool.briefcase]
-bundle = "com.example"
-url = "https://example.com/myapp"
+# bundle id 是 bundle 加上 app 的名稱：io.github.1104030360.myapp。Briefcase 0.4.7 沒辦法單獨指定，想要的
+# io.github.1104030360.adam 得把 app 和 Python 模組都改名成 adam，所以不改（T51）。發佈之後不要再改這個值：
+# macOS 的鏡頭、麥克風權限都跟著它（偏好設定是 QSettings("ADAM", "myapp")，和 bundle id 無關）
+bundle = "io.github.1104030360"
+url = "https://github.com/1104030360/ADAM-Multimodal-Service-Satisfaction-Analysis"
 author = "Timmy"
 author_email = "5961timtim@gmail.com"
 
 [tool.briefcase.app.myapp]
-formal_name = "myapp"
-description = "My first application"
-long_description = """More details about the app should go here.
+formal_name = "ADAM"   # 打包出來是 ADAM.app，Dock、選單列、權限詢問都寫 ADAM
+description = "Record service sessions and review AI satisfaction analysis."
+long_description = """ADAM records a service session with a customer camera, a staff camera and a microphone, uploads it for analysis, and shows face, voice and text satisfaction scores, coaching and reports for staff and managers.
 """
+icon = "icons/adam"    # icons/adam.icns：開場畫面的原創標誌（眼睛形狀的聲波），來源見 src/myapp/images/SOURCES.md
+# app 的程式碼：整個 src/myapp 複製進 app（qml/、images/ 也在裡面）
 sources = [
     "src/myapp",
 ]
-
-resources = [
-    "src/myapp/qml",
-    "src/myapp/images",
-    "src/myapp/init",
+# 從 build 出來的 app 拿掉的東西，路徑相對於 build/myapp/macos/app/（T51）
+cleanup_paths = [
+    # 設定檔（資料庫密碼、IAM user 的金鑰）絕對不能包進 app：每台電腦放在 ~/Library/Application Support/ADAM/
+    "{app.formal_name}.app/Contents/Resources/app/**/.env",
+    "{app.formal_name}.app/Contents/Resources/app/**/.env.*",
+    # T51 之前的下載快取在 src/myapp/init/ 底下（影片、圖表、帳號照片、報表），本機舊的快取不要包進去
+    "{app.formal_name}.app/Contents/Resources/app/myapp/init/media",
+    "{app.formal_name}.app/Contents/Resources/app/myapp/init/charts",
+    "{app.formal_name}.app/Contents/Resources/app/myapp/init/reports",
+    "{app.formal_name}.app/Contents/Resources/app/myapp/init/avatars",
+    "{app.formal_name}.app/Contents/Resources/app/myapp/init/reports-pdf",
+    # sounddevice 的 wheel 也帶了 Windows 的 PortAudio DLL
+    "{app.formal_name}.app/Contents/Resources/app_packages/_sounddevice_data/portaudio-binaries/*.dll",
+    # Qt 的 SQL 驅動外掛：app 不用 QtSql（資料庫走 mysql-connector），其中 ODBC、Mimer 的連到
+    # /opt/homebrew、/usr/local 的函式庫（PySide6 建置機器上的路徑），留著會讓「沒有 Homebrew 的路徑」的檢查不乾淨
+    "{app.formal_name}.app/Contents/Resources/app_packages/PySide6/Qt/plugins/sqldrivers",
 ]
 
 test_sources = [
@@ -100,11 +117,13 @@ test_sources = [
 # briefcase dev 用 uv 建立自己的隔離環境（.briefcase/myapp/uv-dev.*）
 env_manager = "uv"
 
-permission.camera = "錄製服務過程時需要使用鏡頭。"
-permission.microphone = "錄製服務過程時需要使用麥克風。"
+# macOS 第一次用到鏡頭、麥克風時，詢問視窗上的說明（介面文字一律英文，PLAN D1）
+permission.camera = "ADAM uses the camera to record service sessions."
+permission.microphone = "ADAM uses the microphone to record service sessions."
 
 [tool.briefcase.app.myapp.macOS]
-universal_build = false
+universal_build = false   # 只支援 Apple Silicon（T51）：universal build 的 app 會大一倍
+min_os_version = "14.0"   # PySide6 6.12、mysql-connector 26.10 的 wheel 最低要 macOS 14（Briefcase 預設 11.0，裝不了）
 requires = [
     "std-nslog~=1.0.0",
 ]

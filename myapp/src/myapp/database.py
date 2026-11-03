@@ -1,7 +1,6 @@
 import mysql.connector
 from mysql.connector import Error
 import os
-from dotenv import load_dotenv
 from myapp.passwords import verify_password
 
 
@@ -21,7 +20,7 @@ def verify_login(db, username, password):
 
 
 def connection_config():
-    """MySQL 連線設定，全部從環境變數讀取。DatabaseConnector 和錄影視窗共用這一份。"""
+    """MySQL 連線設定，全部從環境變數讀取（設定檔由 config.load() 讀進來）。DatabaseConnector 和 DbLane 共用這一份。"""
     config = dict(
         host=os.getenv('DB_HOST'),
         port=int(os.getenv('DB_PORT', '3306')),
@@ -55,8 +54,7 @@ class DatabaseConnector:
         if not hasattr(self, 'initialized'):
             self.initialized = True
             print("Initializing DatabaseConnector")
-            # 載入 .env
-            load_dotenv()
+            # DB_* 已經由 main() 的 config.load() 讀進環境變數（T51）
             self.connection = self.create_connection()
             if self._connection:
                 print("Database connection created successfully")

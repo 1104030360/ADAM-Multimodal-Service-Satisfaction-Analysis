@@ -436,6 +436,23 @@ SettingsSection {
                 value: help.storage ? help.storage.cacheText : ""
             }
 
+            // 快取和錄影放在哪裡（T51）：預設 ~/Library/Caches/ADAM、~/Movies/ADAM。錄影不在下載快取裡
+            InfoRow {
+                objectName: "cacheFolder"
+                width: parent.width
+                labelWidth: help.labelWidth
+                label: qsTr("Download cache folder")
+                value: help.storage ? help.storage.cacheFolder : ""
+            }
+
+            InfoRow {
+                objectName: "recordingsFolder"
+                width: parent.width
+                labelWidth: help.labelWidth
+                label: qsTr("Recordings folder")
+                value: help.storage ? help.storage.recordingsFolder : ""
+            }
+
             Repeater {
                 model: help.storage ? help.storage.disks : []
 

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 import mysql.connector
 import numpy as np
+import sounddevice
 from PySide6.QtCore import QObject, Signal
 
 
@@ -94,12 +95,15 @@ class _FakeCamera:
 
 
 class FakeMicrophone:
-    """取代 pyaudio.PyAudio，也取代麥克風權限（devices.media_access("audio")）。
+    """取代 sounddevice 的麥克風（裝置清單、RawInputStream、重新初始化 PortAudio），也取代麥克風權限
+    （devices.media_access("audio")）。install() 換掉 sounddevice 裡 app 用到的函式（myapp/devices.py）。
 
     devices：(名稱, 輸入聲道數) 的清單。每次錄音給 chunks 段資料。
-    overflow_at：第幾段資料要模擬緩衝區溢位（3-3）。broken：開啟麥克風就失敗。
+    overflow_at：第幾段資料是溢位之後讀到的（3-3：PortAudio 丟掉讀不及的資料，照樣回傳這一段）。
+    broken：開啟麥克風就失敗。
     裝置設定（T41）用到的：access（麥克風權限）、host_api（host API 的名稱）、sample（每個樣本的值，決定音量）、
-    chunk_interval（每段之間等幾秒）、open_streams()（還沒關的錄音）、terminated（terminate() 的次數）。
+    chunk_interval（每段之間等幾秒）、open_streams()（還沒關的錄音）、attempts（打開麥克風的次數，含失敗的）、
+    rescans（重新初始化 PortAudio、重新列出裝置的次數）。
     """
 
     def __init__(self, devices=(("MacBook 麥克風", 1),), chunks=3, overflow_at=None, broken=False, access="granted",
@@ -113,17 +117,25 @@ class FakeMicrophone:
         self.sample = sample
         self.chunk_interval = chunk_interval
         self.chunks_read = 0  # 總共給出幾段資料
-        self.opened_with = None  # 最後一次 open() 的參數
-        self.terminated = 0
+        self.opened_with = None  # 最後一次打開時給 RawInputStream 的參數
+        self.attempts = 0
+        self.rescans = 0
+        self.initialized = True  # PortAudio 在執行：_terminate() 之後、_initialize() 之前是 False
         self.streams = []
 
-    def __call__(self):  # 程式寫 pyaudio.PyAudio() 時會呼叫這裡
-        return self
+    def install(self, monkeypatch):
+        # 每次呼叫才查替身的方法：測試可以蓋過這個替身自己的方法（例如讓探測失敗），del 之後又是原本的
+        for name, method in (("RawInputStream", "open"), ("query_hostapis", "query_hostapis"),
+                             ("query_devices", "query_devices"), ("_terminate", "terminate"),
+                             ("_initialize", "initialize")):
+            monkeypatch.setattr(sounddevice, name,
+                                lambda *args, _method=method, **kwargs: getattr(self, _method)(*args, **kwargs))
 
-    def open(self, **kwargs):
+    def open(self, **kwargs):  # 程式寫 sounddevice.RawInputStream(...) 時會呼叫這裡
+        self.attempts += 1
         self.opened_with = kwargs
         if self.broken:
-            raise OSError(-9996, "Invalid input device (fake)")
+            raise sounddevice.PortAudioError("Error opening RawInputStream: Invalid device (fake)", -9996)
         stream = _FakeStream(self)
         self.streams.append(stream)
         return stream
@@ -131,40 +143,52 @@ class FakeMicrophone:
     def open_streams(self):
         return [stream for stream in self.streams if not stream.closed]
 
-    def get_sample_size(self, sample_format):
-        return 2  # paInt16
-
     def terminate(self):
-        self.terminated += 1
+        if not self.initialized:
+            raise sounddevice.PortAudioError("Error terminating PortAudio: PortAudio not initialized (fake)", -10000)
+        self.initialized = False
 
-    def get_host_api_info_by_index(self, index):
-        return {"deviceCount": len(self.devices), "name": self.host_api}
+    def initialize(self):
+        self.initialized = True
+        self.rescans += 1
 
-    def get_device_info_by_host_api_device_index(self, host_api, index):
-        name, input_channels = self.devices[index]
-        return {"index": index, "name": name, "maxInputChannels": input_channels}
+    def query_hostapis(self, index=None):
+        assert self.initialized, "PortAudio isn't initialized"
+        return {"name": self.host_api, "devices": list(range(len(self.devices))),
+                "default_input_device": 0, "default_output_device": 0}
+
+    def query_devices(self, device=None, kind=None):
+        assert self.initialized, "PortAudio isn't initialized"
+        name, input_channels = self.devices[device]
+        return {"index": device, "name": name, "hostapi": 0, "max_input_channels": input_channels,
+                "max_output_channels": 0 if input_channels else 2, "default_samplerate": 44100.0}
 
 
 class _FakeStream:
     def __init__(self, microphone):
         self.microphone = microphone
         self.reads = 0
+        self.started = False
         self.closed = False
 
-    def read(self, chunk, exception_on_overflow=True):
+    def start(self):
+        self.started = True
+
+    def read(self, frames):
+        if not self.started:  # 真的 RawInputStream 沒有 start() 就讀不到資料
+            raise sounddevice.PortAudioError("Error reading from stream: Stream is stopped (fake)", -9983)
         if self.microphone.chunk_interval:
             time.sleep(self.microphone.chunk_interval)
         if self.reads == self.microphone.chunks:
             time.sleep(0.001)
-            return b""
+            return b"", False
         self.reads += 1
-        if self.reads == self.microphone.overflow_at and exception_on_overflow:
-            raise OSError(-9981, "Input overflowed")  # PyAudio 預設遇到溢位就丟例外
         self.microphone.chunks_read += 1
-        return int(self.microphone.sample).to_bytes(2, "little", signed=True) * chunk  # chunk 個 16-bit 樣本
+        overflowed = self.reads == self.microphone.overflow_at
+        return int(self.microphone.sample).to_bytes(2, "little", signed=True) * frames, overflowed  # frames 個 16-bit 樣本
 
-    def stop_stream(self):
-        pass
+    def stop(self):
+        self.started = False
 
     def close(self):
         self.closed = True
@@ -289,7 +313,7 @@ class FakeSaver(QObject):
 
 def save_job(service_id, state, **fields):
     """一段錄影的存檔（SaveJob），狀態和欄位直接指定；檔案不必存在。"""
-    from myapp.init.record_widget import Recording, SaveJob  # 用到才 import：裡面有 cv2、PyAudio
+    from myapp.init.record_widget import Recording, SaveJob  # 用到才 import：裡面有 cv2
     from myapp.pending_saves import PendingSave
 
     start = datetime(2026, 10, 30, 12, 0, 0)

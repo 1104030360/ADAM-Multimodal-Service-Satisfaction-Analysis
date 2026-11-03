@@ -29,17 +29,15 @@ import threading
 import time
 import wave
 import weakref
-from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 
 import cv2
 import numpy as np
-import pyaudio
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtSvg import QSvgRenderer
 
-from myapp import storage
+from myapp import devices, local_storage, storage
 from myapp.notifications import DISK_FULL, FILE_NOT_FOUND, NO_PERMISSION, user_message
 from myapp.pending_saves import PendingSave, PendingSaveStore
 from myapp.theme import RECORD_WINDOW, TOKENS
@@ -330,23 +328,27 @@ class Recording:
     - 麥克風打不開或中途壞掉：記下錯誤，影片照錄，錄音檔留下已經錄到的部分（以前整段的影片也一起丟掉，UX-11）。
     - 兩支鏡頭都讀到畫面才寫入（和以前一樣），兩支影片的影格數相同、時間對得上。
     - 檔案用絕對路徑：上傳在背景執行，不受之後目前目錄改變的影響。S3 的 key 照舊是 video/…、audio/…。
+    - 放在 local_storage.recordings_dir() 底下的 video/、audio/（預設 ~/Movies/ADAM，T51；以前是目前目錄，
+      從 Finder 打開的 app 目前目錄是 /，寫不進去）。
     """
 
-    SAMPLE_FORMAT = pyaudio.paInt16
+    # 錄音檔的格式：16-bit PCM、單聲道、44.1 kHz（分析服務讀的就是這個格式；換成 sounddevice 之後也一樣，T51）
+    DTYPE = "int16"     # sounddevice 的寫法
+    SAMPLE_WIDTH = 2    # WAV 的每個樣本 2 bytes
     CHANNELS = 1
     RATE = 44100
     CHUNK = 1024
     FRAME_SIZE = (640, 480)
     FPS = 30.0
 
-    def __init__(self, service_id, account_id, camera_ids, mic_index, start_time, folder="."):
+    def __init__(self, service_id, account_id, camera_ids, mic_index, start_time, folder=None):
         self.service_id = service_id
         self.account_id = account_id
         self.camera_ids = tuple(camera_ids)
         self.mic_index = mic_index
         self.start_time = start_time
         self.end_time = None
-        folder = os.path.abspath(folder)
+        folder = os.path.abspath(folder) if folder else local_storage.recordings_dir()
         self.video_files = [os.path.join(folder, "video", f"{service_id}_cam{i}.avi") for i in range(2)]
         self.audio_file = os.path.join(folder, "audio", f"{service_id}_audio.wav")
         self._stop = threading.Event()
@@ -441,36 +443,26 @@ class Recording:
 
     def _record_audio(self):
         frames = []
-        audio = pyaudio.PyAudio()
-        sample_width = audio.get_sample_size(self.SAMPLE_FORMAT)
-        stream = None
         try:
-            stream = audio.open(format=self.SAMPLE_FORMAT, channels=self.CHANNELS, rate=self.RATE, input=True,
-                                input_device_index=self.mic_index, frames_per_buffer=self.CHUNK)
-            while not self._stop.is_set():
-                data = stream.read(self.CHUNK, exception_on_overflow=False)  # 溢位時丟掉那一段，不要中斷錄音
-                if data:
-                    frames.append(data)
-                    self.audio_chunks += 1
-                    self.last_chunk_at = time.monotonic()
-                    self._peak = max(self._peak, peak_of(data))
+            with devices.open_microphone(self.mic_index, self.DTYPE, self.CHANNELS, self.RATE, self.CHUNK) as stream:
+                while not self._stop.is_set():
+                    data, _overflowed = stream.read(self.CHUNK)  # 溢位時 PortAudio 丟掉讀不及的那一段，不中斷錄音
+                    data = bytes(data)
+                    if data:
+                        frames.append(data)
+                        self.audio_chunks += 1
+                        self.last_chunk_at = time.monotonic()
+                        self._peak = max(self._peak, peak_of(data))
         except Exception as error:  # 打不開、拔掉：視窗在原地說明，影片照錄（UX-11）
             logger.exception("recording audio for %s failed", self.service_id)
             self.audio_error = error
-        finally:
-            if stream is not None:
-                with suppress(Exception):
-                    stream.stop_stream()
-                with suppress(Exception):
-                    stream.close()
-            audio.terminate()
-        self._write_wav(frames, sample_width)
+        self._write_wav(frames)
 
-    def _write_wav(self, frames, sample_width):
+    def _write_wav(self, frames):
         try:
             with wave.open(self.audio_file, "wb") as wav:
                 wav.setnchannels(self.CHANNELS)
-                wav.setsampwidth(sample_width)
+                wav.setsampwidth(self.SAMPLE_WIDTH)
                 wav.setframerate(self.RATE)
                 wav.writeframes(b"".join(frames))
         except Exception as error:

@@ -1,8 +1,8 @@
 """單元測試與整合測試共用的 fixture：隔離環境、Qt 應用程式、假裝置、moto 的 S3、GUI 執行緒不碰網路。"""
 import os
 
-# 這幾行要在 import myapp 之前執行（record_widget.py 等模組一 import 就會呼叫 load_dotenv()）
-os.environ["PYTHON_DOTENV_DISABLED"] = "1"  # 不讀開發者的 .env
+# 這幾行要在 import myapp 之前執行
+os.environ["PYTHON_DOTENV_DISABLED"] = "1"  # config.load() 不讀開發者的 .env（T51；test_config.py 自己打開）
 os.environ["QT_QPA_PLATFORM"] = "offscreen"  # Qt 不開真的視窗
 os.environ["OPENCV_AVFOUNDATION_SKIP_AUTH"] = "1"  # 萬一碰到真的鏡頭，也不跳出授權視窗
 os.environ["ADAM_ANIMATION_SCALE"] = "0"  # 動畫時間全部變 0（UiPrefs.animationScale → Theme），測試不必等動畫
@@ -13,7 +13,6 @@ import threading
 import boto3
 import cv2
 import mysql.connector
-import pyaudio
 import pytest
 import requests
 from moto import mock_aws
@@ -32,7 +31,7 @@ APP_ENV_VARS = [
     "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD", "DB_SSL_CA",
     "S3_BUCKET", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE", "AWS_ENDPOINT_URL",
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
-    "ANALYZE_API_URL", "REPORTS_API_URL", "GOOGLE_APPLICATION_CREDENTIALS",
+    "ANALYZE_API_URL", "REPORTS_API_URL", "GOOGLE_APPLICATION_CREDENTIALS", "RECORDINGS_DIR",
 ]
 
 
@@ -82,7 +81,8 @@ def isolated_app(monkeypatch, tmp_path):
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     monkeypatch.setenv("LOCAL_MEDIA_DIR", str(tmp_path / "media"))  # 下載的影片與圖表
     monkeypatch.setenv("LOCAL_CHARTS_DIR", str(tmp_path / "charts"))
-    monkeypatch.chdir(tmp_path)  # 錄影檔寫在「目前目錄」的 video/、audio/
+    monkeypatch.setenv("RECORDINGS_DIR", str(tmp_path))  # 錄影檔寫在這裡的 video/、audio/（app 預設 ~/Movies/ADAM）
+    monkeypatch.chdir(tmp_path)  # 寫相對路徑的程式（以前的錄影）也不會寫進原始碼資料夾
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / "settings"))
 
     # 共用的資料庫連線和 S3 client 都會被記住；每個測試前後都清掉
@@ -105,9 +105,9 @@ def cameras(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def microphone(monkeypatch):
-    """假麥克風（每個測試都換上）：一支輸入裝置。"""
+    """假麥克風（每個測試都換上，絕不碰真的麥克風）：一支輸入裝置。換掉的是 sounddevice 的函式（tests/fakes.py）。"""
     fake = FakeMicrophone()
-    monkeypatch.setattr(pyaudio, "PyAudio", fake)
+    fake.install(monkeypatch)
     return fake
 
 

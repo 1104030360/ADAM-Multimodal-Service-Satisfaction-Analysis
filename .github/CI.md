@@ -11,7 +11,7 @@ An out-of-date lock file fails the build. Branch coverage must meet the existing
 
 ```text
 Push / pull request
-  -> macOS runner + PortAudio + MySQL 8.4
+  -> macOS runner + MySQL 8.4
   -> uv sync --locked
   -> unit tests + integration tests + branch coverage
   -> pytest.xml and coverage.xml artifacts (14 days)
@@ -41,9 +41,8 @@ alongside future schema changes. It is a test fixture, not a production migratio
 To reproduce CI on a Mac:
 
 ```bash
-brew install portaudio mysql@8.4
+brew install mysql@8.4
 export PATH="$(brew --prefix mysql@8.4)/bin:$PATH"
-export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
 cd myapp
 uv sync --locked --all-extras --dev
 uv run --locked pytest --mysql-backend=native --require-integration --cov \
@@ -51,8 +50,9 @@ uv run --locked pytest --mysql-backend=native --require-integration --cov \
   --junitxml=ci-results/pytest.xml
 ```
 
-Use a stable macOS SDK if the local Xcode default selects a beta SDK (see the
-root README). The Docker alternative is `docker pull mysql:8.4`, followed by
+Every dependency installs from a prebuilt wheel (sounddevice bundles PortAudio),
+so no compiler, SDK, or Homebrew audio library is needed. The Docker alternative
+is `docker pull mysql:8.4`, followed by
 `uv run --locked pytest --require-integration --cov` from `myapp/`.
 
 CI does not yet validate Briefcase packaging, code signing, notarization,
