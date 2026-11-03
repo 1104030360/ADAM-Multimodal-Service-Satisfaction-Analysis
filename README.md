@@ -140,6 +140,8 @@ uv run briefcase run
 
 This builds `build/myapp/macos/app/ADAM.app` for Apple Silicon (macOS 14 or later) with an ad-hoc signature, which runs on the Mac that built it; distributing to other Macs needs Developer ID signing and notarization. The app never contains `.env`: each Mac keeps its own copy at `~/Library/Application Support/ADAM/.env` (`mkdir -p ~/Library/Application\ Support/ADAM`, then copy the file and `chmod 600` it). Settings already set in the environment take precedence. Without required database settings, the login screen says where the file belongs. Use an absolute `DB_SSL_CA` path, because an app opened from Finder starts in `/`.
 
+To install the app on other Macs (first launch, settings file, camera and microphone access, updates, supported scope), follow [INSTALL.md](INSTALL.md).
+
 ## Architecture
 
 ![ADAM architecture: desktop client, SQS analysis queue, EC2 API and worker, S3, RDS, and optional Ollama Cloud](assets/readme/architecture.png)
