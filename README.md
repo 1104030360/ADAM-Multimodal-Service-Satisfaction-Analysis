@@ -80,7 +80,7 @@ Use **Log Out** to return to sign-in or **Quit** to close ADAM. Both ask for con
 
 ## Getting started
 
-**This repository contains the desktop client and the analysis/report service.** A working installation also requires initialized MySQL tables/procedures/grants, S3 storage, and the analysis/report API with its SQS worker deployed separately (on EC2). The service is in [services/analyzer/](services/analyzer/) (real models); [services/analysis_service/](services/analysis_service/) is a lightweight fake with the same API and queue for local end-to-end tests. Production migrations and deployment notes exist only in an ignored local directory (`docs/rebuild/`); they are not provided by a fresh clone. The [test schema](myapp/tests/fixtures/schema.sql) supports automated tests and is not a production migration.
+**This repository contains the desktop client and the analysis/report service.** A working installation also requires initialized MySQL tables/procedures/grants, S3 storage, and the analysis/report API with its SQS worker deployed separately (on EC2). The service is in [services/analyzer/](services/analyzer/) (real models); [services/analysis_service/](services/analysis_service/) is a lightweight fake with the same API and queue for local end-to-end tests. Database migrations and their runner are in [services/db/](services/db/), and the script that deploys the service on EC2 is in [deploy/](deploy/); GitHub Actions builds, tests, and deploys them ([CI notes](.github/CI.md#cd-for-the-analysis-service)). Design notes exist only in an ignored local directory (`docs/rebuild/`) and are not provided by a fresh clone. The [test schema](myapp/tests/fixtures/schema.sql) supports automated tests and is not a production migration.
 
 ### 1. Install dependencies
 
@@ -143,6 +143,8 @@ Service states are **1 · Not analyzed → 2 · Analyzing (queued or running) �
 
 As recorded on **November 2, 2026**, EC2 uses `adam-analyzer:2` in separate API and worker containers; `/healthz` includes `"sqs":"configured"`. The real analyzer passed desktop validation before the queue split; physical desktop validation of the SQS branch is still pending.
 
+**Deployment:** a merge to `main` that changes the service, the migrations, or the deploy script runs [Deploy analyzer](.github/workflows/deploy-analyzer.yml). It builds the service and migration images, runs the tests inside them, and pushes the tested images to GitHub Container Registry. It then deploys them to EC2 through Systems Manager. On EC2, `deploy/deploy.sh` applies additive migrations, checks the database, and replaces the API and worker. It rolls back if the models are not ready within 5 minutes. A stopped instance deploys the recorded commit at its next boot. A manual run deploys any commit on `main`, which is also how to roll back.
+
 ### Analysis and reports
 
 ![Real analysis pipeline: speaker alignment, speech and emotion models, results, and reports](assets/readme/analysis-pipeline.png)
@@ -192,7 +194,9 @@ docker build -t adam-service-test .
 docker run --rm --network none -v "$PWD:/src:ro" -w /src adam-service-test python -m pytest -q -m "not integration"
 ```
 
-Integration tests add a disposable MySQL 8.4 container loaded with the test schema and the service's `tests/integration/grants.sql`; see the [service test notes](services/analysis_service/README.md#測試). The two services share report, AI-explanation, outcome, and queue code byte for byte: after changing a shared file, copy it to the other service and run `python3 -I services/analysis_service/tools/check_report_copies.py` from the repository root. GitHub Actions does not run the service tests yet.
+Integration tests add a disposable MySQL 8.4 container loaded with the test schema and the service's `tests/integration/grants.sql`; see the [service test notes](services/analysis_service/README.md#測試). The two services share report, AI-explanation, outcome, and queue code byte for byte: after changing a shared file, copy it to the other service and run `python3 -I services/analysis_service/tools/check_report_copies.py` from the repository root.
+
+The [Services workflow](.github/workflows/services.yml) runs these checks on Linux for every pull request: both service test suites inside their images, the shared-file comparison, the migration and deploy-script tests, shellcheck, and actionlint. Jobs whose files did not change finish in seconds. The [CI notes](.github/CI.md#service-checks) list the check names to require before merging to `main`.
 
 | Path | Contents |
 | --- | --- |
@@ -201,6 +205,9 @@ Integration tests add a disposable MySQL 8.4 container loaded with the test sche
 | `myapp/tests/` | Unit tests, integration tests, and test fixtures |
 | `services/analyzer/` | Analysis/report service: API, SQS worker, speech and emotion models, tests |
 | `services/analysis_service/` | Fake analysis service with the same API and queue, for local end-to-end tests |
+| `services/db/` | Database migrations and their runner, packaged as the `adam-db-migrations` image |
+| `deploy/` | EC2 deploy script and the boot-time unit that deploys a pending commit |
+| `.github/` | CI and deployment workflows, their scripts, and the [CI notes](.github/CI.md) |
 | `assets/readme/` | README diagrams, screenshots, and image attribution |
 
 Keep network/database work off the UI thread and statistics free of missing-score values (`-1`). Update `pyproject.toml` and `uv.lock` together when dependencies change; preserve existing CRLF line endings in QML files.

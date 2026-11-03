@@ -1,0 +1,278 @@
+name: Deploy analyzer
+
+# Builds the analysis service and migration images for a commit on main, tests them, pushes the tested
+# images to GitHub Container Registry, and deploys them to the EC2 instance (.github/CI.md). A merge to main
+# that changes the service, the migrations, or the deploy script deploys automatically; "Run workflow"
+# deploys any commit on main, which is also how to roll back.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/analyzer/**"
+      - "services/db/**"
+      - "deploy/**"
+      - ".github/workflows/deploy-analyzer.yml"
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 要部署的 commit：main 上的 40 字元 SHA。留空是 main 最新的 commit
+        type: string
+        required: false
+        default: ""
+      allow_destructive_migrations:
+        description: 允許破壞性的 migration（先在 RDS 建好 snapshot）
+        type: boolean
+        default: false
+      build_only:
+        description: 只建置、測試、推映像檔，不部署（第一次建立 GHCR 套件時用）
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One run at a time, never cancelled midway: a newer run waits, and GitHub keeps only the newest waiting run.
+concurrency:
+  group: deploy-analyzer
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  resolve:
+    name: Resolve commit
+    # Only main may deploy; the commit must be on main. Images already on GHCR are not rebuilt.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read # sees the images while the packages are still private
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
+      analyzer-image: ${{ steps.resolve.outputs.analyzer-image }}
+      migrations-image: ${{ steps.resolve.outputs.migrations-image }}
+      build-analyzer: ${{ steps.resolve.outputs.build-analyzer }}
+      build-migrations: ${{ steps.resolve.outputs.build-migrations }}
+      deploy: ${{ steps.resolve.outputs.deploy }}
+      allow-destructive: ${{ steps.resolve.outputs.allow-destructive }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # the commit is checked against main's history
+
+      - name: Resolve the commit and its images
+        id: resolve
+        env:
+          REF: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          DEFAULT_COMMIT: ${{ github.sha }}
+          INPUT_COMMIT: ${{ inputs.commit }}
+          INPUT_BUILD_ONLY: ${{ inputs.build_only }}
+          INPUT_ALLOW_DESTRUCTIVE: ${{ inputs.allow_destructive_migrations }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/resolve_deploy.sh
+
+  build:
+    name: Build, test, and push images
+    # Each image is built once, tested in that same image, and only then pushed: the image on GHCR is the
+    # one that passed. Nothing is pushed unless both images passed.
+    needs: resolve
+    if: needs.resolve.outputs.build-analyzer == 'true' || needs.resolve.outputs.build-migrations == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    env:
+      COMMIT: ${{ needs.resolve.outputs.commit }}
+      ANALYZER_IMAGE: ${{ needs.resolve.outputs.analyzer-image }}
+      MIGRATIONS_IMAGE: ${{ needs.resolve.outputs.migrations-image }}
+      BUILD_ANALYZER: ${{ needs.resolve.outputs.build-analyzer }}
+      BUILD_MIGRATIONS: ${{ needs.resolve.outputs.build-migrations }}
+    steps:
+      - name: Check out the commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          persist-credentials: false
+
+      - name: Free disk space
+        if: env.BUILD_ANALYZER == 'true'
+        run: bash .github/scripts/free_disk_space.sh
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build the analyzer image (linux/amd64)
+        if: env.BUILD_ANALYZER == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: services/analyzer
+          platforms: linux/amd64
+          load: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.ANALYZER_IMAGE }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.COMMIT }}
+            org.opencontainers.image.title=adam-analyzer
+            org.opencontainers.image.description=ADAM analysis service (API and SQS worker)
+          cache-from: type=gha,scope=adam-analyzer
+          cache-to: type=gha,scope=adam-analyzer,mode=max,ignore-error=true
+
+      - name: Run all analyzer tests inside that image
+        if: env.BUILD_ANALYZER == 'true'
+        run: |
+          bash .github/scripts/test_service_image.sh "$ANALYZER_IMAGE" services/analyzer ci-results/analyzer
+          echo "ANALYZER_TESTED_ID=$(docker image inspect -f '{{.Id}}' "$ANALYZER_IMAGE")" >>"$GITHUB_ENV"
+
+      - name: Build the migration image (linux/amd64)
+        if: env.BUILD_MIGRATIONS == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: services/db
+          platforms: linux/amd64
+          load: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.MIGRATIONS_IMAGE }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.COMMIT }}
+            org.opencontainers.image.title=adam-db-migrations
+            org.opencontainers.image.description=ADAM database migrations and their runner
+          cache-from: type=gha,scope=adam-db-migrations
+          cache-to: type=gha,scope=adam-db-migrations,mode=max,ignore-error=true
+
+      - name: Smoke-test that migration image
+        if: env.BUILD_MIGRATIONS == 'true'
+        run: |
+          bash .github/scripts/test_migrations_image.sh "$MIGRATIONS_IMAGE"
+          echo "MIGRATIONS_TESTED_ID=$(docker image inspect -f '{{.Id}}' "$MIGRATIONS_IMAGE")" >>"$GITHUB_ENV"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push the tested images
+        run: |
+          # push_image IMAGE TESTED_ID: pushes the image only if the tag still points at the tested image.
+          push_image() {
+            local id
+            id=$(docker image inspect -f '{{.Id}}' "$1")
+            if [[ -z $2 || $id != "$2" ]]; then
+              echo "::error::$1 不是剛才測過的映像檔（現在是 $id，測過的是 ${2:-沒有}）"
+              exit 1
+            fi
+            docker push "$1"
+            echo "| \`$1\` | \`$(docker image inspect -f '{{index .RepoDigests 0}}' "$1")\` |" >>"$GITHUB_STEP_SUMMARY"
+          }
+          {
+            echo "### 推到 GHCR 的映像檔（就是測過的那一個）"
+            echo
+            echo "| 映像檔 | digest |"
+            echo "|---|---|"
+          } >>"$GITHUB_STEP_SUMMARY"
+          if [[ $BUILD_MIGRATIONS == true ]]; then
+            push_image "$MIGRATIONS_IMAGE" "${MIGRATIONS_TESTED_ID:-}"
+          fi
+          if [[ $BUILD_ANALYZER == true ]]; then
+            push_image "$ANALYZER_IMAGE" "${ANALYZER_TESTED_ID:-}"
+          fi
+
+      - name: Upload test results
+        if: ${{ !cancelled() && env.BUILD_ANALYZER == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: analyzer-test-results
+          path: ci-results/analyzer/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  deploy:
+    name: Deploy to EC2
+    needs: [resolve, build]
+    # Runs when resolve passed and the images were either built here or already on GHCR (build skipped).
+    if: >-
+      ${{ !cancelled() && needs.resolve.result == 'success' && needs.resolve.outputs.deploy == 'true' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # No `environment:` on this job: it would change the OIDC subject to repo:<repo>:environment:<name>,
+    # and the deployment role trusts only repo:<repo>:ref:refs/heads/main.
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      COMMIT: ${{ needs.resolve.outputs.commit }}
+      ANALYZER_IMAGE: ${{ needs.resolve.outputs.analyzer-image }}
+      MIGRATIONS_IMAGE: ${{ needs.resolve.outputs.migrations-image }}
+    steps:
+      - name: Check out the workflow scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Check that the instance can pull both images
+        run: |
+          # The instance pulls without credentials, so check the way it will pull: anonymously.
+          problems=0
+          for image in "$ANALYZER_IMAGE" "$MIGRATIONS_IMAGE"; do
+            package=${image##*/}
+            package=${package%%:*}
+            code=0
+            bash .github/scripts/ghcr_manifest.sh "$image" || code=$?
+            case $code in
+              0) continue ;;
+              4) message="GHCR 的套件 $package 還是私人的，EC2 拉不到。到 GitHub 的個人頁面 → Packages → $package → Package settings → Change visibility → Public，然後 Re-run 這個 job。" ;;
+              3) message="GHCR 上沒有 $image：Build 那個 job 沒有推上去。" ;;
+              *) message="查不到 $image 在 GHCR 上的狀態。" ;;
+            esac
+            echo "::error::$message"
+            echo "- $message" >>"$GITHUB_STEP_SUMMARY"
+            problems=$((problems + 1))
+          done
+          if ((problems > 0)); then
+            echo "沒有寫 desired-commit，EC2 照舊。" >>"$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Check the repository variables
+        env:
+          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          REGION: ${{ vars.AWS_REGION }}
+          INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+        run: |
+          missing=
+          [[ -n $ROLE_ARN ]] || missing+=" AWS_DEPLOY_ROLE_ARN"
+          [[ -n $REGION ]] || missing+=" AWS_REGION"
+          [[ -n $INSTANCE_ID ]] || missing+=" EC2_INSTANCE_ID"
+          if [[ -n $missing ]]; then
+            echo "::error::缺少 repository variables：$missing。到 Settings → Secrets and variables → Actions → Variables 新增（PLAN 第 8 節第 7 步）。"
+            exit 1
+          fi
+
+      - name: Assume the deployment role (GitHub OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: adam-deploy-${{ github.run_id }}
+
+      - name: Record the desired commit and deploy
+        env:
+          REPOSITORY: ${{ github.repository }}
+          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+          ALLOW_DESTRUCTIVE: ${{ needs.resolve.outputs.allow-destructive }}
+        run: bash .github/scripts/ssm_deploy.sh

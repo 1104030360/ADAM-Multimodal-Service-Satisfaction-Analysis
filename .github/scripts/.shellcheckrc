@@ -1,0 +1,4 @@
+# shellcheck reads this for the scripts in this folder and in tests/: follow the files they source
+# (disposable_mysql.sh, tests/assert.sh), the same as shellcheck -x --source-path=SCRIPTDIR.
+external-sources=true
+source-path=SCRIPTDIR
